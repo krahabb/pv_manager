@@ -1,0 +1,8 @@
+{
+  "name": "PV Manager",
+  "render_readme": true,
+  "country": ["IT", "GB", "US", "JP", "ES", "FR", "DE"],
+  "homeassistant": "2025.1.0",
+  "persistent_directory": "traces",
+  "hacs": "1.6.0"
+}

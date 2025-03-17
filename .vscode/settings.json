@@ -1,0 +1,20 @@
+{
+    "files.associations": {
+        "*.yaml": "home-assistant"
+    },
+    "testing.defaultGutterClickAction": "debug",
+    "python.testing.unittestEnabled": false,
+    "python.testing.pytestEnabled": true,
+    "python.testing.pytestArgs": [
+        "tests"
+    ],
+    "[python]": {
+        "editor.defaultFormatter": "ms-python.black-formatter"
+    },
+    "isort.args":["--profile", "black","--settings-file", "pyproject.toml"],
+    "isort.check": true,
+    "isort.severity": {
+        "W": "Warning",
+        "E": "Hint"
+    }
+}

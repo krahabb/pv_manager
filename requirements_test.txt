@@ -1,0 +1,11 @@
+pytest-homeassistant-custom-component @ git+https://github.com/MatthewFlamm/pytest-homeassistant-custom-component@0.13.218 # HA core 2025.3.0b2
+
+aiodiscover
+aiodhcpwatcher
+aiohttp-cors
+scapy
+janus
+fnv-hash-fast
+psutil-home-assistant
+
+-r requirements_dev.txt

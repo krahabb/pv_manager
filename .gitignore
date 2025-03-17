@@ -1,0 +1,14 @@
+__pycache__
+pythonenv*
+venv
+.venv
+.coverage
+coverage.xml
+*.secret
+*.secret.json
+*.user
+traces
+.DS_Store
+config
+bin
+temp
