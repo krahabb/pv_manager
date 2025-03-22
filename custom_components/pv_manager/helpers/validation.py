@@ -11,6 +11,11 @@ if typing.TYPE_CHECKING:
     from enum import StrEnum
 
 
+def optional(key: str, user_input, default=None):
+    return vol.Optional(
+        key, description={"suggested_value": user_input.get(key, default)}
+    )
+
 def required(key: str, user_input, default=None):
     return vol.Required(
         key, description={"suggested_value": user_input.get(key, default)}
@@ -21,7 +26,7 @@ def entity_schema(
     user_input: pmc.EntityConfig | dict = {},
     **defaults: typing.Unpack[pmc.EntityConfig],
 ) -> dict:
-    return {required(pmc.CONF_NAME, user_input, defaults.get("name")): str}
+    return {required("name", user_input, defaults.get("name")): str}
 
 
 def sensor_schema(
@@ -30,7 +35,7 @@ def sensor_schema(
 ) -> dict:
     schema = entity_schema(user_input, **defaults)
     default_unit = defaults.get("native_unit_of_measurement")
-    schema[required(pmc.CONF_NATIVE_UNIT_OF_MEASUREMENT, user_input, default_unit)] = (
+    schema[required("native_unit_of_measurement", user_input, default_unit)] = (
         select_selector(type(default_unit))  # type: ignore
     )
     return schema
@@ -68,12 +73,14 @@ def sensor_selector(**kwargs: "typing.Unpack[_sensor_selector_args]"):
     )
 
 
-def time_period_selector(**kwargs):
+def time_period_selector(
+        **kwargs: "typing.Unpack[selector.NumberSelectorConfig]"
+):
     return selector.NumberSelector(
-        {
-            "min": 0,
-            "mode": "box",
-            "unit_of_measurement": hac.UnitOfTime.SECONDS,
-            **kwargs,
-        }
+        selector.NumberSelectorConfig(
+            min=kwargs.pop("min",0),
+            unit_of_measurement=kwargs.pop("unit_of_measurement", hac.UnitOfTime.SECONDS),
+            mode=kwargs.pop("mode",selector.NumberSelectorMode.BOX),
+            **kwargs # type:ignore
+        )
     )

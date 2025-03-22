@@ -56,38 +56,9 @@ CONF_LOGGING_LEVEL_OPTIONS: typing.Final = {
 class BaseConfig(typing.TypedDict):
     logging_level: typing.NotRequired[int]
 
-
-CONF_NAME: typing.Final = hac.CONF_NAME
-
-
 class EntityConfig(typing.TypedDict):
     name: str
-
-
-CONF_NATIVE_UNIT_OF_MEASUREMENT: typing.Final = "native_unit_of_measurement"
-
 
 class SensorConfig(EntityConfig):
     native_unit_of_measurement: str | enum.StrEnum
 
-
-CONF_PEAK_POWER: typing.Final = "peak_power"
-CONF_SIMULATE_WEATHER: typing.Final = "simulate_weather"
-
-
-CONF_PV_POWER_ENTITY_ID: typing.Final = "pv_power_entity_id"
-CONF_INTEGRATION_PERIOD: typing.Final = "integration_period"
-CONF_MAXIMUM_LATENCY: typing.Final = "maximum_latency"
-
-
-CONF_SOURCE_ENTITY_ID: typing.Final = "source_entity_id"
-CONF_DAILY_ENERGY_FORECAST_ENTITY: typing.Final = "daily_energy_forecast_entity"
-
-
-class PVEnergyEstimatorConfigType(BaseConfig):
-    """Common config_entry keys"""
-
-    source_entity_id: str
-    """The entity_id of the source entity"""
-    daily_energy_forecast_entity: EntityConfig
-    """create an entity with the daily energy of pv"""

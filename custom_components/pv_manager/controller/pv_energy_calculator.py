@@ -29,7 +29,7 @@ class CycleMode(enum.StrEnum):
     HOURLY = enum.auto()
 
 
-class ControllerConfig(pmc.BaseConfig):
+class ControllerConfig(typing.TypedDict):
     pv_power_entity_id: str
     """The source entity_id of the pv power"""
     cycle_modes: list[CycleMode]
@@ -41,7 +41,7 @@ class ControllerConfig(pmc.BaseConfig):
     since this might be indication of a sensor failure"""
 
 
-class EntryConfig(ControllerConfig, pmc.EntityConfig):
+class EntryConfig(ControllerConfig, pmc.EntityConfig, pmc.BaseConfig):
     """TypedDict for ConfigEntry data"""
 
 
@@ -71,10 +71,10 @@ class PVEnergySensor(RestoreSensor):
             device_class=self.DeviceClass.ENERGY,
             name=controller.config.get("name", "pv_energy_sensor")
             + ("" if cycle_mode == CycleMode.NONE else f" ({cycle_mode})"),
+            native_value=0,
+            native_unit_of_measurement=hac.UnitOfEnergy.WATT_HOUR,
         )
-        self.native_value = 0
-        self.native_unit_of_measurement = hac.UnitOfEnergy.WATT_HOUR
-        self.cycle_mode = cycle_mode
+        self.cycle_mode: typing.Final = cycle_mode
 
     async def async_added_to_hass(self):
 
@@ -235,15 +235,11 @@ class Controller(controller.Controller[EntryConfig]):
             hv.required("cycle_modes", user_input, CycleMode.NONE): hv.select_selector(
                 options=list(CycleMode), multiple=True
             ),
-            hv.required(pmc.CONF_PV_POWER_ENTITY_ID, user_input): hv.sensor_selector(
-                device_class="power"
+            hv.required("pv_power_entity_id", user_input): hv.sensor_selector(
+                device_class=PVEnergySensor.DeviceClass.POWER
             ),
-            hv.required(
-                pmc.CONF_INTEGRATION_PERIOD, user_input, 5
-            ): hv.time_period_selector(),
-            hv.required(
-                pmc.CONF_MAXIMUM_LATENCY, user_input, 300
-            ): hv.time_period_selector(),
+            hv.required("integration_period", user_input, 5): hv.time_period_selector(),
+            hv.required("maximum_latency", user_input, 300): hv.time_period_selector(),
         }
 
     def __init__(self, hass: "HomeAssistant", config_entry: "ConfigEntry"):
@@ -297,7 +293,9 @@ class Controller(controller.Controller[EntryConfig]):
             if self._maximum_latency_callback_unsub:
                 self._maximum_latency_callback_unsub.cancel()
                 self._maximum_latency_callback_unsub = None
-                self.maximum_latency_alarm_binary_sensor: BinarySensor = None # type:ignore
+                self.maximum_latency_alarm_binary_sensor: BinarySensor = (
+                    None
+                )  # type:ignore
             return True
         return False
 

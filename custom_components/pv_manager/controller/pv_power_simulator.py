@@ -18,7 +18,8 @@ if typing.TYPE_CHECKING:
     from homeassistant.helpers.event import EventStateChangedData
 
 
-class Config(pmc.SensorConfig, pmc.BaseConfig):
+
+class EntryConfig(pmc.SensorConfig, pmc.BaseConfig):
     """ConfigEntry data"""
 
     peak_power: float
@@ -42,8 +43,7 @@ class PVPowerSimulatorSensor(Sensor):
             pmc.ConfigEntryType.PV_POWER_SIMULATOR,
             device_class=self.DeviceClass.POWER,
         )
-        self.native_value = None
-        helpers.apply_config(self, controller.config_entry.data, Config)
+        helpers.apply_config(self, controller.config_entry.data, EntryConfig)
 
     async def async_added_to_hass(self):
         self._update_pv_power(self.hass.states.get("sun.sun"))
@@ -72,7 +72,7 @@ class PVPowerSimulatorSensor(Sensor):
             self.native_value = None
 
 
-class Controller(controller.Controller):
+class Controller(controller.Controller[EntryConfig]):
     """Base controller class for managing ConfigEntry behavior."""
 
     TYPE = pmc.ConfigEntryType.PV_POWER_SIMULATOR
@@ -86,8 +86,8 @@ class Controller(controller.Controller):
             name="PV power",
             native_unit_of_measurement=hac.UnitOfPower.WATT,
         ) | {
-            hv.required(pmc.CONF_PEAK_POWER, user_input, 1000): int,
-            hv.required(pmc.CONF_SIMULATE_WEATHER, user_input, True): bool,
+            hv.required("peak_power", user_input, 1000): int,
+            hv.required("simulate_weather", user_input, True): bool,
         }
 
     def __init__(self, hass: "HomeAssistant", config_entry: "ConfigEntry"):

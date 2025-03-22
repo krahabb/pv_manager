@@ -99,7 +99,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=pmc.DOMAIN):
                 )
             else:
                 return self.async_create_entry(
-                    title=user_input.get(pmc.CONF_NAME, controller_type),
+                    title=user_input.get("name", controller_type),
                     data=user_input,
                 )
 

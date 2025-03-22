@@ -56,7 +56,7 @@ def versiontuple(version: str):
     return tuple(map(int, (version.split("."))))
 
 
-def datetime_from_epoch(epoch, tz: "tzinfo | None"):
+def datetime_from_epoch(epoch, tz: "tzinfo | None" = UTC):
     """
     converts an epoch (UTC seconds) in a datetime.
     Faster than datetime.fromtimestamp with less checks
@@ -96,7 +96,7 @@ async def async_import_module(hass: "HomeAssistant", name: str):
                 return module
 
 
-def typed_dict_keys(td)-> dict[str, object] | None:
+def typed_dict_keys(td)-> tuple:
     """If td is a TypedDict class, return a dictionary mapping the typed keys to types.
     Otherwise, return None. Examples::
 
@@ -111,21 +111,53 @@ def typed_dict_keys(td)-> dict[str, object] | None:
         typed_dict_keys(dict) == None
         typed_dict_keys(Other) == None
     """
+
     #if isinstance(td, typing._TypedDict):
     if hasattr(td, "__annotations__"):
-        return td.__annotations__.copy()
-    return None
+        # return td.__annotations__.copy() returns the full dict
+        return tuple(td.__annotations__)
+
+    return ()
 
 def apply_config(obj, config: "MappingProxyType[str, object]", td_class):
     if td_class:
-        td_keys = typed_dict_keys(td_class)
-        if td_keys:
-            for attr, value in config.items():
-                if attr in td_keys:
-                    setattr(obj, attr, value)
+        for key in typed_dict_keys(td_class):
+            if key in config:
+                setattr(obj, key, config[key])
     else:
-        for attr, value in config.items():
-            setattr(obj, attr, value)
+        for key, value in config.items():
+            setattr(obj, key, value)
+
+
+try:
+    import json
+    import os
+
+    class DEBUG:
+        """Define a DEBUG symbol which will be None in case the debug conf is missing so
+        that the code can rely on this to enable special behaviors."""
+        # this will raise an OSError on non-dev machines missing the
+        # debug configuration file so the DEBUG symbol will be invalidated
+        data = json.load(
+            open(
+                file="./custom_components/pv_manager/debug.secret.json",
+                mode="r",
+                encoding="utf-8",
+            )
+        )
+
+        @staticmethod
+        def get_debug_output_filename(hass: "HomeAssistant", filename):
+            path = hass.config.path(
+                "custom_components", pmc.DOMAIN, "debug"
+            )
+            os.makedirs(path, exist_ok=True)
+            return os.path.join(path, filename)
+
+
+except Exception:
+    DEBUG = None  # type: ignore
+
 
 def getLogger(name):
     """

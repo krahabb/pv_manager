@@ -122,6 +122,8 @@ class Controller[_ConfigT: pmc.BaseConfig](helpers.Loggable):
         ):
             return False
         self._entry_update_listener_unsub()
+        # removing circular refs here...maybe invoke entity shutdown?
+        self.entities.clear()
         return True
 
     def schedule_async_callback(

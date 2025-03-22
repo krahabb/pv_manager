@@ -13,8 +13,13 @@ if typing.TYPE_CHECKING:
     from .controller import Controller
     from .helpers.entity import EntityArgs
 
+    SensorStateType = sensor.StateType | sensor.date | sensor.datetime | sensor.Decimal
+
     class SensorArgs(EntityArgs):
         device_class: typing.NotRequired[sensor.SensorDeviceClass]
+        state_class: typing.NotRequired[sensor.SensorStateClass|None]
+        native_value: typing.NotRequired[SensorStateType]
+        native_unit_of_measurement: typing.NotRequired[str]
 
 
 async def async_setup_entry(
@@ -51,8 +56,19 @@ class Sensor(Entity, sensor.SensorEntity):
         **kwargs: "typing.Unpack[SensorArgs]",
     ):
         self.device_class = kwargs.pop("device_class", None)
-        self.state_class = self.DEVICE_CLASS_TO_STATE_CLASS.get(self.device_class)
+        self.native_value = kwargs.pop("native_value", None)
+        self.native_unit_of_measurement = kwargs.pop("native_unit_of_measurement", None)
+        if "state_class" in kwargs:
+            self.state_class = kwargs.pop("state_class")
+        else:
+            self.state_class = self.DEVICE_CLASS_TO_STATE_CLASS.get(self.device_class)
         Entity.__init__(self, controller, id, **kwargs)
+
+    def update(self, native_value: "SensorStateType"):
+        if self.native_value != native_value:
+            self.native_value = native_value
+            if self._added_to_hass:
+                self._async_write_ha_state()
 
 
 class RestoreSensor(Sensor, sensor.RestoreSensor):
