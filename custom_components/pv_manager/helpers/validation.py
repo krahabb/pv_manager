@@ -16,6 +16,7 @@ def optional(key: str, user_input, default=None):
         key, description={"suggested_value": user_input.get(key, default)}
     )
 
+
 def required(key: str, user_input, default=None):
     return vol.Required(
         key, description={"suggested_value": user_input.get(key, default)}
@@ -73,14 +74,18 @@ def sensor_selector(**kwargs: "typing.Unpack[_sensor_selector_args]"):
     )
 
 
-def time_period_selector(
-        **kwargs: "typing.Unpack[selector.NumberSelectorConfig]"
-):
+def weather_selector():
+    return selector.EntitySelector({"filter": {"domain": "weather"}})
+
+
+def time_period_selector(**kwargs: "typing.Unpack[selector.NumberSelectorConfig]"):
     return selector.NumberSelector(
         selector.NumberSelectorConfig(
-            min=kwargs.pop("min",0),
-            unit_of_measurement=kwargs.pop("unit_of_measurement", hac.UnitOfTime.SECONDS),
-            mode=kwargs.pop("mode",selector.NumberSelectorMode.BOX),
-            **kwargs # type:ignore
+            min=kwargs.pop("min", 0),
+            unit_of_measurement=kwargs.pop(
+                "unit_of_measurement", hac.UnitOfTime.SECONDS
+            ),
+            mode=kwargs.pop("mode", selector.NumberSelectorMode.BOX),
+            **kwargs,  # type:ignore
         )
     )
