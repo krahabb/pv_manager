@@ -35,9 +35,9 @@ def sensor_schema(
     **defaults: typing.Unpack[pmc.SensorConfig],
 ) -> dict:
     schema = entity_schema(user_input, **defaults)
-    default_unit = defaults.get("native_unit_of_measurement")
+    default_unit:StrEnum = defaults.get("native_unit_of_measurement") # type: ignore
     schema[required("native_unit_of_measurement", user_input, default_unit)] = (
-        select_selector(type(default_unit))  # type: ignore
+        select_selector(options=list(type(default_unit)))
     )
     return schema
 
