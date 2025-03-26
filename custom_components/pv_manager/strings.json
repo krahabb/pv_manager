@@ -3,9 +3,9 @@
         "step": {
             "user": {
                 "menu_options": {
-                    "pv_power_simulator": "PV power simulator",
-                    "pv_energy_calculator": "PV energy calculator",
-                    "pv_energy_estimator": "PV energy estimator"
+                    "energy_calculator": "Energy calculator",
+                    "pv_energy_estimator": "PV energy estimator",
+                    "pv_power_simulator": "PV power simulator"
                 }
             }
         }

@@ -41,7 +41,7 @@ except Exception:
 class ConfigEntryType(enum.StrEnum):
     """The type of config entry"""
 
-    PV_ENERGY_CALCULATOR = enum.auto()
+    ENERGY_CALCULATOR = enum.auto()
     PV_ENERGY_ESTIMATOR = enum.auto()
     PV_POWER_SIMULATOR = enum.auto()
 
@@ -56,7 +56,7 @@ class ConfigSubentryType(enum.StrEnum):
 
 
 CONFIGENTRY_SUBENTRY_MAP: dict[ConfigEntryType, tuple[ConfigSubentryType, ...]] = {
-    ConfigEntryType.PV_ENERGY_CALCULATOR: (),
+    ConfigEntryType.ENERGY_CALCULATOR: (),
     # ConfigEntryType.PV_ENERGY_CALCULATOR: (ConfigSubentryType.PV_ENERGY_SENSOR,),
     ConfigEntryType.PV_ENERGY_ESTIMATOR: (),
     ConfigEntryType.PV_POWER_SIMULATOR: (),

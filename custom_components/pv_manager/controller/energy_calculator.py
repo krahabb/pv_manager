@@ -30,7 +30,7 @@ class CycleMode(enum.StrEnum):
 
 
 class ControllerConfig(typing.TypedDict):
-    pv_power_entity_id: str
+    power_entity_id: str
     """The source entity_id of the pv power"""
     cycle_modes: list[CycleMode]
     """list of 'metering' sensors to configure"""
@@ -45,7 +45,7 @@ class EntryConfig(ControllerConfig, pmc.EntityConfig, pmc.BaseConfig):
     """TypedDict for ConfigEntry data"""
 
 
-class PVEnergySensor(RestoreSensor):
+class EnergySensor(RestoreSensor):
 
     controller: "Controller"
 
@@ -148,10 +148,10 @@ class PVEnergySensor(RestoreSensor):
             )
 
         await super().async_added_to_hass()
-        self.controller.pv_energy_sensors.add(self)
+        self.controller.energy_sensors.add(self)
 
     async def async_will_remove_from_hass(self):
-        self.controller.pv_energy_sensors.remove(self)
+        self.controller.energy_sensors.remove(self)
 
         if self.cycle_mode != CycleMode.NONE:
             self._async_track_cycle_unsub()
@@ -213,30 +213,30 @@ class PVEnergySensor(RestoreSensor):
 class Controller(controller.Controller[EntryConfig]):
     """Base controller class for managing ConfigEntry behavior."""
 
-    TYPE = pmc.ConfigEntryType.PV_ENERGY_CALCULATOR
+    TYPE = pmc.ConfigEntryType.ENERGY_CALCULATOR
 
-    PLATFORMS = {PVEnergySensor.PLATFORM}
+    PLATFORMS = {EnergySensor.PLATFORM}
 
-    pv_energy_sensors: set[PVEnergySensor]
+    energy_sensors: set[EnergySensor]
 
     __slots__ = (
-        "pv_energy_sensors",
+        "energy_sensors",
+        "maximum_latency_alarm_binary_sensor",
+        "_power",
+        "_power_epoch",
+        "_power_tracking_unsub",
         "_integration_callback_unsub",
         "_maximum_latency_callback_unsub",
-        "maximum_latency_alarm_binary_sensor",
-        "_pv_power",
-        "_pv_power_epoch",
-        "_pv_power_tracking_unsub",
     )
 
     @staticmethod
     def get_config_entry_schema(user_input: dict) -> dict:
         return hv.entity_schema(user_input, name="PV Energy") | {
+            hv.required("power_entity_id", user_input): hv.sensor_selector(
+                device_class=EnergySensor.DeviceClass.POWER
+            ),
             hv.required("cycle_modes", user_input, CycleMode.NONE): hv.select_selector(
                 options=list(CycleMode), multiple=True
-            ),
-            hv.required("pv_power_entity_id", user_input): hv.sensor_selector(
-                device_class=PVEnergySensor.DeviceClass.POWER
             ),
             hv.required("integration_period", user_input, 5): hv.time_period_selector(),
             hv.required("maximum_latency", user_input, 300): hv.time_period_selector(),
@@ -245,23 +245,20 @@ class Controller(controller.Controller[EntryConfig]):
     def __init__(self, hass: "HomeAssistant", config_entry: "ConfigEntry"):
         super().__init__(hass, config_entry)
 
-        self.pv_energy_sensors = set()
+        self.energy_sensors = set()
 
         for cycle_mode in self.config["cycle_modes"]:
-            PVEnergySensor(self, cycle_mode)
+            EnergySensor(self, cycle_mode)
 
-        self._integration_callback_unsub = None
-        self._maximum_latency_callback_unsub = None
-
-        self._pv_power = self._get_pv_power_from_state(
-            self.hass.states.get(self.config["pv_power_entity_id"])
+        self._power = self._get_power_from_state(
+            self.hass.states.get(self.config["power_entity_id"])
         )
-        self._pv_power_epoch = time.monotonic()
+        self._power_epoch = time.monotonic()
 
-        self._pv_power_tracking_unsub = event.async_track_state_change_event(
+        self._power_tracking_unsub = event.async_track_state_change_event(
             self.hass,
-            self.config["pv_power_entity_id"],
-            self._pv_power_tracking_callback,
+            self.config["power_entity_id"],
+            self._power_tracking_callback,
         )
         self._integration_callback_unsub = (
             self.schedule_callback(
@@ -286,7 +283,7 @@ class Controller(controller.Controller[EntryConfig]):
 
     async def async_shutdown(self):
         if await super().async_shutdown():
-            self._pv_power_tracking_unsub()
+            self._power_tracking_unsub()
             if self._integration_callback_unsub:
                 self._integration_callback_unsub.cancel()
                 self._integration_callback_unsub = None
@@ -300,9 +297,9 @@ class Controller(controller.Controller[EntryConfig]):
         return False
 
     @callback
-    def _pv_power_tracking_callback(self, event: "Event[event.EventStateChangedData]"):
+    def _power_tracking_callback(self, event: "Event[event.EventStateChangedData]"):
         now = time.monotonic()
-        pv_power = self._get_pv_power_from_state(event.data.get("new_state"))
+        pv_power = self._get_power_from_state(event.data.get("new_state"))
 
         try:
             # TODO: trapezoidal rule might be unneeded (or even dangerous) if pv_power
@@ -311,16 +308,16 @@ class Controller(controller.Controller[EntryConfig]):
             # internal 'integration_period' sampling might totally invalidate the
             # trapezoidal algorithm and just work as a 'left' rectangle integration.
             energy_wh = (
-                (self._pv_power + pv_power) * (now - self._pv_power_epoch) / 7200  # type: ignore
+                (self._power + pv_power) * (now - self._power_epoch) / 7200  # type: ignore
             )
-            for sensor in self.pv_energy_sensors:
+            for sensor in self.energy_sensors:
                 sensor.accumulate(energy_wh)
 
         except:  # in case any pv_power is None i.e. not valid...
             pass
 
-        self._pv_power = pv_power
-        self._pv_power_epoch = now
+        self._power = pv_power
+        self._power_epoch = now
 
         if self._maximum_latency_callback_unsub:
             # retrigger maximum_latency
@@ -338,16 +335,16 @@ class Controller(controller.Controller[EntryConfig]):
         self._integration_callback_unsub = self.schedule_callback(
             self.config["integration_period"], self._integration_callback
         )
-        if self._pv_power is None:
+        if self._power is None:
             return
         now = time.monotonic()
         try:
-            energy_wh = self._pv_power * (now - self._pv_power_epoch) / 3600
-            for sensor in self.pv_energy_sensors:
+            energy_wh = self._power * (now - self._power_epoch) / 3600
+            for sensor in self.energy_sensors:
                 sensor.accumulate(energy_wh)
         except:
             pass
-        self._pv_power_epoch = now
+        self._power_epoch = now
 
     @callback
     def _maximum_latency_callback(self):
@@ -357,15 +354,15 @@ class Controller(controller.Controller[EntryConfig]):
         self._maximum_latency_callback_unsub = self.schedule_callback(
             self.config["maximum_latency"], self._maximum_latency_callback
         )
-        self._pv_power = None
+        self._power = None
         self.maximum_latency_alarm_binary_sensor.update(True)
 
-    def _get_pv_power_from_state(self, pv_power_state: "State | None"):
-        if pv_power_state:
-            unit = pv_power_state.attributes.get(self.hac.ATTR_UNIT_OF_MEASUREMENT)
+    def _get_power_from_state(self, power_state: "State | None"):
+        if power_state:
+            unit = power_state.attributes.get(self.hac.ATTR_UNIT_OF_MEASUREMENT)
             try:
                 return PowerConverter.convert(
-                    float(pv_power_state.state),
+                    float(power_state.state),
                     unit,
                     self.hac.UnitOfPower.WATT,
                 )
@@ -374,8 +371,8 @@ class Controller(controller.Controller[EntryConfig]):
                     self.WARNING,
                     e,
                     "Invalid state for entity %s: %s [%s] when converting to [W]",
-                    pv_power_state.entity_id,
-                    pv_power_state.state,
+                    power_state.entity_id,
+                    power_state.state,
                     unit,
                 )
 
