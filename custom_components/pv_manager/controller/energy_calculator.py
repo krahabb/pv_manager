@@ -34,9 +34,9 @@ class ControllerConfig(typing.TypedDict):
     """The source entity_id of the pv power"""
     cycle_modes: list[CycleMode]
     """list of 'metering' sensors to configure"""
-    integration_period: int
+    integration_period_seconds: int
     """If set, calculates accumulation of energy independently of pv_power changes"""
-    maximum_latency: int
+    maximum_latency_seconds: int
     """If set, in case pv_power doesn't update in the period, stops accumulating pv_power
     since this might be indication of a sensor failure"""
 
@@ -235,11 +235,11 @@ class Controller(controller.Controller[EntryConfig]):
             hv.required("power_entity_id", user_input): hv.sensor_selector(
                 device_class=EnergySensor.DeviceClass.POWER
             ),
-            hv.required("cycle_modes", user_input, CycleMode.NONE): hv.select_selector(
+            hv.required("cycle_modes", user_input, [CycleMode.NONE]): hv.select_selector(
                 options=list(CycleMode), multiple=True
             ),
-            hv.required("integration_period", user_input, 5): hv.time_period_selector(),
-            hv.required("maximum_latency", user_input, 300): hv.time_period_selector(),
+            hv.required("integration_period_seconds", user_input, 5): hv.time_period_selector(),
+            hv.optional("maximum_latency_seconds", user_input, 300): hv.time_period_selector(),
         }
 
     def __init__(self, hass: "HomeAssistant", config_entry: "ConfigEntry"):
@@ -262,12 +262,12 @@ class Controller(controller.Controller[EntryConfig]):
         )
         self._integration_callback_unsub = (
             self.schedule_callback(
-                self.config["integration_period"], self._integration_callback
+                self.config["integration_period_seconds"], self._integration_callback
             )
-            if self.config["integration_period"]
+            if self.config["integration_period_seconds"]
             else None
         )
-        maximum_latency = self.config["maximum_latency"]
+        maximum_latency = self.config.get("maximum_latency_seconds")
         if maximum_latency:
             self._maximum_latency_callback_unsub = self.schedule_callback(
                 maximum_latency, self._maximum_latency_callback
@@ -323,7 +323,7 @@ class Controller(controller.Controller[EntryConfig]):
             # retrigger maximum_latency
             self._maximum_latency_callback_unsub.cancel()
             self._maximum_latency_callback_unsub = self.schedule_callback(
-                self.config["maximum_latency"], self._maximum_latency_callback
+                self.config["maximum_latency_seconds"], self._maximum_latency_callback
             )
             self.maximum_latency_alarm_binary_sensor.update(False)
 
@@ -333,7 +333,7 @@ class Controller(controller.Controller[EntryConfig]):
         pv_power changes. In general this shouldn't be needed provided pv_power refreshes frequently
         since the accumulation is also done in _pv_power_tracking_callback"""
         self._integration_callback_unsub = self.schedule_callback(
-            self.config["integration_period"], self._integration_callback
+            self.config["integration_period_seconds"], self._integration_callback
         )
         if self._power is None:
             return
@@ -352,7 +352,7 @@ class Controller(controller.Controller[EntryConfig]):
         be regarded as a warning/error in data collection. We thus reset accumulating.
         """
         self._maximum_latency_callback_unsub = self.schedule_callback(
-            self.config["maximum_latency"], self._maximum_latency_callback
+            self.config["maximum_latency_seconds"], self._maximum_latency_callback
         )
         self._power = None
         self.maximum_latency_alarm_binary_sensor.update(True)

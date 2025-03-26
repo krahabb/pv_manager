@@ -5,6 +5,7 @@ Controller for pv energy production estimation
 import datetime as dt
 import time
 import typing
+import voluptuous as vol
 
 import astral
 import astral.sun
@@ -36,24 +37,24 @@ if typing.TYPE_CHECKING:
 
 
 class ControllerConfig(typing.TypedDict):
-    pv_energy_entity_id: typing.NotRequired[str]
-    """The source entity_id of the pv energy of the system"""
     pv_power_entity_id: typing.NotRequired[str]
     """The source entity_id of the pv power of the system"""
+    pv_energy_entity_id: typing.NotRequired[str]
+    """The source entity_id of the pv energy of the system"""
     weather_entity_id: typing.NotRequired[str]
     """The entity used for weather forecast in the system"""
-    refresh_period_minutes: int
-    """Time between model updates (polling of input pv sensor) beside listening to state changes"""
 
     # model parameters
-    observation_duration_minutes: int  # minutes
-    """The time window for calculating current energy production from incoming energy observation."""
-    maximum_latency_minutes: int
-    """Maximum time between source pv power/energy samples before considering an error in data sampling."""
-    history_duration_days: int
-    """Number of (backward) days of data to keep in the model (used to build the estimates for the time forward)."""
     sampling_interval_minutes: int
     """Time resolution of model data"""
+    observation_duration_minutes: int  # minutes
+    """The time window for calculating current energy production from incoming energy observation."""
+    history_duration_days: int
+    """Number of (backward) days of data to keep in the model (used to build the estimates for the time forward)."""
+    refresh_period_minutes: int
+    """Time between model updates (polling of input pv sensor) beside listening to state changes"""
+    maximum_latency_minutes: int
+    """Maximum time between source pv power/energy samples before considering an error in data sampling."""
 
 
 class EntryConfig(ControllerConfig, pmc.EntityConfig, pmc.BaseConfig):
@@ -85,32 +86,35 @@ class Controller(controller.Controller[EntryConfig]):
     )
 
     @staticmethod
-    def get_config_entry_schema(user_input: dict) -> dict:
+    def get_config_entry_schema(user_input: dict):
+
         return hv.entity_schema(
             user_input,
             name="PV energy estimation",
         ) | {
-            hv.optional("pv_energy_entity_id", user_input): hv.sensor_selector(
-                device_class=Sensor.DeviceClass.ENERGY
-            ),
+            # we should allow configuring either pv_power_entity_id or pv_energy_entity_id
+            # but data entry flow looks like not allowing this XOR-like schema
             hv.optional("pv_power_entity_id", user_input): hv.sensor_selector(
                 device_class=Sensor.DeviceClass.POWER
             ),
+            hv.optional("pv_energy_entity_id", user_input): hv.sensor_selector(
+                device_class=Sensor.DeviceClass.ENERGY
+            ),
             hv.optional("weather_entity_id", user_input): hv.weather_selector(),
             hv.required(
-                "refresh_period_minutes", user_input, 5
+                "sampling_interval_minutes", user_input, 10
             ): hv.time_period_selector(unit_of_measurement=hac.UnitOfTime.MINUTES),
             hv.required(
                 "observation_duration_minutes", user_input, 20
             ): hv.time_period_selector(unit_of_measurement=hac.UnitOfTime.MINUTES),
             hv.required(
-                "maximum_latency_minutes", user_input, 1
-            ): hv.time_period_selector(unit_of_measurement=hac.UnitOfTime.MINUTES),
-            hv.required(
                 "history_duration_days", user_input, 14
             ): hv.time_period_selector(unit_of_measurement=hac.UnitOfTime.DAYS, max=30),
             hv.required(
-                "sampling_interval_minutes", user_input, 10
+                "refresh_period_minutes", user_input, 5
+            ): hv.time_period_selector(unit_of_measurement=hac.UnitOfTime.MINUTES),
+            hv.required(
+                "maximum_latency_minutes", user_input, 1
             ): hv.time_period_selector(unit_of_measurement=hac.UnitOfTime.MINUTES),
         }
 
@@ -147,10 +151,10 @@ class Controller(controller.Controller[EntryConfig]):
 
         location, elevation = sun_helpers.get_astral_location(hass)
         self.estimator = estimator_class(
-            history_duration_ts=self.config.get("history_duration_days", 7) * 86400,
             sampling_interval_ts=self.config.get("sampling_interval_minutes", 10) * 60,
             observation_duration_ts=self.config.get("observation_duration_minutes", 20)
             * 60,
+            history_duration_ts=self.config.get("history_duration_days", 7) * 86400,
             maximum_latency_ts=self.config.get("maximum_latency_minutes", 1) * 60,
             astral_observer=astral.sun.Observer(
                 location.latitude, location.longitude, elevation

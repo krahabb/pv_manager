@@ -22,6 +22,10 @@ def required(key: str, user_input, default=None):
         key, description={"suggested_value": user_input.get(key, default)}
     )
 
+def exclusive(key: str, group: str, user_input, default=None):
+    return vol.Exclusive(
+        key, group, description={"suggested_value": user_input.get(key, default)}
+    )
 
 def entity_schema(
     user_input: pmc.EntityConfig | dict = {},

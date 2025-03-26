@@ -1,11 +1,53 @@
 {
     "config": {
+        "abort": {
+            "already_configured": "Entry already configured",
+            "single_instance_allowed": "Already configured. Only a single configuration allowed."
+        },
+        "error": {},
         "step": {
             "user": {
+                "title": "Create configuration",
                 "menu_options": {
                     "energy_calculator": "Energy calculator",
                     "pv_energy_estimator": "PV energy estimator",
                     "pv_power_simulator": "PV power simulator"
+                }
+            },
+            "energy_calculator": {
+                "title": "Energy calculator",
+                "description": "Compute the energy of a power source",
+                "data": {
+                    "name": "Entity name(s)",
+                    "power_entity_id": "Source entity",
+                    "cycle_modes": "Set of 'metering' entities to create",
+                    "integration_period_seconds": "Integration period",
+                    "maximum_latency_seconds": "Maximum latency"
+                }
+            },
+            "pv_energy_estimator": {
+                "title": "PV Energy estimator",
+                "description": "Estimate PV energy production",
+                "data": {
+                    "name": "Entity name(s)",
+                    "pv_power_entity_id": "Source PV power entity",
+                    "pv_energy_entity_id": "Source PV energy entity",
+                    "weather_entity_id": "Weather entity",
+                    "sampling_interval_minutes": "Sampling interval",
+                    "observation_duration_minutes": "Observation period",
+                    "history_duration_days": "History length",
+                    "refresh_period_minutes": "Refresh interval",
+                    "maximum_latency_minutes": "Maximum latency"
+                }
+            },
+            "pv_power_simulator": {
+                "title": "PV power simulator",
+                "description": "Simulate PV power production at site",
+                "data": {
+                    "name": "Entity name",
+                    "native_unit_of_measurement": "Native unit",
+                    "peak_power": "Peak power",
+                    "weather_entity_id": "Weather entity"
                 }
             }
         }
