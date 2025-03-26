@@ -1,6 +1,7 @@
 import typing
 
 from homeassistant.core import callback
+from homeassistant.helpers import entity_registry
 
 from .. import const as pmc, helpers
 
@@ -126,6 +127,9 @@ class Controller[_ConfigT: pmc.BaseConfig](helpers.Loggable):
         self.entities.clear()
         return True
 
+    def get_entity_registry(self):
+        return entity_registry.async_get(self.hass)
+    
     def schedule_async_callback(
         self, delay: float, target: "Callable[..., Coroutine]", *args
     ):

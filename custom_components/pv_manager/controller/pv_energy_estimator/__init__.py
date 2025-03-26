@@ -170,15 +170,17 @@ class Controller(controller.Controller[EntryConfig]):
             native_unit_of_measurement=hac.UnitOfEnergy.WATT_HOUR,
         )
 
-        for _t in range(len(self.estimator.estimations)):
-            Sensor(
-                self,
-                f"{pmc.ConfigEntryType.PV_ENERGY_ESTIMATOR}_{_t}",
-                device_class=Sensor.DeviceClass.ENERGY,
-                state_class=None,
-                name=f"{self.config["name"]} ({_t+1:02})",
-                native_unit_of_measurement=hac.UnitOfEnergy.WATT_HOUR,
+
+        # remove legacy debug entities
+        ent_reg = self.get_entity_registry()
+        for _t in range(24):
+            unique_id = "_".join((self.config_entry.entry_id, f"{pmc.ConfigEntryType.PV_ENERGY_ESTIMATOR}_{_t}"))
+            entity_id = ent_reg.async_get_entity_id(
+                Sensor.PLATFORM, pmc.DOMAIN, unique_id
             )
+            if entity_id:
+                ent_reg.async_remove(entity_id)
+
 
     async def async_init(self):
         self._restore_history_exit = False
@@ -189,14 +191,6 @@ class Controller(controller.Controller[EntryConfig]):
         self._restore_history_task = None
 
         self.estimator.update_estimate()
-        accumulated_energy = 0
-        for _t in range(len(self.estimator.estimations)):
-            accumulated_energy += self.estimator.estimations[_t].energy
-            sensor: Sensor = self.entities[Sensor.PLATFORM][
-                f"{pmc.ConfigEntryType.PV_ENERGY_ESTIMATOR}_{_t}"
-            ]  # type:ignore
-            sensor.update(accumulated_energy)
-
         self.pv_energy_estimator_sensor.update(self.estimator.forecast_today_energy)
 
         self._pv_entity_tracking_unsub = event.async_track_state_change_event(
@@ -276,14 +270,6 @@ class Controller(controller.Controller[EntryConfig]):
                     )
                 ):
                     self.estimator.update_estimate()
-                    accumulated_energy = 0
-                    for _t in range(len(self.estimator.estimations)):
-                        accumulated_energy += self.estimator.estimations[_t].energy
-                        sensor: Sensor = self.entities[Sensor.PLATFORM][
-                            f"{pmc.ConfigEntryType.PV_ENERGY_ESTIMATOR}_{_t}"
-                        ]  # type:ignore
-                        sensor.update(accumulated_energy)
-
                     self.pv_energy_estimator_sensor.update(
                         self.estimator.forecast_today_energy
                     )
@@ -294,11 +280,6 @@ class Controller(controller.Controller[EntryConfig]):
                 self.log_exception(self.DEBUG, e, "updating estimate")
 
         self.pv_energy_estimator_sensor.update(None)
-        for _t in range(len(self.estimator.estimations)):
-            sensor: Sensor = self.entities[Sensor.PLATFORM][
-                f"{pmc.ConfigEntryType.PV_ENERGY_ESTIMATOR}_{_t}"
-            ]  # type:ignore
-            sensor.update(None)
 
     async def _async_update_weather(self, weather_state: "State | None"):
         self.weather_state = weather_state
