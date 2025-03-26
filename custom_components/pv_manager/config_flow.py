@@ -40,16 +40,23 @@ class ConfigSubentryFlow(config_entries.ConfigSubentryFlow):
         )
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema(controller_class.get_config_subentry_schema(self.SUBENTRY_TYPE, user_input)),
+            data_schema=vol.Schema(
+                controller_class.get_config_subentry_schema(
+                    self.SUBENTRY_TYPE, user_input
+                )
+            ),
         )
+
 
 SUBENTRY_FLOW_MAP = {}
 for entry_type, subentry_tuple in pmc.CONFIGENTRY_SUBENTRY_MAP.items():
     subentry_flows = {}
     for subentry_type in subentry_tuple:
+
         class _ConfigSubentryFlow(ConfigSubentryFlow):
             ENTRY_TYPE = entry_type
             SUBENTRY_TYPE = subentry_type
+
         subentry_flows[subentry_type] = _ConfigSubentryFlow
     SUBENTRY_FLOW_MAP[entry_type] = subentry_flows
 
@@ -79,7 +86,15 @@ class ConfigFlow(config_entries.ConfigFlow, domain=pmc.DOMAIN):
             )
 
     async def async_step_user(self, user_input=None):
-        return self.async_show_menu(step_id="user", menu_options=list(pmc.ConfigEntryType))
+        if pmc.DEBUG:
+            menu_options = list(pmc.ConfigEntryType)
+        else:
+            DEBUG_ENTRY_TYPES = {pmc.ConfigEntryType.PV_POWER_SIMULATOR}
+            menu_options = []
+            for entry_type in pmc.ConfigEntryType:
+                if entry_type not in DEBUG_ENTRY_TYPES:
+                    menu_options.append(entry_type)
+        return self.async_show_menu(step_id="user", menu_options=menu_options)
 
     async def async_step_reconfigure(self, user_input):
         self.reconfigure_entry = self._get_reconfigure_entry()
@@ -120,4 +135,3 @@ class ConfigFlow(config_entries.ConfigFlow, domain=pmc.DOMAIN):
                 controller_class.get_config_entry_schema(user_input)
             ),
         )
-

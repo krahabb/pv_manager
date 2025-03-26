@@ -148,10 +148,7 @@ class Controller(controller.Controller[EntryConfig]):
         location, elevation = sun_helpers.get_astral_location(hass)
         self.estimator = estimator_class(
             history_duration_ts=self.config.get("history_duration_days", 7) * 86400,
-            sampling_interval_ts=self.config.get(
-                "sampling_interval_minutes", 10
-            )
-            * 60,
+            sampling_interval_ts=self.config.get("sampling_interval_minutes", 10) * 60,
             observation_duration_ts=self.config.get("observation_duration_minutes", 20)
             * 60,
             maximum_latency_ts=self.config.get("maximum_latency_minutes", 1) * 60,
@@ -196,9 +193,7 @@ class Controller(controller.Controller[EntryConfig]):
             ]  # type:ignore
             sensor.update(accumulated_energy)
 
-        self.pv_energy_estimator_sensor.update(
-            self.estimator.forecast_today_energy
-        )
+        self.pv_energy_estimator_sensor.update(self.estimator.forecast_today_energy)
 
         self._pv_entity_tracking_unsub = event.async_track_state_change_event(
             self.hass,
@@ -372,8 +367,8 @@ class Controller(controller.Controller[EntryConfig]):
                 # just discard it
                 pass
 
-        if helpers.DEBUG:
-            filepath = helpers.DEBUG.get_debug_output_filename(
+        if pmc.DEBUG:
+            filepath = pmc.DEBUG.get_debug_output_filename(
                 self.hass, f"model_{self.pv_source_entity_id}.json"
             )
             dump_model = {
