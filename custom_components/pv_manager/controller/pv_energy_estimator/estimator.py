@@ -263,7 +263,7 @@ class EnergyObserver(Estimator if typing.TYPE_CHECKING else object):
             return observation.value - self.observation_prev.value
         else:
             # assume an energy reset
-            return observation.value
+            return 0
 
     def _new_interpolate_samples(
         self,
