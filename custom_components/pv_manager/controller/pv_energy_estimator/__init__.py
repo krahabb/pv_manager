@@ -28,7 +28,7 @@ from ... import const as pmc, controller, helpers
 from ...helpers import validation as hv
 from ...sensor import Sensor
 from .estimator import EnergyObserver, Observation, PowerObserver, WeatherHistory
-from .estimator_hourly import HourlyEstimator
+from .estimator_heuristic import HeuristicEstimator
 
 if typing.TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -52,7 +52,7 @@ class ControllerConfig(typing.TypedDict):
     """Maximum time between source pv power/energy samples before considering an error in data sampling."""
     history_duration_days: int
     """Number of (backward) days of data to keep in the model (used to build the estimates for the time forward)."""
-    history_sampling_interval_minutes: int
+    sampling_interval_minutes: int
     """Time resolution of model data"""
 
 
@@ -110,7 +110,7 @@ class Controller(controller.Controller[EntryConfig]):
                 "history_duration_days", user_input, 14
             ): hv.time_period_selector(unit_of_measurement=hac.UnitOfTime.DAYS, max=30),
             hv.required(
-                "history_sampling_interval_minutes", user_input, 10
+                "sampling_interval_minutes", user_input, 10
             ): hv.time_period_selector(unit_of_measurement=hac.UnitOfTime.MINUTES),
         }
 
@@ -123,14 +123,16 @@ class Controller(controller.Controller[EntryConfig]):
 
         if "pv_power_entity_id" in self.config:
             estimator_class = type(
-                "PowerObserverHourlyEstimator", (PowerObserver, HourlyEstimator), {}
+                "PowerObserverHourlyEstimator", (PowerObserver, HeuristicEstimator), {}
             )
             self._state_convert_func = PowerConverter.convert
             self._state_convert_unit = hac.UnitOfPower.WATT
             self.pv_source_entity_id = self.config["pv_power_entity_id"]
         elif "pv_energy_entity_id" in self.config:
             estimator_class = type(
-                "EnergyObserverHourlyEstimator", (EnergyObserver, HourlyEstimator), {}
+                "EnergyObserverHourlyEstimator",
+                (EnergyObserver, HeuristicEstimator),
+                {},
             )
             self._state_convert_func = EnergyConverter.convert
             self._state_convert_unit = hac.UnitOfEnergy.WATT_HOUR
@@ -146,8 +148,8 @@ class Controller(controller.Controller[EntryConfig]):
         location, elevation = sun_helpers.get_astral_location(hass)
         self.estimator = estimator_class(
             history_duration_ts=self.config.get("history_duration_days", 7) * 86400,
-            history_sampling_interval_ts=self.config.get(
-                "history_sampling_interval_minutes", 10
+            sampling_interval_ts=self.config.get(
+                "sampling_interval_minutes", 10
             )
             * 60,
             observation_duration_ts=self.config.get("observation_duration_minutes", 20)
@@ -185,6 +187,19 @@ class Controller(controller.Controller[EntryConfig]):
         await self._restore_history_task
         self._restore_history_task = None
 
+        self.estimator.update_estimate()
+        accumulated_energy = 0
+        for _t in range(len(self.estimator.estimations)):
+            accumulated_energy += self.estimator.estimations[_t].energy
+            sensor: Sensor = self.entities[Sensor.PLATFORM][
+                f"{pmc.ConfigEntryType.PV_ENERGY_ESTIMATOR}_{_t}"
+            ]  # type:ignore
+            sensor.update(accumulated_energy)
+
+        self.pv_energy_estimator_sensor.update(
+            self.estimator.forecast_today_energy
+        )
+
         self._pv_entity_tracking_unsub = event.async_track_state_change_event(
             self.hass,
             self.pv_source_entity_id,
@@ -197,7 +212,9 @@ class Controller(controller.Controller[EntryConfig]):
                 self.weather_entity_id,
                 self._weather_tracking_callback,
             )
-            await self._async_update_weather(self.hass.states.get(self.weather_entity_id))
+            await self._async_update_weather(
+                self.hass.states.get(self.weather_entity_id)
+            )
         else:
             self._weather_tracking_unsub = None
 
@@ -235,8 +252,10 @@ class Controller(controller.Controller[EntryConfig]):
 
     @callback
     def _weather_tracking_callback(self, event: "Event[event.EventStateChangedData]"):
-        self.async_create_task(self._async_update_weather(event.data.get("new_state")), "_async_update_weather")
-
+        self.async_create_task(
+            self._async_update_weather(event.data.get("new_state")),
+            "_async_update_weather",
+        )
 
     async def _async_refresh_callback(self):
         self._estimate_callback_unsub = self.schedule_async_callback(
@@ -247,10 +266,9 @@ class Controller(controller.Controller[EntryConfig]):
     def _update_estimate(self, tracked_state: "State | None"):
         if tracked_state:
             try:
-                now_ts = time.time()
-                if self.estimator.process_observation(
+                if self.estimator.add_observation(
                     Observation(
-                        now_ts,
+                        time.time(),
                         self._state_convert_func(
                             float(tracked_state.state),
                             tracked_state.attributes["unit_of_measurement"],
@@ -258,26 +276,20 @@ class Controller(controller.Controller[EntryConfig]):
                         ),
                     )
                 ):
-
-                    accumulate_daily = True
+                    self.estimator.update_estimate()
                     accumulated_energy = 0
-                    daily_energy = 0
                     for _t in range(len(self.estimator.estimations)):
-                        _energy = self.estimator.estimations[_t].energy
-                        accumulated_energy += _energy
-                        if accumulate_daily:
-                            # this is just a dumb trick to compute total energy estimated production until sunset
-                            if _energy > 0:
-                                daily_energy += _energy
-                            else:
-                                accumulate_daily = False
+                        accumulated_energy += self.estimator.estimations[_t].energy
                         sensor: Sensor = self.entities[Sensor.PLATFORM][
                             f"{pmc.ConfigEntryType.PV_ENERGY_ESTIMATOR}_{_t}"
                         ]  # type:ignore
                         sensor.update(accumulated_energy)
 
-                    self.pv_energy_estimator_sensor.update(daily_energy)
-                    return
+                    self.pv_energy_estimator_sensor.update(
+                        self.estimator.forecast_today_energy
+                    )
+
+                return
 
             except Exception as e:
                 self.log_exception(self.DEBUG, e, "updating estimate")
@@ -304,13 +316,13 @@ class Controller(controller.Controller[EntryConfig]):
                 blocking=True,
                 return_response=True,
             )
-            #self.log(self.DEBUG, "updated weather forecasts %s", str(service_response))
+            # self.log(self.DEBUG, "updated weather forecasts %s", str(service_response))
 
     def _restore_history(self):
         if self._restore_history_exit:
             return
         now_ts = time.time()
-        observation_start_ts = now_ts - self.estimator.observation_duration_ts
+
         history_start_time = helpers.datetime_from_epoch(
             now_ts - self.estimator.history_duration_ts
         )
@@ -345,32 +357,16 @@ class Controller(controller.Controller[EntryConfig]):
             if self._restore_history_exit:
                 return
             try:
-                state_ts = state.last_updated_timestamp
-                if state_ts < observation_start_ts:
-                    # bypass observation/estimation steps since these are too old
-                    self.estimator.add_observation(
-                        Observation(
-                            state_ts,
-                            self._state_convert_func(
-                                float(state.state),
-                                state.attributes["unit_of_measurement"],
-                                self._state_convert_unit,
-                            ),
-                        )
+                self.estimator.add_observation(
+                    Observation(
+                        state.last_updated_timestamp,
+                        self._state_convert_func(
+                            float(state.state),
+                            state.attributes["unit_of_measurement"],
+                            self._state_convert_unit,
+                        ),
                     )
-                else:
-                    # start populating observations and estimates
-                    # so the estimator is ready when HA restarts during the day
-                    self.estimator.process_observation(
-                        Observation(
-                            state_ts,
-                            self._state_convert_func(
-                                float(state.state),
-                                state.attributes["unit_of_measurement"],
-                                self._state_convert_unit,
-                            ),
-                        )
-                    )
+                )
             except:
                 # in case the state doesn't represent a proper value
                 # just discard it
