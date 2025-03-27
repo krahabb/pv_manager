@@ -12,7 +12,7 @@ from . import const as pmc
 from .controller import Controller
 
 if typing.TYPE_CHECKING:
-    from homeassistant.config_entries import ConfigEntry
+    from homeassistant.config_entries import ConfigEntry, ConfigSubentry
 
 
 class ConfigSubentryFlow(config_entries.ConfigSubentryFlow):
@@ -21,20 +21,34 @@ class ConfigSubentryFlow(config_entries.ConfigSubentryFlow):
     ENTRY_TYPE: typing.ClassVar[pmc.ConfigEntryType]
     SUBENTRY_TYPE: typing.ClassVar[pmc.ConfigSubentryType]
 
+    reconfigure_subentry: "ConfigSubentry | None" = None
+
     """
     TODO: self.handler should be a tuple like: (entry_id, subentry_type)
     so we could simplify our generalization
     """
 
-    async def async_step_user(self, user_input: pmc.SensorConfig | dict | None):
-        """User flow to add a new location."""
-        if user_input:
-            return self.async_create_entry(
-                title=user_input.get("name", self.SUBENTRY_TYPE),
-                data=user_input,
-            )
+    async def async_step_user(self, user_input):
 
-        user_input = {}
+        if user_input:
+            if self.reconfigure_subentry:
+                return self.async_update_and_abort(
+                    self._get_reconfigure_entry(),
+                    self.reconfigure_subentry,
+                    title=user_input.get("name", self.SUBENTRY_TYPE),
+                    data=user_input,
+                )
+            else:
+                return self.async_create_entry(
+                    title=user_input.get("name", self.SUBENTRY_TYPE),
+                    data=user_input,
+                )
+
+        if self.reconfigure_subentry:
+            user_input = self.reconfigure_subentry.data
+        else:
+            user_input = {}
+
         controller_class = await Controller.get_controller_class(
             self.hass, self.ENTRY_TYPE
         )
@@ -48,17 +62,21 @@ class ConfigSubentryFlow(config_entries.ConfigSubentryFlow):
         )
 
 
-SUBENTRY_FLOW_MAP = {}
+    async def async_step_reconfigure(self, user_input: dict | None):
+        self.reconfigure_subentry = self._get_reconfigure_subentry()
+        return await self.async_step_user(None)
+
+
+SUBENTRY_FLOW_MAP = {entry_type: {} for entry_type in pmc.ConfigEntryType}
 for entry_type, subentry_tuple in pmc.CONFIGENTRY_SUBENTRY_MAP.items():
-    subentry_flows = {}
+    subentry_flows = SUBENTRY_FLOW_MAP[entry_type]
     for subentry_type in subentry_tuple:
 
         class _ConfigSubentryFlow(ConfigSubentryFlow):
             ENTRY_TYPE = entry_type
             SUBENTRY_TYPE = subentry_type
 
-        subentry_flows[subentry_type] = _ConfigSubentryFlow
-    SUBENTRY_FLOW_MAP[entry_type] = subentry_flows
+        subentry_flows[subentry_type.value] = _ConfigSubentryFlow
 
 
 class ConfigFlow(config_entries.ConfigFlow, domain=pmc.DOMAIN):
@@ -110,6 +128,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=pmc.DOMAIN):
             if self.reconfigure_entry:
                 return self.async_update_reload_and_abort(
                     self.reconfigure_entry,
+                    title=user_input.get("name", controller_type),
                     data=user_input,
                 )
             else:

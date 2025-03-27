@@ -51,5 +51,24 @@
                 }
             }
         }
+    },
+    "config_subentries": {
+        "pv_energy_estimator_sensor": {
+            "initiate_flow": {
+                "user": "Forecast sensor"
+            },
+            "step": {
+                "user": {
+                    "title": "Add forecast sensor",
+                    "description": "Configure the forecasted energy sensor",
+                    "data": {
+                        "name": "Entity name",
+                        "forecast_duration_hours": "Forecast duration"
+                    }
+                }
+            },
+            "error": {},
+            "abort": {}
+        }
     }
 }

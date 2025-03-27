@@ -51,15 +51,13 @@ class ConfigEntryType(enum.StrEnum):
 
 
 class ConfigSubentryType(enum.StrEnum):
-    # PV_ENERGY_SENSOR = enum.auto()
-    pass
+    PV_ENERGY_ESTIMATOR_SENSOR = enum.auto()
 
 
 CONFIGENTRY_SUBENTRY_MAP: dict[ConfigEntryType, tuple[ConfigSubentryType, ...]] = {
-    ConfigEntryType.ENERGY_CALCULATOR: (),
-    # ConfigEntryType.PV_ENERGY_CALCULATOR: (ConfigSubentryType.PV_ENERGY_SENSOR,),
-    ConfigEntryType.PV_ENERGY_ESTIMATOR: (),
-    ConfigEntryType.PV_POWER_SIMULATOR: (),
+    ConfigEntryType.PV_ENERGY_ESTIMATOR: (
+        ConfigSubentryType.PV_ENERGY_ESTIMATOR_SENSOR,
+    ),
 }
 
 CONF_TYPE: typing.Final = "type"
@@ -80,9 +78,14 @@ CONF_LOGGING_LEVEL_OPTIONS: typing.Final = {
 }
 
 
-class BaseConfig(typing.TypedDict):
+class EntryConfig(typing.TypedDict):
+    """Base (common) definition for ConfigEntry.data"""
     logging_level: typing.NotRequired[int]
 
+
+class SubentryConfig(typing.TypedDict):
+    """Base (common) definition for ConfigSubentry.data"""
+    pass
 
 class EntityConfig(typing.TypedDict):
     name: str

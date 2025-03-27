@@ -41,7 +41,7 @@ class ControllerConfig(typing.TypedDict):
     since this might be indication of a sensor failure"""
 
 
-class EntryConfig(ControllerConfig, pmc.EntityConfig, pmc.BaseConfig):
+class EntryConfig(ControllerConfig, pmc.EntityConfig, pmc.EntryConfig):
     """TypedDict for ConfigEntry data"""
 
 
@@ -235,11 +235,15 @@ class Controller(controller.Controller[EntryConfig]):
             hv.required("power_entity_id", user_input): hv.sensor_selector(
                 device_class=EnergySensor.DeviceClass.POWER
             ),
-            hv.required("cycle_modes", user_input, [CycleMode.NONE]): hv.select_selector(
-                options=list(CycleMode), multiple=True
-            ),
-            hv.required("integration_period_seconds", user_input, 5): hv.time_period_selector(),
-            hv.optional("maximum_latency_seconds", user_input, 300): hv.time_period_selector(),
+            hv.required(
+                "cycle_modes", user_input, [CycleMode.NONE]
+            ): hv.select_selector(options=list(CycleMode), multiple=True),
+            hv.required(
+                "integration_period_seconds", user_input, 5
+            ): hv.time_period_selector(),
+            hv.optional(
+                "maximum_latency_seconds", user_input, 300
+            ): hv.time_period_selector(),
         }
 
     def __init__(self, hass: "HomeAssistant", config_entry: "ConfigEntry"):

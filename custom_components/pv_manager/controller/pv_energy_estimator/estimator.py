@@ -14,6 +14,7 @@ class Observation:
     time_ts: float
     value: float
 
+
 @dataclasses.dataclass(slots=True)
 class WeatherHistory:
     time: dt.datetime
@@ -51,10 +52,14 @@ class ObservationHistory:
 
     SUN_NOT_SET = -360
 
-
-    def __init__(self, observation: Observation, sampling_interval_ts: int, weather: WeatherHistory | None):
+    def __init__(
+        self,
+        observation: Observation,
+        sampling_interval_ts: int,
+        weather: WeatherHistory | None,
+    ):
         time_ts = int(observation.time_ts)
-        time_ts -= (time_ts % sampling_interval_ts)
+        time_ts -= time_ts % sampling_interval_ts
         self.time = helpers.datetime_from_epoch(time_ts)
         self.time_ts = time_ts
         self.time_next_ts = time_ts + sampling_interval_ts
@@ -84,7 +89,7 @@ class Estimator:
         "_today_local_ts",
         "_tomorrow_local_ts",
         "today_energy",
-        "forecast_today_energy",
+        "today_forecast_energy",
         "tomorrow_forecast_energy",
     )
 
@@ -116,7 +121,7 @@ class Estimator:
         self._today_local_ts = 0
         self._tomorrow_local_ts = 0
         self.today_energy = 0
-        self.forecast_today_energy = None
+        self.today_forecast_energy = None
         self.tomorrow_forecast_energy = None
 
     def get_observed_energy(self) -> tuple[float, float, float]:
@@ -131,7 +136,6 @@ class Estimator:
             self.observed_samples[0].time_ts,
             self.observed_samples[-1].time_next_ts,
         )
-
 
     def _history_sample_add(self, history_sample: ObservationHistory):
         pass
@@ -175,7 +179,11 @@ class Estimator:
                 return False
             else:
                 history_sample_prev = self.history_sample_curr
-                self.history_sample_curr = ObservationHistory(observation, self.sampling_interval_ts, self.get_weather_at(observation.time_ts))
+                self.history_sample_curr = ObservationHistory(
+                    observation,
+                    self.sampling_interval_ts,
+                    self.get_weather_at(observation.time_ts),
+                )
                 if self.history_sample_curr.time_ts == history_sample_prev.time_next_ts:
                     # previous and next samples in history are contiguous in time so we try
                     # to interpolate energy accumulation in between
@@ -225,7 +233,11 @@ class Estimator:
             if e.name == "history_sample_curr":
                 # expected right at the first call..use this to initialize the state
                 # and avoid needless checks on subsequent calls
-                self.history_sample_curr = ObservationHistory(observation, self.sampling_interval_ts, self.get_weather_at(observation.time_ts))
+                self.history_sample_curr = ObservationHistory(
+                    observation,
+                    self.sampling_interval_ts,
+                    self.get_weather_at(observation.time_ts),
+                )
                 self.observation_prev = observation
                 return False
             else:
@@ -252,6 +264,14 @@ class Estimator:
 
         return weather_prev
 
+    def update_estimate(self):
+        pass
+
+    def get_estimated_energy(self, time_begin_ts: float, time_end_ts: float) -> float:
+        """
+        Returns the estimated PV energy production in the (forward) time interval at current estimator state.
+        """
+        return 0
 
 class EnergyObserver(Estimator if typing.TYPE_CHECKING else object):
     """Mixin class to add to the actual Estimator in order to process energy input observations."""
@@ -290,7 +310,6 @@ class EnergyObserver(Estimator if typing.TYPE_CHECKING else object):
             sample_curr.energy += power_avg * (
                 observation_curr.time_ts - sample_curr.time_ts
             )
-
 
 
 class PowerObserver(Estimator if typing.TYPE_CHECKING else object):

@@ -5,7 +5,6 @@ Controller for pv energy production estimation
 import datetime as dt
 import time
 import typing
-import voluptuous as vol
 
 import astral
 import astral.sun
@@ -24,6 +23,7 @@ from homeassistant.util.unit_conversion import (
     PowerConverter,
     TemperatureConverter,
 )
+import voluptuous as vol
 
 from ... import const as pmc, controller, helpers
 from ...helpers import validation as hv
@@ -34,6 +34,8 @@ from .estimator_heuristic import HeuristicEstimator
 if typing.TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import Event, HomeAssistant, State
+
+    from ...helpers.entity import EntityArgs
 
 
 class ControllerConfig(typing.TypedDict):
@@ -57,8 +59,37 @@ class ControllerConfig(typing.TypedDict):
     """Maximum time between source pv power/energy samples before considering an error in data sampling."""
 
 
-class EntryConfig(ControllerConfig, pmc.EntityConfig, pmc.BaseConfig):
+class EntryConfig(ControllerConfig, pmc.EntityConfig, pmc.EntryConfig):
     """TypedDict for ConfigEntry data"""
+
+
+class PVEnergyEstimatorSensorConfig(pmc.EntityConfig, pmc.SubentryConfig):
+    """Configure additional estimation sensors reporting forecasted energy over an amount of time."""
+
+    forecast_duration_hours: int
+
+
+class EnergyEstimatorSensor(Sensor):
+
+    __slots__ = ("forecast_duration_ts",)
+
+    def __init__(
+        self,
+        controller,
+        id,
+        *,
+        forecast_duration_ts: float = 0,
+        **kwargs: "typing.Unpack[EntityArgs]",
+    ):
+        self.forecast_duration_ts = forecast_duration_ts
+        super().__init__(
+            controller,
+            id,
+            device_class=Sensor.DeviceClass.ENERGY,
+            state_class=None,
+            native_unit_of_measurement=hac.UnitOfEnergy.WATT_HOUR,
+            **kwargs,
+        )
 
 
 class Controller(controller.Controller[EntryConfig]):
@@ -75,6 +106,7 @@ class Controller(controller.Controller[EntryConfig]):
         "estimator",
         "weather_state",
         "pv_energy_estimator_sensor",
+        "estimator_sensors",
         "_sun_offset",
         "_state_convert_func",
         "_state_convert_unit",
@@ -85,6 +117,7 @@ class Controller(controller.Controller[EntryConfig]):
         "_restore_history_exit",
     )
 
+    # interface: Controller
     @staticmethod
     def get_config_entry_schema(user_input: dict):
 
@@ -117,6 +150,23 @@ class Controller(controller.Controller[EntryConfig]):
                 "maximum_latency_minutes", user_input, 1
             ): hv.time_period_selector(unit_of_measurement=hac.UnitOfTime.MINUTES),
         }
+
+    @staticmethod
+    def get_config_subentry_schema(subentry_type: str, user_input):
+        match subentry_type:
+            case pmc.ConfigSubentryType.PV_ENERGY_ESTIMATOR_SENSOR:
+                return hv.entity_schema(
+                    user_input,
+                    name="PV energy estimation",
+                ) | {
+                    hv.required(
+                        "forecast_duration_hours", user_input, 1
+                    ): hv.time_period_selector(
+                        min=1, unit_of_measurement=hac.UnitOfTime.HOURS
+                    ),
+                }
+
+        return {}
 
     def __init__(self, hass: "HomeAssistant", config_entry: "ConfigEntry"):
         super().__init__(hass, config_entry)
@@ -161,26 +211,38 @@ class Controller(controller.Controller[EntryConfig]):
             ),
         )
 
-        self.pv_energy_estimator_sensor = Sensor(
+        self.pv_energy_estimator_sensor = EnergyEstimatorSensor(
             self,
             pmc.ConfigEntryType.PV_ENERGY_ESTIMATOR,
-            device_class=Sensor.DeviceClass.ENERGY,
-            state_class=None,
-            name=self.config["name"],
-            native_unit_of_measurement=hac.UnitOfEnergy.WATT_HOUR,
+            name=self.config.get("name"),
         )
-
 
         # remove legacy debug entities
         ent_reg = self.get_entity_registry()
         for _t in range(24):
-            unique_id = "_".join((self.config_entry.entry_id, f"{pmc.ConfigEntryType.PV_ENERGY_ESTIMATOR}_{_t}"))
+            unique_id = "_".join(
+                (
+                    self.config_entry.entry_id,
+                    f"{pmc.ConfigEntryType.PV_ENERGY_ESTIMATOR}_{_t}",
+                )
+            )
             entity_id = ent_reg.async_get_entity_id(
                 Sensor.PLATFORM, pmc.DOMAIN, unique_id
             )
             if entity_id:
                 ent_reg.async_remove(entity_id)
 
+        self.estimator_sensors: dict[str, EnergyEstimatorSensor] = {}
+        for subentry_id, config_subentry in config_entry.subentries.items():
+            match config_subentry.subentry_type:
+                case pmc.ConfigSubentryType.PV_ENERGY_ESTIMATOR_SENSOR:
+                    self.estimator_sensors[subentry_id] = EnergyEstimatorSensor(
+                        self,
+                        f"{pmc.ConfigSubentryType.PV_ENERGY_ESTIMATOR_SENSOR}_{subentry_id}",
+                        name=config_subentry.data.get("name"),
+                        config_subentry_id=subentry_id,
+                        forecast_duration_ts=config_subentry.data.get("forecast_duration_hours", 0) * 3600,
+                    )
 
     async def async_init(self):
         self._restore_history_exit = False
@@ -190,8 +252,7 @@ class Controller(controller.Controller[EntryConfig]):
         await self._restore_history_task
         self._restore_history_task = None
 
-        self.estimator.update_estimate()
-        self.pv_energy_estimator_sensor.update(self.estimator.forecast_today_energy)
+        self._update_estimate()
 
         self._pv_entity_tracking_unsub = event.async_track_state_change_event(
             self.hass,
@@ -215,7 +276,7 @@ class Controller(controller.Controller[EntryConfig]):
             self.refresh_period_ts, self._async_refresh_callback
         )
 
-        self._update_estimate(self.hass.states.get(self.pv_source_entity_id))
+        self._process_observation(self.hass.states.get(self.pv_source_entity_id))
 
         await super().async_init()
 
@@ -236,12 +297,49 @@ class Controller(controller.Controller[EntryConfig]):
                     await self._restore_history_task
                 self._restore_history_task = None
             self.pv_energy_estimator_sensor: Sensor = None  # type: ignore
+            self.estimator_sensors.clear()
+            self.estimator: HeuristicEstimator = None  # type: ignore
             return True
         return False
 
+    async def _entry_update_listener(
+        self, hass: "HomeAssistant", config_entry: "ConfigEntry"
+    ):
+        # check if config subentries changed
+        estimator_sensors = dict(self.estimator_sensors)
+        for subentry_id, config_subentry in config_entry.subentries.items():
+            match config_subentry.subentry_type:
+                case pmc.ConfigSubentryType.PV_ENERGY_ESTIMATOR_SENSOR:
+                    subentry_config = config_subentry.data
+                    if subentry_id in estimator_sensors:
+                        # entry already present: just update it
+                        estimator_sensor = estimator_sensors.pop(subentry_id)
+                        estimator_sensor.name = config_subentry.data.get("name", estimator_sensor.id)
+                        estimator_sensor.forecast_duration_ts = subentry_config.get("forecast_duration_hours", 1) * 3600
+                    else:
+                        # TODO: this isnt working as of now since we need to forward platform entry setup
+                        self.estimator_sensors[subentry_id] = EnergyEstimatorSensor(
+                            self,
+                            f"{pmc.ConfigSubentryType.PV_ENERGY_ESTIMATOR_SENSOR}_{subentry_id}",
+                            name=subentry_config.get("name"),
+                            config_subentry_id=subentry_id,
+                            forecast_duration_ts=subentry_config.get("forecast_duration_hours", 0) * 3600,
+                        )
+
+        for subentry_id in estimator_sensors.keys():
+            # these were removed subentries
+            estimator_sensor = self.estimator_sensors.pop(subentry_id)
+            self.entities[Sensor.PLATFORM].pop(estimator_sensor.id)
+
+        await super()._entry_update_listener(hass, config_entry)
+
+
+
+
+    # interface: self
     @callback
     def _pv_entity_tracking_callback(self, event: "Event[event.EventStateChangedData]"):
-        self._update_estimate(event.data.get("new_state"))
+        self._process_observation(event.data.get("new_state"))
 
     @callback
     def _weather_tracking_callback(self, event: "Event[event.EventStateChangedData]"):
@@ -254,9 +352,9 @@ class Controller(controller.Controller[EntryConfig]):
         self._estimate_callback_unsub = self.schedule_async_callback(
             self.refresh_period_ts, self._async_refresh_callback
         )
-        self._update_estimate(self.hass.states.get(self.pv_source_entity_id))
+        self._process_observation(self.hass.states.get(self.pv_source_entity_id))
 
-    def _update_estimate(self, tracked_state: "State | None"):
+    def _process_observation(self, tracked_state: "State | None"):
         if tracked_state:
             try:
                 if self.estimator.add_observation(
@@ -269,17 +367,20 @@ class Controller(controller.Controller[EntryConfig]):
                         ),
                     )
                 ):
-                    self.estimator.update_estimate()
-                    self.pv_energy_estimator_sensor.update(
-                        self.estimator.forecast_today_energy
-                    )
+                    self._update_estimate()
 
                 return
 
             except Exception as e:
                 self.log_exception(self.DEBUG, e, "updating estimate")
 
-        self.pv_energy_estimator_sensor.update(None)
+    def _update_estimate(self):
+        self.estimator.update_estimate()
+        self.pv_energy_estimator_sensor.update(self.estimator.today_forecast_energy)
+
+        now = time.time()
+        for sensor in self.estimator_sensors.values():
+            sensor.update(self.estimator.get_estimated_energy(now, now + sensor.forecast_duration_ts))
 
     async def _async_update_weather(self, weather_state: "State | None"):
         self.weather_state = weather_state

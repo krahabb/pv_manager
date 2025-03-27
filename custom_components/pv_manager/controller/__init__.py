@@ -16,7 +16,7 @@ if typing.TYPE_CHECKING:
     from ..helpers.entity import Entity
 
 
-class Controller[_ConfigT: pmc.BaseConfig](helpers.Loggable):
+class Controller[_ConfigT: pmc.EntryConfig](helpers.Loggable):
     """Base controller class for managing ConfigEntry behavior."""
 
     TYPE: typing.ClassVar[pmc.ConfigEntryType]
@@ -129,7 +129,7 @@ class Controller[_ConfigT: pmc.BaseConfig](helpers.Loggable):
 
     def get_entity_registry(self):
         return entity_registry.async_get(self.hass)
-    
+
     def schedule_async_callback(
         self, delay: float, target: "Callable[..., Coroutine]", *args
     ):

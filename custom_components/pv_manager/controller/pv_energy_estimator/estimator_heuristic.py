@@ -76,13 +76,12 @@ class HeuristicEstimator(Estimator):
 
     history_samples: deque[ObservationHistory]
     model: dict[int, EnergyModel]
-    estimations: list[HourlyEnergyEstimation]
 
     __slots__ = (
         "astral_observer",
         "history_samples",
         "model",
-        "estimations",
+        "current_energy_ratio",
     )
 
     def __init__(
@@ -105,8 +104,8 @@ class HeuristicEstimator(Estimator):
         self.astral_observer = astral_observer
 
         self.history_samples: typing.Final = deque()
-        self.estimations: typing.Final = [HourlyEnergyEstimation() for _t in range(24)]
         self.model: typing.Final = {}
+        self.current_energy_ratio = 1
 
     def update_estimate(self):
         """Process a new sample trying to update the forecast of energy production."""
@@ -119,26 +118,15 @@ class HeuristicEstimator(Estimator):
         )
         if missing or (estimated_observed_energy <= 0):
             # no energy in our model at observation time
-            ratio = 1
+            self.current_energy_ratio = 1
         else:
             # using recent observed energy to 'modulate' prediction (key part of this heuristic estimator)
-            ratio = observed_energy / estimated_observed_energy
+            self.current_energy_ratio = observed_energy / estimated_observed_energy
 
-        today_forecast_energy, missing = self._get_estimated_energy_max(
-            observed_end_ts, self._tomorrow_local_ts
-        )
-        self.forecast_today_energy = self.today_energy + today_forecast_energy * ratio
+        self.today_forecast_energy = self.today_energy + self.get_estimated_energy(observed_end_ts, self._tomorrow_local_ts)
 
-        estimation_time_begin_ts = observed_end_ts
-        for _t in range(len(self.estimations)):
-            estimation_time_end_ts = estimation_time_begin_ts + 3600
-            estimated_energy, missing = self._get_estimated_energy_max(
-                estimation_time_begin_ts, estimation_time_end_ts
-            )
-            self.estimations[_t].energy = estimated_energy * ratio
-
-            estimation_time_begin_ts = estimation_time_end_ts
-
+    def get_estimated_energy(self, time_begin_ts: float, time_end_ts: float) -> float:
+        return self._get_estimated_energy_max(time_begin_ts, time_end_ts)[0] * self.current_energy_ratio
 
     def _get_estimated_energy_max(self, time_begin_ts: float, time_end_ts: float):
 

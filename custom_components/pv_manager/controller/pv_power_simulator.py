@@ -20,7 +20,7 @@ if typing.TYPE_CHECKING:
     from homeassistant.helpers.event import EventStateChangedData
 
 
-class EntryConfig(pmc.SensorConfig, pmc.BaseConfig):
+class EntryConfig(pmc.SensorConfig, pmc.EntryConfig):
     """ConfigEntry data"""
 
     peak_power: float

@@ -10,7 +10,7 @@ if typing.TYPE_CHECKING:
 
     class EntityArgs(typing.TypedDict):
         config_subentry_id: typing.NotRequired[str]
-        name: typing.NotRequired[str]
+        name: typing.NotRequired[str | None]
         # translation_key: typing.NotRequired[str]
 
 
@@ -35,7 +35,7 @@ class Entity(Loggable, entity.Entity if typing.TYPE_CHECKING else object):
     ):
         self.controller = controller
         self.config_subentry_id = kwargs.pop("config_subentry_id", None)
-        self.name = kwargs.pop("name", id)
+        self.name = kwargs.pop("name", None) or id
         self.should_poll = False
         self.unique_id = "_".join((controller.config_entry.entry_id, id))
         self._added_to_hass = False
