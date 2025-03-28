@@ -9,8 +9,8 @@ import typing
 import astral
 import astral.sun
 from homeassistant import const as hac
-from homeassistant.components.recorder import get_instance as recorder_instance, history
 from homeassistant.components import weather
+from homeassistant.components.recorder import get_instance as recorder_instance, history
 from homeassistant.core import callback
 from homeassistant.helpers import (
     event,

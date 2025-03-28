@@ -21,7 +21,6 @@ class TimeSpanEnergyModel:
 
     sample_max: ObservationHistory
 
-
     energy_max: float
 
     # initial value means 100% cloud_coverage would reduce output by 80%
@@ -30,7 +29,7 @@ class TimeSpanEnergyModel:
 
     # 'learning rate'
     energy_lr: typing.ClassVar = 0.2
-    Wc_lr: typing.ClassVar = 0.0001
+    Wc_lr: typing.ClassVar = 0.0000005
 
     """
     Trying to implement a very basic linear model where
@@ -52,7 +51,9 @@ class TimeSpanEnergyModel:
         self.sample_max = sample
         cloud_coverage = sample.cloud_coverage
         if cloud_coverage is not None:
-            self.energy_max = sample.energy / (1 - TimeSpanEnergyModel.Wc * cloud_coverage)
+            self.energy_max = sample.energy / (
+                1 - TimeSpanEnergyModel.Wc * cloud_coverage
+            )
         else:
             self.energy_max = sample.energy
 
@@ -67,8 +68,12 @@ class TimeSpanEnergyModel:
             error = energy_estimate - sample.energy
 
             cloud_coverage = sample.cloud_coverage
-            if cloud_coverage is not None:
-                TimeSpanEnergyModel.Wc += error * (cloud_coverage / self.energy_max) * TimeSpanEnergyModel.Wc_lr
+            if cloud_coverage:
+                TimeSpanEnergyModel.Wc += (
+                    error
+                    * (cloud_coverage / self.energy_max)
+                    * TimeSpanEnergyModel.Wc_lr
+                )
                 if TimeSpanEnergyModel.Wc > TimeSpanEnergyModel.Wc_max:
                     TimeSpanEnergyModel.Wc = TimeSpanEnergyModel.Wc_max
                 elif TimeSpanEnergyModel.Wc < 0.0:
@@ -84,7 +89,6 @@ class TimeSpanEnergyModel:
         if cloud_coverage is not None:
             return self.energy_max * (1 - TimeSpanEnergyModel.Wc * cloud_coverage)
         return self.energy_max
-
 
     def pop_sample(self, sample: ObservationHistory):
         try:
@@ -183,10 +187,16 @@ class HeuristicEstimator(Estimator):
             self.observed_ratio = observed_energy / estimated_observed_energy_max
         self.observed_ratio_ts = observed_end_ts
 
-        self.today_forecast_energy = self.today_energy + self.get_estimated_energy(observed_end_ts, self._tomorrow_local_ts)
-        self.tomorrow_forecast_energy = self.get_estimated_energy(self._tomorrow_local_ts, self._tomorrow_local_ts + 86400)
+        self.today_forecast_energy = self.today_energy + self.get_estimated_energy(
+            observed_end_ts, self._tomorrow_local_ts
+        )
+        self.tomorrow_forecast_energy = self.get_estimated_energy(
+            self._tomorrow_local_ts, self._tomorrow_local_ts + 86400
+        )
 
-    def get_estimated_energy(self, time_begin_ts: float|int, time_end_ts: float|int) -> float:
+    def get_estimated_energy(
+        self, time_begin_ts: float | int, time_end_ts: float | int
+    ) -> float:
 
         weather_forecast = self.get_weather_forecast_at(time_begin_ts)
         if weather_forecast:
@@ -206,10 +216,14 @@ class HeuristicEstimator(Estimator):
             # How much this 'observed_ratio' should stand depends on the weather though with
             # partly_cloudy or variable weather in general being the more erratic.
             observed_ratio = self.observed_ratio
-            weight_or = 1 # if time_begin_ts == self.observed_ratio_ts
-            weight_or_decay = self.sampling_interval_ts / (3600 * 4) # fixed 4 hours decay
+            weight_or = 1  # if time_begin_ts == self.observed_ratio_ts
+            weight_or_decay = self.sampling_interval_ts / (
+                3600 * 4
+            )  # fixed 4 hours decay
             if time_begin_ts > self.observed_ratio_ts:
-                weight_or -= ((time_begin_ts - self.observed_ratio_ts) / self.sampling_interval_ts) * weight_or_decay
+                weight_or -= (
+                    (time_begin_ts - self.observed_ratio_ts) / self.sampling_interval_ts
+                ) * weight_or_decay
                 if weight_or < weight_or_decay:
                     weight_or = 0
 
@@ -218,20 +232,22 @@ class HeuristicEstimator(Estimator):
                 try:
                     model = self.model[model_time_ts % 86400]
                     if weight_or:
-                        model_energy = model.energy_max * observed_ratio * weight_or + model.get_energy_estimate(weather_forecast) * (1 - weight_or)
+                        model_energy = (
+                            model.energy_max * observed_ratio * weight_or
+                            + model.get_energy_estimate(weather_forecast)
+                            * (1 - weight_or)
+                        )
                         if weight_or > weight_or_decay:
                             weight_or -= weight_or_decay
                         else:
                             weight_or = 0
-                    else: # save some calc when not blending anymore
+                    else:  # save some calc when not blending anymore
                         model_energy = model.get_energy_estimate(weather_forecast)
                     if time_end_ts < model_time_next_ts:
                         energy += model_energy * (time_end_ts - time_begin_ts)
                         break
                     else:
-                        energy += model_energy * (
-                            model_time_next_ts - time_begin_ts
-                        )
+                        energy += model_energy * (model_time_next_ts - time_begin_ts)
                 except KeyError:
                     # no energy in model
                     pass
@@ -244,9 +260,14 @@ class HeuristicEstimator(Estimator):
 
             return energy / self.sampling_interval_ts
         else:
-            return self._get_estimated_energy_max(time_begin_ts, time_end_ts)[0] * self.observed_ratio
+            return (
+                self._get_estimated_energy_max(time_begin_ts, time_end_ts)[0]
+                * self.observed_ratio
+            )
 
-    def _get_estimated_energy_max(self, time_begin_ts: float|int, time_end_ts: float|int):
+    def _get_estimated_energy_max(
+        self, time_begin_ts: float | int, time_end_ts: float | int
+    ):
         """Computes the 'maximum' expected energy in the time window."""
         energy = 0
         missing = False
@@ -262,9 +283,7 @@ class HeuristicEstimator(Estimator):
                     energy += model.energy_max * (time_end_ts - time_begin_ts)
                     break
                 else:
-                    energy += model.energy_max * (
-                        model_time_next_ts - time_begin_ts
-                    )
+                    energy += model.energy_max * (model_time_next_ts - time_begin_ts)
             except KeyError:
                 # no energy in model
                 missing = True
