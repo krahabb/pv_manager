@@ -19,9 +19,10 @@ class Observation:
 class WeatherHistory:
     time: dt.datetime
     time_ts: float
-    temperature: float  # °C
+    temperature: float | None  # °C
     cloud_coverage: float | None  # %
     visibility: float | None  # km
+    next: "WeatherHistory | None" = None
 
 
 @dataclasses.dataclass(slots=True)
@@ -68,6 +69,10 @@ class ObservationHistory:
         self.weather = weather
         self.sun_azimuth = self.sun_zenith = self.SUN_NOT_SET
 
+    @property
+    def cloud_coverage(self):
+        return self.weather.cloud_coverage if self.weather else None
+
 
 class Estimator:
     """
@@ -83,9 +88,10 @@ class Estimator:
         "maximum_latency_ts",
         "local_offset_ts",
         "observed_samples",
-        "weather_samples",
-        "history_sample_curr",
-        "observation_prev",
+        "weather_history",
+        "weather_forecasts",
+        "_history_sample_curr",
+        "_observation_prev",
         "_today_local_ts",
         "_tomorrow_local_ts",
         "today_energy",
@@ -113,10 +119,11 @@ class Estimator:
         self.local_offset_ts: typing.Final = local_offset_ts
 
         self.observed_samples: typing.Final[deque[ObservationHistory]] = deque()
-        self.weather_samples: typing.Final[deque[WeatherHistory]] = deque()
+        self.weather_history: typing.Final[deque[WeatherHistory]] = deque()
+        self.weather_forecasts: list[WeatherHistory] = []
         # do not define here..we're relying on AttributeError for proper initialization
-        # self.history_sample_curr = None
-        # self.observation_prev = None
+        # self._history_sample_curr = None
+        # self._observation_prev = None
 
         self._today_local_ts = 0
         self._tomorrow_local_ts = 0
@@ -127,15 +134,19 @@ class Estimator:
     def get_observed_energy(self) -> tuple[float, float, float]:
         """compute the energy stored in the 'observations'.
         Returns: (energy, observation_begin_ts, observation_end_ts)"""
-        observed_energy = 0
-        for sample in self.observed_samples:
-            observed_energy += sample.energy
+        try:
+            observed_energy = 0
+            for sample in self.observed_samples:
+                observed_energy += sample.energy
 
-        return (
-            observed_energy,
-            self.observed_samples[0].time_ts,
-            self.observed_samples[-1].time_next_ts,
-        )
+            return (
+                observed_energy,
+                self.observed_samples[0].time_ts,
+                self.observed_samples[-1].time_next_ts,
+            )
+        except IndexError:
+            # no observations though
+            return (0, 0, 0)
 
     def _history_sample_add(self, history_sample: ObservationHistory):
         pass
@@ -167,37 +178,40 @@ class Estimator:
     def add_observation(self, observation: Observation) -> bool:
 
         try:
-            if observation.time_ts < self.history_sample_curr.time_next_ts:
-                delta_time_ts = observation.time_ts - self.observation_prev.time_ts
+            if observation.time_ts < self._history_sample_curr.time_next_ts:
+                delta_time_ts = observation.time_ts - self._observation_prev.time_ts
                 if delta_time_ts < self.maximum_latency_ts:
-                    self.history_sample_curr.energy += (
+                    self._history_sample_curr.energy += (
                         self._new_energy_from_observation(observation, delta_time_ts)
                     )
-                    self.history_sample_curr.samples += 1
+                    self._history_sample_curr.samples += 1
 
-                self.observation_prev = observation
+                self._observation_prev = observation
                 return False
             else:
-                history_sample_prev = self.history_sample_curr
-                self.history_sample_curr = ObservationHistory(
+                history_sample_prev = self._history_sample_curr
+                self._history_sample_curr = ObservationHistory(
                     observation,
                     self.sampling_interval_ts,
                     self.get_weather_at(observation.time_ts),
                 )
-                if self.history_sample_curr.time_ts == history_sample_prev.time_next_ts:
+                if (
+                    self._history_sample_curr.time_ts
+                    == history_sample_prev.time_next_ts
+                ):
                     # previous and next samples in history are contiguous in time so we try
                     # to interpolate energy accumulation in between
-                    delta_time_ts = observation.time_ts - self.observation_prev.time_ts
+                    delta_time_ts = observation.time_ts - self._observation_prev.time_ts
                     if delta_time_ts < self.maximum_latency_ts:
                         self._new_interpolate_samples(
                             observation,
-                            self.observation_prev,
+                            self._observation_prev,
                             delta_time_ts,
-                            self.history_sample_curr,
+                            self._history_sample_curr,
                             history_sample_prev,
                         )
 
-                self.observation_prev = observation
+                self._observation_prev = observation
                 self.observed_samples.append(history_sample_prev)
 
                 if history_sample_prev.time_ts >= self._tomorrow_local_ts:
@@ -230,39 +244,69 @@ class Estimator:
                 return True
 
         except AttributeError as e:
-            if e.name == "history_sample_curr":
+            if e.name == "_history_sample_curr":
                 # expected right at the first call..use this to initialize the state
                 # and avoid needless checks on subsequent calls
-                self.history_sample_curr = ObservationHistory(
+                self._history_sample_curr = ObservationHistory(
                     observation,
                     self.sampling_interval_ts,
                     self.get_weather_at(observation.time_ts),
                 )
-                self.observation_prev = observation
+                self._observation_prev = observation
                 return False
             else:
                 raise e
 
     def add_weather(self, weather: WeatherHistory):
-        self.weather_samples.append(weather)
+        self.weather_history.append(weather)
 
         try:
             weather_min_ts = weather.time_ts - self.history_duration_ts
             # check if we can discard it since the next is old enough
-            while self.weather_samples[1].time_ts <= weather_min_ts:
-                self.weather_samples.popleft()
+            while self.weather_history[1].time_ts <= weather_min_ts:
+                self.weather_history.popleft()
         except IndexError:
             pass
 
     def get_weather_at(self, time_ts: float):
 
         weather_prev = None
-        for weather in self.weather_samples:
+        for weather in self.weather_history:
             if weather.time_ts > time_ts:
                 break
             weather_prev = weather
 
         return weather_prev
+
+    def set_weather_forecasts(self, weather_forecasts: list[WeatherHistory]):
+        self.weather_forecasts = weather_forecasts
+        # Setup internal linked-list used to optimize sequential scan of forecasts
+        # Assume WeatherHistory(s) are initialized with next = None
+        if len(weather_forecasts) > 1:
+            prev = weather_forecasts[0]
+            for weather in weather_forecasts:
+                prev.next = weather
+                prev = weather
+
+
+    def get_weather_forecast_at(self, time_ts: float):
+
+        try:
+            weather_prev = self.weather_forecasts[0]
+            for weather in self.weather_forecasts:
+                if weather.time_ts > time_ts:
+                    break
+                weather_prev = weather
+
+            return weather_prev
+        except IndexError:
+            # no forecasts available
+            try:
+                # go with 'current' weather
+                return self.weather_history[-1]
+            except IndexError:
+                # we should almost always have one (or not?)
+                return None
 
     def update_estimate(self):
         pass
@@ -273,14 +317,15 @@ class Estimator:
         """
         return 0
 
+
 class EnergyObserver(Estimator if typing.TYPE_CHECKING else object):
     """Mixin class to add to the actual Estimator in order to process energy input observations."""
 
     def _new_energy_from_observation(
         self, observation: Observation, delta_time_ts: float
     ):
-        if observation.value >= self.observation_prev.value:
-            return observation.value - self.observation_prev.value
+        if observation.value >= self._observation_prev.value:
+            return observation.value - self._observation_prev.value
         else:
             # assume an energy reset
             return 0
@@ -318,7 +363,7 @@ class PowerObserver(Estimator if typing.TYPE_CHECKING else object):
     def _new_energy_from_observation(
         self, observation: Observation, delta_time_ts: float
     ):
-        return (self.observation_prev.value + observation.value) * delta_time_ts / 7200
+        return (self._observation_prev.value + observation.value) * delta_time_ts / 7200
 
     def _new_interpolate_samples(
         self,

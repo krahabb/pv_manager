@@ -10,6 +10,7 @@ import astral
 import astral.sun
 from homeassistant import const as hac
 from homeassistant.components.recorder import get_instance as recorder_instance, history
+from homeassistant.components import weather
 from homeassistant.core import callback
 from homeassistant.helpers import (
     event,
@@ -105,7 +106,8 @@ class Controller(controller.Controller[EntryConfig]):
         # state
         "estimator",
         "weather_state",
-        "pv_energy_estimator_sensor",
+        "today_energy_estimate_sensor",
+        "tomorrow_energy_estimate_sensor",
         "estimator_sensors",
         "_sun_offset",
         "_state_convert_func",
@@ -211,10 +213,15 @@ class Controller(controller.Controller[EntryConfig]):
             ),
         )
 
-        self.pv_energy_estimator_sensor = EnergyEstimatorSensor(
+        self.today_energy_estimate_sensor = EnergyEstimatorSensor(
             self,
-            pmc.ConfigEntryType.PV_ENERGY_ESTIMATOR,
-            name=self.config.get("name"),
+            "today_energy_estimate",
+            name="Today energy estimate"
+        )
+        self.tomorrow_energy_estimate_sensor = EnergyEstimatorSensor(
+            self,
+            "tomorrow_energy_estimate",
+            name="Tomorrow energy estimate"
         )
 
         # remove legacy debug entities
@@ -241,7 +248,10 @@ class Controller(controller.Controller[EntryConfig]):
                         f"{pmc.ConfigSubentryType.PV_ENERGY_ESTIMATOR_SENSOR}_{subentry_id}",
                         name=config_subentry.data.get("name"),
                         config_subentry_id=subentry_id,
-                        forecast_duration_ts=config_subentry.data.get("forecast_duration_hours", 0) * 3600,
+                        forecast_duration_ts=config_subentry.data.get(
+                            "forecast_duration_hours", 0
+                        )
+                        * 3600,
                     )
 
     async def async_init(self):
@@ -251,8 +261,6 @@ class Controller(controller.Controller[EntryConfig]):
         ).async_add_executor_job(self._restore_history)
         await self._restore_history_task
         self._restore_history_task = None
-
-        self._update_estimate()
 
         self._pv_entity_tracking_unsub = event.async_track_state_change_event(
             self.hass,
@@ -271,6 +279,8 @@ class Controller(controller.Controller[EntryConfig]):
             )
         else:
             self._weather_tracking_unsub = None
+
+        self._update_estimate()
 
         self._estimate_callback_unsub = self.schedule_async_callback(
             self.refresh_period_ts, self._async_refresh_callback
@@ -296,7 +306,8 @@ class Controller(controller.Controller[EntryConfig]):
                     self._restore_history_exit = True
                     await self._restore_history_task
                 self._restore_history_task = None
-            self.pv_energy_estimator_sensor: Sensor = None  # type: ignore
+            self.today_energy_estimate_sensor: EnergyEstimatorSensor = None  # type: ignore
+            self.tomorrow_energy_estimate_sensor: EnergyEstimatorSensor = None  # type: ignore
             self.estimator_sensors.clear()
             self.estimator: HeuristicEstimator = None  # type: ignore
             return True
@@ -314,8 +325,12 @@ class Controller(controller.Controller[EntryConfig]):
                     if subentry_id in estimator_sensors:
                         # entry already present: just update it
                         estimator_sensor = estimator_sensors.pop(subentry_id)
-                        estimator_sensor.name = config_subentry.data.get("name", estimator_sensor.id)
-                        estimator_sensor.forecast_duration_ts = subentry_config.get("forecast_duration_hours", 1) * 3600
+                        estimator_sensor.name = config_subentry.data.get(
+                            "name", estimator_sensor.id
+                        )
+                        estimator_sensor.forecast_duration_ts = (
+                            subentry_config.get("forecast_duration_hours", 1) * 3600
+                        )
                     else:
                         # TODO: this isnt working as of now since we need to forward platform entry setup
                         self.estimator_sensors[subentry_id] = EnergyEstimatorSensor(
@@ -323,7 +338,10 @@ class Controller(controller.Controller[EntryConfig]):
                             f"{pmc.ConfigSubentryType.PV_ENERGY_ESTIMATOR_SENSOR}_{subentry_id}",
                             name=subentry_config.get("name"),
                             config_subentry_id=subentry_id,
-                            forecast_duration_ts=subentry_config.get("forecast_duration_hours", 0) * 3600,
+                            forecast_duration_ts=subentry_config.get(
+                                "forecast_duration_hours", 0
+                            )
+                            * 3600,
                         )
 
         for subentry_id in estimator_sensors.keys():
@@ -332,9 +350,6 @@ class Controller(controller.Controller[EntryConfig]):
             self.entities[Sensor.PLATFORM].pop(estimator_sensor.id)
 
         await super()._entry_update_listener(hass, config_entry)
-
-
-
 
     # interface: self
     @callback
@@ -376,27 +391,98 @@ class Controller(controller.Controller[EntryConfig]):
 
     def _update_estimate(self):
         self.estimator.update_estimate()
-        self.pv_energy_estimator_sensor.update(self.estimator.today_forecast_energy)
+        self.today_energy_estimate_sensor.update(self.estimator.today_forecast_energy)
+        self.tomorrow_energy_estimate_sensor.update(self.estimator.tomorrow_forecast_energy)
 
         now = time.time()
         for sensor in self.estimator_sensors.values():
-            sensor.update(self.estimator.get_estimated_energy(now, now + sensor.forecast_duration_ts))
+            sensor.update(
+                self.estimator.get_estimated_energy(
+                    now, now + sensor.forecast_duration_ts
+                )
+            )
 
     async def _async_update_weather(self, weather_state: "State | None"):
         self.weather_state = weather_state
         if weather_state:
             self.estimator.add_weather(Controller._weather_from_state(weather_state))
 
-            service_response = await self.hass.services.async_call(
-                "weather",
-                "get_forecasts",
-                service_data={
-                    "type": "hourly",
-                    "entity_id": self.weather_entity_id,
-                },
-                blocking=True,
-                return_response=True,
-            )
+            forecasts: list[WeatherHistory] = []
+            try:
+                response = await self.hass.services.async_call(
+                    "weather",
+                    "get_forecasts",
+                    service_data={
+                        "type": "hourly",
+                        "entity_id": self.weather_entity_id,
+                    },
+                    blocking=True,
+                    return_response=True,
+                )
+                forecasts = [
+                    self._weather_from_forecast(f)
+                    for f in response[self.weather_entity_id]["forecast"]  # type:ignore
+                ]
+
+            except Exception as e:
+                self.log_exception(self.DEBUG, e, "requesting hourly weather forecasts")
+
+            try:
+                response = await self.hass.services.async_call(
+                    "weather",
+                    "get_forecasts",
+                    service_data={
+                        "type": "daily",
+                        "entity_id": self.weather_entity_id,
+                    },
+                    blocking=True,
+                    return_response=True,
+                )
+                daily_weather_forecasts = [
+                    self._weather_from_forecast(f)
+                    for f in response[self.weather_entity_id]["forecast"]  # type:ignore
+                ]
+                if daily_weather_forecasts:
+                    if forecasts:
+                        # We're adding daily forecasts at the end of our (eventual) hourly forecasts
+                        # When doing so, we take special care as to not overlap the end of the hourly
+                        # list with the beginning of the daily list
+                        last_hourly_forecast = forecasts[-1]
+                        last_hourly_forecast_end_ts = (
+                            last_hourly_forecast.time_ts + 3600
+                        )
+                        index = 0
+                        for daily_forecast in daily_weather_forecasts:
+
+                            if daily_forecast.time_ts < last_hourly_forecast_end_ts:
+                                index += 1
+                                continue
+
+                            if (
+                                daily_forecast.time_ts > last_hourly_forecast_end_ts
+                            ) and index:
+                                # this is not the first daily so we add an 'interpolation' between
+                                # the end of the hourly list with the beginning of the daily one
+                                daily_forecast_prev = daily_weather_forecasts[index - 1]
+                                daily_forecast_prev.time_ts = (
+                                    last_hourly_forecast_end_ts
+                                )
+                                daily_forecast_prev.time = helpers.datetime_from_epoch(
+                                    last_hourly_forecast_end_ts
+                                )
+                                forecasts.append(daily_forecast_prev)
+
+                            forecasts += daily_weather_forecasts[index:]
+                            break
+
+                    else:
+                        forecasts = daily_weather_forecasts
+
+            except Exception as e:
+                self.log_exception(self.DEBUG, e, "requesting daily weather forecasts")
+
+            self.estimator.set_weather_forecasts(forecasts)
+
             # self.log(self.DEBUG, "updated weather forecasts %s", str(service_response))
 
     def _restore_history(self):
@@ -455,18 +541,46 @@ class Controller(controller.Controller[EntryConfig]):
 
         if pmc.DEBUG:
             filepath = pmc.DEBUG.get_debug_output_filename(
-                self.hass, f"model_{self.pv_source_entity_id}.json"
+                self.hass,
+                f"model_{self.pv_source_entity_id}_{self.config['name'].lower().replace(" ", "_")}.json",
             )
             dump_model = {
                 "samples": list(self.estimator.history_samples),
-                "weather": list(self.estimator.weather_samples),
+                "weather": list(self.estimator.weather_history),
                 "model": self.estimator.model,
             }
             json.save_json(filepath, dump_model)
 
+    _WEATHER_CONDITION_TO_CLOUD: typing.ClassVar[dict[str | None, float | None]] = {
+        None: None,
+        weather.ATTR_CONDITION_CLEAR_NIGHT: 0,
+        weather.ATTR_CONDITION_CLOUDY: 100,
+        weather.ATTR_CONDITION_EXCEPTIONAL: 80,
+        weather.ATTR_CONDITION_FOG: 80,
+        weather.ATTR_CONDITION_HAIL: 80,
+        weather.ATTR_CONDITION_LIGHTNING: 70,
+        weather.ATTR_CONDITION_LIGHTNING_RAINY: 70,
+        weather.ATTR_CONDITION_PARTLYCLOUDY: 50,
+        weather.ATTR_CONDITION_POURING: 80,
+        weather.ATTR_CONDITION_RAINY: 60,
+        weather.ATTR_CONDITION_SNOWY: 100,
+        weather.ATTR_CONDITION_SNOWY_RAINY: 100,
+        weather.ATTR_CONDITION_SUNNY: 0,
+        weather.ATTR_CONDITION_WINDY: 0,
+        weather.ATTR_CONDITION_WINDY_VARIANT: 0,
+    }
+
     @staticmethod
     def _weather_from_state(weather_state: "State"):
         attributes = weather_state.attributes
+
+        if "cloud_coverage" in attributes:
+            cloud_coverage = attributes["cloud_coverage"]
+        else:
+            cloud_coverage = Controller._WEATHER_CONDITION_TO_CLOUD.get(
+                weather_state.state
+            )
+
         if "visibility" in attributes:
             visibility = DistanceConverter.convert(
                 attributes["visibility"],
@@ -475,6 +589,7 @@ class Controller(controller.Controller[EntryConfig]):
             )
         else:
             visibility = None
+
         return WeatherHistory(
             time=weather_state.last_updated,
             time_ts=weather_state.last_updated_timestamp,
@@ -483,6 +598,38 @@ class Controller(controller.Controller[EntryConfig]):
                 attributes["temperature_unit"],
                 hac.UnitOfTemperature.CELSIUS,
             ),
-            cloud_coverage=attributes.get("cloud_coverage"),
+            cloud_coverage=cloud_coverage,
             visibility=visibility,
+        )
+
+    def _weather_from_forecast(self, forecast: dict):
+        assert self.weather_state
+
+        time = dt_util.as_utc(dt_util.parse_datetime(forecast["datetime"]))  # type: ignore
+        time_ts = time.timestamp()
+
+        weather_attributes = self.weather_state.attributes
+
+        if "temperature" in forecast:
+            temperature = TemperatureConverter.convert(
+                float(forecast["temperature"]),
+                weather_attributes["temperature_unit"],
+                hac.UnitOfTemperature.CELSIUS,
+            )
+        else:
+            temperature = None
+
+        if "cloud_coverage" in forecast:
+            cloud_coverage = forecast["cloud_coverage"]
+        else:
+            cloud_coverage = self._WEATHER_CONDITION_TO_CLOUD.get(
+                forecast.get("condition")
+            )
+
+        return WeatherHistory(
+            time=time,
+            time_ts=time_ts,
+            temperature=temperature,
+            cloud_coverage=cloud_coverage,
+            visibility=None,
         )
