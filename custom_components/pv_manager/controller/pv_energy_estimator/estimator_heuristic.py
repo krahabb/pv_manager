@@ -255,6 +255,10 @@ class HeuristicEstimator(Estimator):
                 time_begin_ts = model_time_ts = model_time_next_ts
                 if weather_forecast_next:
                     if weather_forecast_next.time_ts <= time_begin_ts:
+                        if weather_forecast_next.condition != weather_forecast.condition:
+                            # weather condition changing so we immediately 'drop' the
+                            # short term energy adjustment (observed_ratio)
+                            weight_or = 0
                         weather_forecast = weather_forecast_next
                         weather_forecast_next = weather_forecast.next
 

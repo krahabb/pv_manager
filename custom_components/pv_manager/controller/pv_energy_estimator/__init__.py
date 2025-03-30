@@ -574,11 +574,12 @@ class Controller(controller.Controller[EntryConfig]):
     def _weather_from_state(weather_state: "State"):
         attributes = weather_state.attributes
 
+        condition =weather_state.state
         if "cloud_coverage" in attributes:
             cloud_coverage = attributes["cloud_coverage"]
         else:
             cloud_coverage = Controller._WEATHER_CONDITION_TO_CLOUD.get(
-                weather_state.state
+                condition
             )
 
         if "visibility" in attributes:
@@ -593,6 +594,7 @@ class Controller(controller.Controller[EntryConfig]):
         return WeatherHistory(
             time=weather_state.last_updated,
             time_ts=weather_state.last_updated_timestamp,
+            condition=condition,
             temperature=TemperatureConverter.convert(
                 float(attributes["temperature"]),
                 attributes["temperature_unit"],
@@ -619,16 +621,18 @@ class Controller(controller.Controller[EntryConfig]):
         else:
             temperature = None
 
+        condition = forecast.get("condition")
         if "cloud_coverage" in forecast:
             cloud_coverage = forecast["cloud_coverage"]
         else:
             cloud_coverage = self._WEATHER_CONDITION_TO_CLOUD.get(
-                forecast.get("condition")
+                condition
             )
 
         return WeatherHistory(
             time=time,
             time_ts=time_ts,
+            condition=condition,
             temperature=temperature,
             cloud_coverage=cloud_coverage,
             visibility=None,

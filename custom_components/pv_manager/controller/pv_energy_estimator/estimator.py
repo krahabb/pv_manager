@@ -19,6 +19,7 @@ class Observation:
 class WeatherHistory:
     time: dt.datetime
     time_ts: float
+    condition: str | None
     temperature: float | None  # °C
     cloud_coverage: float | None  # %
     visibility: float | None  # km
