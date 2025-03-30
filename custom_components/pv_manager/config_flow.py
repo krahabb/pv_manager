@@ -61,7 +61,6 @@ class ConfigSubentryFlow(config_entries.ConfigSubentryFlow):
             ),
         )
 
-
     async def async_step_reconfigure(self, user_input: dict | None):
         self.reconfigure_subentry = self._get_reconfigure_subentry()
         return await self.async_step_user(None)
@@ -107,7 +106,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=pmc.DOMAIN):
         if pmc.DEBUG:
             menu_options = list(pmc.ConfigEntryType)
         else:
-            DEBUG_ENTRY_TYPES = {pmc.ConfigEntryType.PV_POWER_SIMULATOR}
+            DEBUG_ENTRY_TYPES = {pmc.ConfigEntryType.PV_PLANT_SIMULATOR}
             menu_options = []
             for entry_type in pmc.ConfigEntryType:
                 if entry_type not in DEBUG_ENTRY_TYPES:

@@ -11,7 +11,7 @@
                 "menu_options": {
                     "energy_calculator": "Energy calculator",
                     "pv_energy_estimator": "PV energy estimator",
-                    "pv_power_simulator": "PV power simulator"
+                    "pv_plant_simulator": "PV plant simulator"
                 }
             },
             "energy_calculator": {
@@ -40,7 +40,7 @@
                     "maximum_latency_minutes": "Maximum latency"
                 }
             },
-            "pv_power_simulator": {
+            "pv_plant_simulator": {
                 "title": "PV power simulator",
                 "description": "Simulate PV power production at site",
                 "data": {

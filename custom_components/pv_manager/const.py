@@ -43,7 +43,7 @@ class ConfigEntryType(enum.StrEnum):
 
     ENERGY_CALCULATOR = enum.auto()
     PV_ENERGY_ESTIMATOR = enum.auto()
-    PV_POWER_SIMULATOR = enum.auto()
+    PV_PLANT_SIMULATOR = enum.auto()
 
     @staticmethod
     def get_from_entry(config_entry: "ConfigEntry"):
@@ -80,12 +80,15 @@ CONF_LOGGING_LEVEL_OPTIONS: typing.Final = {
 
 class EntryConfig(typing.TypedDict):
     """Base (common) definition for ConfigEntry.data"""
+
     logging_level: typing.NotRequired[int]
 
 
 class SubentryConfig(typing.TypedDict):
     """Base (common) definition for ConfigSubentry.data"""
+
     pass
+
 
 class EntityConfig(typing.TypedDict):
     name: str

@@ -40,7 +40,12 @@ class Sensor(Entity, sensor.SensorEntity):
     DEVICE_CLASS_TO_STATE_CLASS: dict[sensor.SensorDeviceClass | None, sensor.SensorStateClass] = {
         sensor.SensorDeviceClass.POWER: sensor.SensorStateClass.MEASUREMENT,
         sensor.SensorDeviceClass.ENERGY: sensor.SensorStateClass.TOTAL_INCREASING,
+        sensor.SensorDeviceClass.VOLTAGE: sensor.SensorStateClass.MEASUREMENT,
+        sensor.SensorDeviceClass.CURRENT: sensor.SensorStateClass.MEASUREMENT,
     }
+
+    _attr_device_class: typing.ClassVar[sensor.SensorDeviceClass | None] = None
+    _attr_native_unit_of_measurement: typing.ClassVar[str | None] = None
 
     __slots__ = (
         "device_class",
@@ -55,9 +60,9 @@ class Sensor(Entity, sensor.SensorEntity):
         id: str,
         **kwargs: "typing.Unpack[SensorArgs]",
     ):
-        self.device_class = kwargs.pop("device_class", None)
+        self.device_class = kwargs.pop("device_class", self._attr_device_class)
         self.native_value = kwargs.pop("native_value", None)
-        self.native_unit_of_measurement = kwargs.pop("native_unit_of_measurement", None)
+        self.native_unit_of_measurement = kwargs.pop("native_unit_of_measurement", self._attr_native_unit_of_measurement)
         if "state_class" in kwargs:
             self.state_class = kwargs.pop("state_class")
         else:

@@ -81,6 +81,16 @@ def sensor_selector(**kwargs: "typing.Unpack[_sensor_selector_args]"):
 def weather_selector():
     return selector.EntitySelector({"filter": {"domain": "weather"}})
 
+def positive_number_selector(
+    **kwargs: "typing.Unpack[selector.NumberSelectorConfig]"
+):
+    return selector.NumberSelector(
+        selector.NumberSelectorConfig(
+            min=kwargs.pop("min", 0),
+            mode=kwargs.pop("mode", selector.NumberSelectorMode.BOX),
+            **kwargs,  # type:ignore
+        )
+    )
 
 def time_period_selector(**kwargs: "typing.Unpack[selector.NumberSelectorConfig]"):
     return selector.NumberSelector(
