@@ -3,23 +3,22 @@ PV energy estimator based on hourly energy measurement
 """
 
 from collections import deque
-import dataclasses
 import typing
 
 import astral
 import astral.sun
 
 from ...helpers import datetime_from_epoch
-from .estimator import Estimator, ObservationHistory, WeatherHistory
+from .estimator_pvenergy import Estimator_PVEnergy, ObservedPVEnergy, WeatherSample
 
 if typing.TYPE_CHECKING:
-    pass
+    from .estimator import EstimatorConfig
 
 
 class TimeSpanEnergyModel:
-    samples: list[ObservationHistory]
+    samples: list[ObservedPVEnergy]
 
-    sample_max: ObservationHistory
+    sample_max: ObservedPVEnergy
 
     energy_max: float
 
@@ -46,7 +45,7 @@ class TimeSpanEnergyModel:
     - Wc is global for the whole model (of EnergyModels)
     """
 
-    def __init__(self, sample: ObservationHistory):
+    def __init__(self, sample: ObservedPVEnergy):
         self.samples = [sample]
         self.sample_max = sample
         cloud_coverage = sample.cloud_coverage
@@ -57,7 +56,7 @@ class TimeSpanEnergyModel:
         else:
             self.energy_max = sample.energy
 
-    def add_sample(self, sample: ObservationHistory):
+    def add_sample(self, sample: ObservedPVEnergy):
         self.samples.append(sample)
         if sample.energy > self.sample_max.energy:
             self.sample_max = sample
@@ -84,13 +83,13 @@ class TimeSpanEnergyModel:
         if self.energy_max < self.sample_max.energy:
             self.energy_max = self.sample_max.energy
 
-    def get_energy_estimate(self, weather: WeatherHistory):
+    def get_energy_estimate(self, weather: WeatherSample):
         cloud_coverage = weather.cloud_coverage
         if cloud_coverage is not None:
             return self.energy_max * (1 - TimeSpanEnergyModel.Wc * cloud_coverage)
         return self.energy_max
 
-    def pop_sample(self, sample: ObservationHistory):
+    def pop_sample(self, sample: ObservedPVEnergy):
         try:
             self.samples.remove(sample)
             if sample == self.sample_max:
@@ -119,7 +118,7 @@ class TimeSpanEnergyModel:
         }
 
 
-class HeuristicEstimator(Estimator):
+class Estimator_PVEnergy_Heuristic(Estimator_PVEnergy):
     """
     Proof-of-concept of an estimator model based on some heuristics:
 
@@ -136,63 +135,79 @@ class HeuristicEstimator(Estimator):
 
     """
 
-    history_samples: deque[ObservationHistory]
+    history_samples: deque[ObservedPVEnergy]
     model: dict[int, TimeSpanEnergyModel]
 
     __slots__ = (
-        "astral_observer",
         "history_samples",
         "model",
         "observed_ratio",
-        "observed_ratio_ts",
+        "_model_energy_max",
     )
 
     def __init__(
         self,
         *,
-        history_duration_ts: float,
-        sampling_interval_ts: int,
-        observation_duration_ts: float,
-        maximum_latency_ts: float,
         astral_observer: "astral.sun.Observer",
+        **kwargs: "typing.Unpack[EstimatorConfig]",
     ):
-        super().__init__(
-            sampling_interval_ts=sampling_interval_ts,
-            history_duration_ts=history_duration_ts,
-            observation_duration_ts=observation_duration_ts,
-            maximum_latency_ts=maximum_latency_ts,
-            local_offset_ts=astral_observer.longitude * 4 * 60,
+        Estimator_PVEnergy.__init__(
+            self,
+            astral_observer=astral_observer,
+            **kwargs,
         )
-
-        self.astral_observer = astral_observer
-
         self.history_samples: typing.Final = deque()
         self.model: typing.Final = {}
-        self.observed_ratio = 1
-        self.observed_ratio_ts = 0
+        self.observed_ratio: float = 1
+
+        self._model_energy_max: float = 0
+        """
+        _model_energy_max contains the maximum energy produced in a sampling_interval_ts during the day
+        so it represents the 'peak' of the discrete function represented by 'model' and, depending
+        on plant orientation it should more or less happen at noon in the model
+        """
+
+    # interface: Estimator_PVEnergy
+    def as_dict(self):
+        return super().as_dict() | {"model": self.model}
 
     def update_estimate(self):
         """Process a new sample trying to update the forecast of energy production."""
 
-        observed_energy, observed_begin_ts, observed_end_ts = self.get_observed_energy()
-        # we now have observed_energy generated during observed_duration
-        estimated_observed_energy_max, missing = self._get_estimated_energy_max(
-            observed_begin_ts, observed_end_ts
-        )
-        if missing or (estimated_observed_energy_max <= 0):
-            # no energy in our model at observation time
-            self.observed_ratio = 1
-        else:
-            # using recent observed energy to 'modulate' prediction (key part of this heuristic estimator)
-            self.observed_ratio = observed_energy / estimated_observed_energy_max
-        self.observed_ratio_ts = observed_end_ts
+        """
+        We use recent observations to adjust the forecast implementing a kind of short-term linear auto-regressive model.
+        The observed_ratio is a good indication of near future energy production
+        but is also very 'unstable' at the edges of the energy model (i.e. sunrise/sunset)
+        so we have to derate this parameter accordingly. The idea is to have this ratio
+        converging to 1 at sunrise/sunset i.e. when energy is a fraction of _model_energy_max
+        while 'maxing out' when observing ratio at energy levels close to _model_energy_max
+        The underlying formula extraction is a bit complicated but it involves weighting
+        the d_ratio (i.e. d_ratio = ratio - 1) against the fraction of energy model at time of observation
+        with respect to _model_energy_max.
 
-        self.today_forecast_energy = self.today_energy + self.get_estimated_energy(
-            observed_end_ts, self._tomorrow_local_ts
-        )
-        self.tomorrow_forecast_energy = self.get_estimated_energy(
-            self._tomorrow_local_ts, self._tomorrow_local_ts + 86400
-        )
+        Without weighting we would have:
+        - observed_ratio = sum(observed_energy) / sum(energy_max in model at observation time)
+
+        this diverges too much from the 'ideal' value of 1 so we refactor computations based on d_ratio:
+        - d_ratio = observed_ratio - 1
+        - d_ratio = sum(observed_energy - energy_max) / sum(energy_max)
+        and we try to scale this down at sunrise/sunset (weighting on energy_max)
+        - d_ratio = sum((observed_energy - energy_max) * (energy_max / _model_energy_max)) / sum(energy_max)
+
+        """
+
+        sum_energy_max = 0
+        sum_observed_weighted = 0
+        for observed_energy in self.observed_samples:
+            try:
+                model = self.model[observed_energy.time_ts % 86400]
+                sum_energy_max += model.energy_max
+                sum_observed_weighted += (observed_energy.energy - model.energy_max) * (
+                    model.energy_max / self._model_energy_max
+                )
+            except KeyError:
+                pass
+        self.observed_ratio = 1 + (sum_observed_weighted / sum_energy_max)
 
     def get_estimated_energy(
         self, time_begin_ts: float | int, time_end_ts: float | int
@@ -220,9 +235,9 @@ class HeuristicEstimator(Estimator):
             weight_or_decay = self.sampling_interval_ts / (
                 3600 * 4
             )  # fixed 4 hours decay
-            if time_begin_ts > self.observed_ratio_ts:
+            if time_begin_ts > self.observed_time_ts:
                 weight_or -= (
-                    (time_begin_ts - self.observed_ratio_ts) / self.sampling_interval_ts
+                    (time_begin_ts - self.observed_time_ts) / self.sampling_interval_ts
                 ) * weight_or_decay
                 if weight_or < weight_or_decay:
                     weight_or = 0
@@ -255,7 +270,10 @@ class HeuristicEstimator(Estimator):
                 time_begin_ts = model_time_ts = model_time_next_ts
                 if weather_forecast_next:
                     if weather_forecast_next.time_ts <= time_begin_ts:
-                        if weather_forecast_next.condition != weather_forecast.condition:
+                        if (
+                            weather_forecast_next.condition
+                            != weather_forecast.condition
+                        ):
                             # weather condition changing so we immediately 'drop' the
                             # short term energy adjustment (observed_ratio)
                             weight_or = 0
@@ -269,6 +287,55 @@ class HeuristicEstimator(Estimator):
                 * self.observed_ratio
             )
 
+    def _observed_energy_history_add(self, history_sample: ObservedPVEnergy):
+
+        if history_sample.energy:
+            # Our model only contains data when energy is being produced leaving the model 'empty'
+            # for time with no production
+            self.history_samples.append(history_sample)
+
+            history_sample.sun_zenith, history_sample.sun_azimuth = (
+                astral.sun.zenith_and_azimuth(
+                    self.astral_observer,
+                    datetime_from_epoch(
+                        (history_sample.time_ts + history_sample.time_next_ts) / 2
+                    ),
+                )
+            )
+
+            try:
+                model = self.model[history_sample.time_ts % 86400]
+                model.add_sample(history_sample)
+            except KeyError as e:
+                self.model[history_sample.time_ts % 86400] = model = (
+                    TimeSpanEnergyModel(history_sample)
+                )
+            if self._model_energy_max < model.energy_max:
+                self._model_energy_max = model.energy_max
+
+        # flush history
+        recalc_energy_max = False
+        history_min_ts = history_sample.time_ts - self.history_duration_ts
+        try:
+            while self.history_samples[0].time_ts < history_min_ts:
+                discarded_sample = self.history_samples.popleft()
+                sample_time_of_day_ts = discarded_sample.time_ts % 86400
+                model = self.model[sample_time_of_day_ts]
+                if model.energy_max == self._model_energy_max:
+                    recalc_energy_max = True
+                if model.pop_sample(discarded_sample):
+                    self.model.pop(sample_time_of_day_ts)
+        except IndexError:
+            # history empty
+            pass
+
+        if recalc_energy_max:
+            self._model_energy_max = 0
+            for model in self.model.values():
+                if self._model_energy_max < model.energy_max:
+                    self._model_energy_max = model.energy_max
+
+    # interface: self
     def _get_estimated_energy_max(
         self, time_begin_ts: float | int, time_end_ts: float | int
     ):
@@ -295,32 +362,3 @@ class HeuristicEstimator(Estimator):
             time_begin_ts = model_time_ts = model_time_next_ts
 
         return energy / self.sampling_interval_ts, missing
-
-    def _history_sample_add(self, history_sample: ObservationHistory):
-        self.history_samples.append(history_sample)
-
-        if history_sample.energy:
-
-            history_sample.sun_zenith, history_sample.sun_azimuth = (
-                astral.sun.zenith_and_azimuth(
-                    self.astral_observer,
-                    datetime_from_epoch(
-                        (history_sample.time_ts + history_sample.time_next_ts) / 2
-                    ),
-                )
-            )
-
-            sample_time_of_day_ts = history_sample.time_ts % 86400
-            try:
-                self.model[sample_time_of_day_ts].add_sample(history_sample)
-            except KeyError:
-                self.model[sample_time_of_day_ts] = TimeSpanEnergyModel(history_sample)
-
-        if self.history_samples[0].time_ts < (
-            history_sample.time_ts - self.history_duration_ts
-        ):
-            discarded_sample = self.history_samples.popleft()
-            if discarded_sample.energy:
-                sample_time_of_day_ts = discarded_sample.time_ts % 86400
-                if self.model[sample_time_of_day_ts].pop_sample(discarded_sample):
-                    self.model.pop(sample_time_of_day_ts)

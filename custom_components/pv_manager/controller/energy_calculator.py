@@ -303,7 +303,7 @@ class Controller(controller.Controller[EntryConfig]):
     @callback
     def _power_tracking_callback(self, event: "Event[event.EventStateChangedData]"):
         now = time.monotonic()
-        pv_power = self._get_power_from_state(event.data.get("new_state"))
+        power = self._get_power_from_state(event.data.get("new_state"))
 
         try:
             # TODO: trapezoidal rule might be unneeded (or even dangerous) if pv_power
@@ -312,15 +312,15 @@ class Controller(controller.Controller[EntryConfig]):
             # internal 'integration_period' sampling might totally invalidate the
             # trapezoidal algorithm and just work as a 'left' rectangle integration.
             energy_wh = (
-                (self._power + pv_power) * (now - self._power_epoch) / 7200  # type: ignore
+                (self._power + power) * (now - self._power_epoch) / 7200  # type: ignore
             )
             for sensor in self.energy_sensors:
                 sensor.accumulate(energy_wh)
 
-        except:  # in case any pv_power is None i.e. not valid...
+        except:  # in case any power is None i.e. not valid...
             pass
 
-        self._power = pv_power
+        self._power = power
         self._power_epoch = now
 
         if self._maximum_latency_callback_unsub:
@@ -363,21 +363,19 @@ class Controller(controller.Controller[EntryConfig]):
 
     def _get_power_from_state(self, power_state: "State | None"):
         if power_state:
-            unit = power_state.attributes.get(self.hac.ATTR_UNIT_OF_MEASUREMENT)
             try:
                 return PowerConverter.convert(
                     float(power_state.state),
-                    unit,
+                    power_state.attributes["unit_of_measurement"],
                     self.hac.UnitOfPower.WATT,
                 )
             except Exception as e:
                 self.log_exception(
                     self.WARNING,
                     e,
-                    "Invalid state for entity %s: %s [%s] when converting to [W]",
+                    "Invalid state for entity %s: %s when converting to [W]",
                     power_state.entity_id,
                     power_state.state,
-                    unit,
                 )
 
         return None

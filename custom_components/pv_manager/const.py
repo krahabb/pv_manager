@@ -43,6 +43,8 @@ class ConfigEntryType(enum.StrEnum):
 
     ENERGY_CALCULATOR = enum.auto()
     PV_ENERGY_ESTIMATOR = enum.auto()
+    CONSUMPTION_ESTIMATOR = enum.auto()
+    BATTERY_HELPER = enum.auto()
     PV_PLANT_SIMULATOR = enum.auto()
 
     @staticmethod

@@ -10,57 +10,40 @@ import astral
 import astral.sun
 from homeassistant import const as hac
 from homeassistant.components import weather
-from homeassistant.components.recorder import get_instance as recorder_instance, history
+from homeassistant.components.recorder import history
 from homeassistant.core import callback
 from homeassistant.helpers import (
     event,
-    json,
     sun as sun_helpers,
 )
 from homeassistant.util import dt as dt_util
 from homeassistant.util.unit_conversion import (
     DistanceConverter,
-    EnergyConverter,
-    PowerConverter,
     TemperatureConverter,
 )
-import voluptuous as vol
 
-from ... import const as pmc, controller, helpers
-from ...helpers import validation as hv
-from ...sensor import Sensor
-from .estimator import EnergyObserver, Observation, PowerObserver, WeatherHistory
-from .estimator_heuristic import HeuristicEstimator
+from .. import const as pmc, controller, helpers
+from ..helpers import validation as hv
+from ..sensor import Sensor
+from .common.estimator_pvenergy_heuristic import (
+    Estimator_PVEnergy_Heuristic,
+    TimeSpanEnergyModel,
+    WeatherSample,
+)
 
 if typing.TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import Event, HomeAssistant, State
 
-    from ...helpers.entity import EntityArgs
+    from ..helpers.entity import EntityArgs
 
 
-class ControllerConfig(typing.TypedDict):
-    pv_power_entity_id: typing.NotRequired[str]
-    """The source entity_id of the pv power of the system"""
-    pv_energy_entity_id: typing.NotRequired[str]
-    """The source entity_id of the pv energy of the system"""
+class ControllerConfig(controller.EnergyEstimatorControllerConfig):
     weather_entity_id: typing.NotRequired[str]
     """The entity used for weather forecast in the system"""
 
-    # model parameters
-    sampling_interval_minutes: int
-    """Time resolution of model data"""
-    observation_duration_minutes: int  # minutes
-    """The time window for calculating current energy production from incoming energy observation."""
-    history_duration_days: int
-    """Number of (backward) days of data to keep in the model (used to build the estimates for the time forward)."""
-    refresh_period_minutes: int
-    """Time between model updates (polling of input pv sensor) beside listening to state changes"""
-    maximum_latency_minutes: int
-    """Maximum time between source pv power/energy samples before considering an error in data sampling."""
 
-
-class EntryConfig(ControllerConfig, pmc.EntityConfig, pmc.EntryConfig):
+class EntryConfig(ControllerConfig, pmc.EntityConfig):
     """TypedDict for ConfigEntry data"""
 
 
@@ -93,65 +76,38 @@ class EnergyEstimatorSensor(Sensor):
         )
 
 
-class Controller(controller.Controller[EntryConfig]):
+class Controller(controller.EnergyEstimatorController[EntryConfig]):
     """Base controller class for managing ConfigEntry behavior."""
 
     TYPE = pmc.ConfigEntryType.PV_ENERGY_ESTIMATOR
 
+    estimator: Estimator_PVEnergy_Heuristic
+
     __slots__ = (
         # configuration
-        "pv_source_entity_id",
         "weather_entity_id",
-        "refresh_period_ts",
         # state
-        "estimator",
         "weather_state",
+        "_weather_tracking_unsub",
         "today_energy_estimate_sensor",
         "tomorrow_energy_estimate_sensor",
         "estimator_sensors",
-        "_sun_offset",
-        "_state_convert_func",
-        "_state_convert_unit",
-        "_pv_entity_tracking_unsub",
-        "_weather_tracking_unsub",
-        "_estimate_callback_unsub",
-        "_restore_history_task",
-        "_restore_history_exit",
     )
 
     # interface: Controller
     @staticmethod
     def get_config_entry_schema(user_input: dict):
 
-        return hv.entity_schema(
-            user_input,
-            name="PV energy estimation",
-        ) | {
-            # we should allow configuring either pv_power_entity_id or pv_energy_entity_id
-            # but data entry flow looks like not allowing this XOR-like schema
-            hv.optional("pv_power_entity_id", user_input): hv.sensor_selector(
-                device_class=Sensor.DeviceClass.POWER
-            ),
-            hv.optional("pv_energy_entity_id", user_input): hv.sensor_selector(
-                device_class=Sensor.DeviceClass.ENERGY
-            ),
-            hv.optional("weather_entity_id", user_input): hv.weather_selector(),
-            hv.required(
-                "sampling_interval_minutes", user_input, 10
-            ): hv.time_period_selector(unit_of_measurement=hac.UnitOfTime.MINUTES),
-            hv.required(
-                "observation_duration_minutes", user_input, 20
-            ): hv.time_period_selector(unit_of_measurement=hac.UnitOfTime.MINUTES),
-            hv.required(
-                "history_duration_days", user_input, 14
-            ): hv.time_period_selector(unit_of_measurement=hac.UnitOfTime.DAYS, max=30),
-            hv.required(
-                "refresh_period_minutes", user_input, 5
-            ): hv.time_period_selector(unit_of_measurement=hac.UnitOfTime.MINUTES),
-            hv.required(
-                "maximum_latency_minutes", user_input, 1
-            ): hv.time_period_selector(unit_of_measurement=hac.UnitOfTime.MINUTES),
-        }
+        return (
+            hv.entity_schema(
+                user_input,
+                name="PV energy estimation",
+            )
+            | {
+                hv.optional("weather_entity_id", user_input): hv.weather_selector(),
+            }
+            | controller.EnergyEstimatorController.get_config_entry_schema(user_input)
+        )
 
     @staticmethod
     def get_config_subentry_schema(subentry_type: str, user_input):
@@ -171,73 +127,28 @@ class Controller(controller.Controller[EntryConfig]):
         return {}
 
     def __init__(self, hass: "HomeAssistant", config_entry: "ConfigEntry"):
-        super().__init__(hass, config_entry)
-
-        self.refresh_period_ts = self.config.get("refresh_period_minutes", 5) * 60
-        # TODO: get sun_offset from local tz
-        self._sun_offset = dt.timedelta(hours=1)
-
-        if "pv_power_entity_id" in self.config:
-            estimator_class = type(
-                "PowerObserverHourlyEstimator", (PowerObserver, HeuristicEstimator), {}
-            )
-            self._state_convert_func = PowerConverter.convert
-            self._state_convert_unit = hac.UnitOfPower.WATT
-            self.pv_source_entity_id = self.config["pv_power_entity_id"]
-        elif "pv_energy_entity_id" in self.config:
-            estimator_class = type(
-                "EnergyObserverHourlyEstimator",
-                (EnergyObserver, HeuristicEstimator),
-                {},
-            )
-            self._state_convert_func = EnergyConverter.convert
-            self._state_convert_unit = hac.UnitOfEnergy.WATT_HOUR
-            self.pv_source_entity_id = self.config["pv_energy_entity_id"]
-        else:
-            raise Exception(
-                "missing either 'pv_power_entity_id' or 'pv_energy_entity_id' in config"
-            )
-
-        self.weather_entity_id = self.config.get("weather_entity_id")
-        self.weather_state = None
 
         location, elevation = sun_helpers.get_astral_location(hass)
-        self.estimator = estimator_class(
-            sampling_interval_ts=self.config.get("sampling_interval_minutes", 10) * 60,
-            observation_duration_ts=self.config.get("observation_duration_minutes", 20)
-            * 60,
-            history_duration_ts=self.config.get("history_duration_days", 7) * 86400,
-            maximum_latency_ts=self.config.get("maximum_latency_minutes", 1) * 60,
+
+        super().__init__(
+            hass,
+            config_entry,
+            Estimator_PVEnergy_Heuristic,
             astral_observer=astral.sun.Observer(
                 location.latitude, location.longitude, elevation
             ),
         )
 
+        self.weather_entity_id = self.config.get("weather_entity_id")
+        self._weather_tracking_unsub = None
+        self.weather_state = None
+
         self.today_energy_estimate_sensor = EnergyEstimatorSensor(
-            self,
-            "today_energy_estimate",
-            name="Today energy estimate"
+            self, "today_energy_estimate", name="Today energy estimate"
         )
         self.tomorrow_energy_estimate_sensor = EnergyEstimatorSensor(
-            self,
-            "tomorrow_energy_estimate",
-            name="Tomorrow energy estimate"
+            self, "tomorrow_energy_estimate", name="Tomorrow energy estimate"
         )
-
-        # remove legacy debug entities
-        ent_reg = self.get_entity_registry()
-        for _t in range(24):
-            unique_id = "_".join(
-                (
-                    self.config_entry.entry_id,
-                    f"{pmc.ConfigEntryType.PV_ENERGY_ESTIMATOR}_{_t}",
-                )
-            )
-            entity_id = ent_reg.async_get_entity_id(
-                Sensor.PLATFORM, pmc.DOMAIN, unique_id
-            )
-            if entity_id:
-                ent_reg.async_remove(entity_id)
 
         self.estimator_sensors: dict[str, EnergyEstimatorSensor] = {}
         for subentry_id, config_subentry in config_entry.subentries.items():
@@ -255,19 +166,7 @@ class Controller(controller.Controller[EntryConfig]):
                     )
 
     async def async_init(self):
-        self._restore_history_exit = False
-        self._restore_history_task = recorder_instance(
-            self.hass
-        ).async_add_executor_job(self._restore_history)
-        await self._restore_history_task
-        self._restore_history_task = None
-
-        self._pv_entity_tracking_unsub = event.async_track_state_change_event(
-            self.hass,
-            self.pv_source_entity_id,
-            self._pv_entity_tracking_callback,
-        )
-
+        await super().async_init()
         if self.weather_entity_id:
             self._weather_tracking_unsub = event.async_track_state_change_event(
                 self.hass,
@@ -277,39 +176,18 @@ class Controller(controller.Controller[EntryConfig]):
             await self._async_update_weather(
                 self.hass.states.get(self.weather_entity_id)
             )
-        else:
-            self._weather_tracking_unsub = None
 
         self._update_estimate()
-
-        self._estimate_callback_unsub = self.schedule_async_callback(
-            self.refresh_period_ts, self._async_refresh_callback
-        )
-
-        self._process_observation(self.hass.states.get(self.pv_source_entity_id))
-
-        await super().async_init()
+        self._process_observation(self.hass.states.get(self.observed_entity_id))
 
     async def async_shutdown(self):
         if await super().async_shutdown():
-            if self._pv_entity_tracking_unsub:
-                self._pv_entity_tracking_unsub()
-                self._pv_entity_tracking_unsub = None
             if self._weather_tracking_unsub:
                 self._weather_tracking_unsub()
                 self._weather_tracking_unsub = None
-            if self._estimate_callback_unsub:
-                self._estimate_callback_unsub.cancel()
-                self._estimate_callback_unsub = None
-            if self._restore_history_task:
-                if not self._restore_history_task.done():
-                    self._restore_history_exit = True
-                    await self._restore_history_task
-                self._restore_history_task = None
             self.today_energy_estimate_sensor: EnergyEstimatorSensor = None  # type: ignore
             self.tomorrow_energy_estimate_sensor: EnergyEstimatorSensor = None  # type: ignore
             self.estimator_sensors.clear()
-            self.estimator: HeuristicEstimator = None  # type: ignore
             return True
         return False
 
@@ -351,11 +229,69 @@ class Controller(controller.Controller[EntryConfig]):
 
         await super()._entry_update_listener(hass, config_entry)
 
-    # interface: self
-    @callback
-    def _pv_entity_tracking_callback(self, event: "Event[event.EventStateChangedData]"):
-        self._process_observation(event.data.get("new_state"))
+    # interface: EnergyEstimatorController
+    def _update_estimate(self):
+        estimator = self.estimator
 
+        estimator.update_estimate()
+
+        self.today_energy_estimate_sensor.extra_state_attributes = {
+            # "today_ts": estimator._today_local_ts,
+            # "today": helpers.datetime_from_epoch(estimator._today_local_ts).isoformat(),
+            # "tomorrow_ts": estimator._tomorrow_local_ts,
+            # "tomorrow": helpers.datetime_from_epoch(estimator._tomorrow_local_ts).isoformat(),
+            # "observed_time_ts": estimator.observed_time_ts,
+            "observed_time": helpers.datetime_from_epoch(
+                estimator.observed_time_ts
+            ).isoformat(),
+            "observed_ratio": estimator.observed_ratio,
+            "model_energy_max": estimator._model_energy_max,
+            "model_Wc": TimeSpanEnergyModel.Wc,
+            "weather": estimator.get_weather_at(estimator.observed_time_ts),
+        }
+        self.today_energy_estimate_sensor.update(
+            estimator.today_energy
+            + estimator.get_estimated_energy(
+                estimator.observed_time_ts, estimator._tomorrow_local_ts
+            )
+        )
+        self.tomorrow_energy_estimate_sensor.update(
+            estimator.get_estimated_energy(
+                estimator._tomorrow_local_ts, estimator._tomorrow_local_ts + 86400
+            )
+        )
+
+        now = time.time()
+        for sensor in self.estimator_sensors.values():
+            sensor.update(
+                estimator.get_estimated_energy(now, now + sensor.forecast_duration_ts)
+            )
+
+    def _restore_history(self, history_start_time: dt.datetime):
+        if self._restore_history_exit:
+            return
+
+        if self.weather_entity_id:
+            weather_states = history.state_changes_during_period(
+                self.hass,
+                history_start_time,
+                None,
+                self.weather_entity_id,
+                no_attributes=False,
+            )
+            for weather_state in weather_states[self.weather_entity_id]:
+                if self._restore_history_exit:
+                    return
+                try:
+                    self.estimator.add_weather(
+                        Controller._weather_from_state(weather_state)
+                    )
+                except:
+                    pass
+
+        super()._restore_history(history_start_time)
+
+    # interface: self
     @callback
     def _weather_tracking_callback(self, event: "Event[event.EventStateChangedData]"):
         self.async_create_task(
@@ -363,51 +299,12 @@ class Controller(controller.Controller[EntryConfig]):
             "_async_update_weather",
         )
 
-    async def _async_refresh_callback(self):
-        self._estimate_callback_unsub = self.schedule_async_callback(
-            self.refresh_period_ts, self._async_refresh_callback
-        )
-        self._process_observation(self.hass.states.get(self.pv_source_entity_id))
-
-    def _process_observation(self, tracked_state: "State | None"):
-        if tracked_state:
-            try:
-                if self.estimator.add_observation(
-                    Observation(
-                        time.time(),
-                        self._state_convert_func(
-                            float(tracked_state.state),
-                            tracked_state.attributes["unit_of_measurement"],
-                            self._state_convert_unit,
-                        ),
-                    )
-                ):
-                    self._update_estimate()
-
-                return
-
-            except Exception as e:
-                self.log_exception(self.DEBUG, e, "updating estimate")
-
-    def _update_estimate(self):
-        self.estimator.update_estimate()
-        self.today_energy_estimate_sensor.update(self.estimator.today_forecast_energy)
-        self.tomorrow_energy_estimate_sensor.update(self.estimator.tomorrow_forecast_energy)
-
-        now = time.time()
-        for sensor in self.estimator_sensors.values():
-            sensor.update(
-                self.estimator.get_estimated_energy(
-                    now, now + sensor.forecast_duration_ts
-                )
-            )
-
     async def _async_update_weather(self, weather_state: "State | None"):
         self.weather_state = weather_state
         if weather_state:
             self.estimator.add_weather(Controller._weather_from_state(weather_state))
 
-            forecasts: list[WeatherHistory] = []
+            forecasts: list[WeatherSample] = []
             try:
                 response = await self.hass.services.async_call(
                     "weather",
@@ -483,75 +380,7 @@ class Controller(controller.Controller[EntryConfig]):
 
             self.estimator.set_weather_forecasts(forecasts)
 
-            # self.log(self.DEBUG, "updated weather forecasts %s", str(service_response))
-
-    def _restore_history(self):
-        if self._restore_history_exit:
-            return
-        now_ts = time.time()
-
-        history_start_time = helpers.datetime_from_epoch(
-            now_ts - self.estimator.history_duration_ts
-        )
-
-        if self.weather_entity_id:
-            weather_states = history.state_changes_during_period(
-                self.hass,
-                history_start_time,
-                None,
-                self.weather_entity_id,
-                no_attributes=False,
-            )
-            for weather_state in weather_states[self.weather_entity_id]:
-                if self._restore_history_exit:
-                    return
-                try:
-                    self.estimator.add_weather(
-                        Controller._weather_from_state(weather_state)
-                    )
-                except:
-                    pass
-
-        pv_entity_states = history.state_changes_during_period(
-            self.hass,
-            history_start_time,
-            None,
-            self.pv_source_entity_id,
-            no_attributes=False,
-        )
-
-        for state in pv_entity_states[self.pv_source_entity_id]:
-            if self._restore_history_exit:
-                return
-            try:
-                self.estimator.add_observation(
-                    Observation(
-                        state.last_updated_timestamp,
-                        self._state_convert_func(
-                            float(state.state),
-                            state.attributes["unit_of_measurement"],
-                            self._state_convert_unit,
-                        ),
-                    )
-                )
-            except:
-                # in case the state doesn't represent a proper value
-                # just discard it
-                pass
-
-        if pmc.DEBUG:
-            filepath = pmc.DEBUG.get_debug_output_filename(
-                self.hass,
-                f"model_{self.pv_source_entity_id}_{self.config['name'].lower().replace(" ", "_")}.json",
-            )
-            dump_model = {
-                "samples": list(self.estimator.history_samples),
-                "weather": list(self.estimator.weather_history),
-                "model": self.estimator.model,
-            }
-            json.save_json(filepath, dump_model)
-
-    _WEATHER_CONDITION_TO_CLOUD: typing.ClassVar[dict[str | None, float | None]] = {
+    _WEATHER_CONDITION_TO_CLOUD: typing.Final[dict[str | None, float | None]] = {
         None: None,
         weather.ATTR_CONDITION_CLEAR_NIGHT: 0,
         weather.ATTR_CONDITION_CLOUDY: 100,
@@ -574,13 +403,11 @@ class Controller(controller.Controller[EntryConfig]):
     def _weather_from_state(weather_state: "State"):
         attributes = weather_state.attributes
 
-        condition =weather_state.state
+        condition = weather_state.state
         if "cloud_coverage" in attributes:
             cloud_coverage = attributes["cloud_coverage"]
         else:
-            cloud_coverage = Controller._WEATHER_CONDITION_TO_CLOUD.get(
-                condition
-            )
+            cloud_coverage = Controller._WEATHER_CONDITION_TO_CLOUD.get(condition)
 
         if "visibility" in attributes:
             visibility = DistanceConverter.convert(
@@ -591,7 +418,7 @@ class Controller(controller.Controller[EntryConfig]):
         else:
             visibility = None
 
-        return WeatherHistory(
+        return WeatherSample(
             time=weather_state.last_updated,
             time_ts=weather_state.last_updated_timestamp,
             condition=condition,
@@ -625,11 +452,9 @@ class Controller(controller.Controller[EntryConfig]):
         if "cloud_coverage" in forecast:
             cloud_coverage = forecast["cloud_coverage"]
         else:
-            cloud_coverage = self._WEATHER_CONDITION_TO_CLOUD.get(
-                condition
-            )
+            cloud_coverage = self._WEATHER_CONDITION_TO_CLOUD.get(condition)
 
-        return WeatherHistory(
+        return WeatherSample(
             time=time,
             time_ts=time_ts,
             condition=condition,

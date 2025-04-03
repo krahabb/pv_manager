@@ -1,15 +1,30 @@
+import datetime as dt
+import time
 import typing
 
+from homeassistant import const as hac
+from homeassistant.components.recorder import get_instance as recorder_instance, history
 from homeassistant.core import callback
-from homeassistant.helpers import entity_registry
+from homeassistant.helpers import (
+    entity_registry,
+    event,
+    json,
+)
+from homeassistant.util.unit_conversion import (
+    EnergyConverter,
+    PowerConverter,
+)
 
 from .. import const as pmc, helpers
+from ..helpers import validation as hv
+from ..sensor import Sensor
+from .common import estimator
 
 if typing.TYPE_CHECKING:
     from typing import Any, Callable, Coroutine
 
     from homeassistant.config_entries import ConfigEntry
-    from homeassistant.core import HomeAssistant
+    from homeassistant.core import Event, HomeAssistant, State
     from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
     import voluptuous as vol
 
@@ -157,3 +172,209 @@ class Controller[_ConfigT: pmc.EntryConfig](helpers.Loggable):
         self, hass: "HomeAssistant", config_entry: "ConfigEntry"
     ):
         self.config = config_entry.data  # type: ignore
+
+
+class EnergyEstimatorControllerConfig(pmc.EntryConfig, estimator.EstimatorConfig):
+
+    observed_entity_id: str
+    """Entity ID of the energy/power observed entity"""
+    refresh_period_minutes: int
+    """Time between model updates (polling of input pv sensor) beside listening to state changes"""
+
+
+class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
+    Controller[_ConfigT]
+):
+
+    __slots__ = (
+        # configuration
+        "observed_entity_id",
+        "refresh_period_ts",
+        # state
+        "estimator",
+        "_state_convert_func",
+        "_state_convert_unit",
+        "_observed_entity_tracking_unsub",
+        "_refresh_callback_unsub",
+        "_restore_history_task",
+        "_restore_history_exit",
+    )
+
+    @staticmethod
+    def get_config_entry_schema(user_input: dict):
+
+        return {
+            hv.required("observed_entity_id", user_input): hv.sensor_selector(
+                device_class=[Sensor.DeviceClass.POWER, Sensor.DeviceClass.ENERGY]
+            ),
+            hv.required(
+                "sampling_interval_minutes", user_input, 10
+            ): hv.time_period_selector(unit_of_measurement=hac.UnitOfTime.MINUTES),
+            hv.required(
+                "maximum_latency_minutes", user_input, 1
+            ): hv.time_period_selector(unit_of_measurement=hac.UnitOfTime.MINUTES),
+            hv.required(
+                "observation_duration_minutes", user_input, 20
+            ): hv.time_period_selector(unit_of_measurement=hac.UnitOfTime.MINUTES),
+            hv.required(
+                "history_duration_days", user_input, 14
+            ): hv.time_period_selector(unit_of_measurement=hac.UnitOfTime.DAYS, max=30),
+            hv.required(
+                "refresh_period_minutes", user_input, 5
+            ): hv.time_period_selector(unit_of_measurement=hac.UnitOfTime.MINUTES),
+        }
+
+    def __init__(
+        self,
+        hass: "HomeAssistant",
+        config_entry: "ConfigEntry",
+        estimator_class: "type[estimator.Estimator]",
+        **estimator_kwargs,
+    ):
+        super().__init__(hass, config_entry)
+
+        self.observed_entity_id = self.config["observed_entity_id"]
+        ent_reg = self.get_entity_registry()
+        reg_entry = ent_reg.async_get(self.observed_entity_id)
+        if not reg_entry:
+            raise ValueError(
+                f"Observed entity {self.observed_entity_id} not found in entity registry"
+            )
+        if reg_entry.unit_of_measurement in hac.UnitOfPower:
+            self._state_convert_func = PowerConverter.convert
+            self._state_convert_unit = hac.UnitOfPower.WATT
+            estimator_class = type(
+                "PowerObserverEstimator",
+                (estimator.PowerObserver, estimator_class),
+                {},
+            )
+        elif reg_entry.unit_of_measurement in hac.UnitOfEnergy:
+            self._state_convert_func = EnergyConverter.convert
+            self._state_convert_unit = hac.UnitOfEnergy.WATT_HOUR
+            estimator_class = type(
+                "EnergyObserverEstimator",
+                (estimator.EnergyObserver, estimator_class),
+                {},
+            )
+        else:
+            raise ValueError(
+                f"Unsupported unit of measurement {reg_entry.unit_of_measurement} for observed entity: {self.observed_entity_id}"
+            )
+
+        self.refresh_period_ts = self.config.get("refresh_period_minutes", 5) * 60
+        self.estimator = estimator_class(**(estimator_kwargs | self.config))  # type: ignore
+        self._refresh_callback_unsub = None
+        self._observed_entity_tracking_unsub = None
+
+    async def async_init(self):
+        self._restore_history_exit = False
+        self._restore_history_task = recorder_instance(
+            self.hass
+        ).async_add_executor_job(
+            self._restore_history,
+            helpers.datetime_from_epoch(
+                time.time() - self.estimator.history_duration_ts
+            ),
+        )
+        await self._restore_history_task
+        self._restore_history_task = None
+
+        self._observed_entity_tracking_unsub = event.async_track_state_change_event(
+            self.hass,
+            self.observed_entity_id,
+            self._observed_entity_tracking_callback,
+        )
+        self._refresh_callback_unsub = self.schedule_async_callback(
+            self.refresh_period_ts, self._async_refresh_callback
+        )
+        return await super().async_init()
+
+    async def async_shutdown(self):
+        if await super().async_shutdown():
+            if self._restore_history_task:
+                if not self._restore_history_task.done():
+                    self._restore_history_exit = True
+                    await self._restore_history_task
+                self._restore_history_task = None
+            if self._refresh_callback_unsub:
+                self._refresh_callback_unsub.cancel()
+                self._refresh_callback_unsub = None
+            if self._observed_entity_tracking_unsub:
+                self._observed_entity_tracking_unsub()
+                self._observed_entity_tracking_unsub = None
+            self.estimator: "estimator.Estimator" = None  # type: ignore
+            return True
+        return False
+
+    @callback
+    def _observed_entity_tracking_callback(
+        self, event: "Event[event.EventStateChangedData]"
+    ):
+        self._process_observation(event.data.get("new_state"))
+
+    async def _async_refresh_callback(self):
+        self._refresh_callback_unsub = self.schedule_async_callback(
+            self.refresh_period_ts, self._async_refresh_callback
+        )
+        self._process_observation(self.hass.states.get(self.observed_entity_id))
+
+    def _process_observation(self, tracked_state: "State | None"):
+        if tracked_state:
+            try:
+                if self.estimator.add_observation(
+                    estimator.Observation(
+                        time.time(),
+                        self._state_convert_func(
+                            float(tracked_state.state),
+                            tracked_state.attributes["unit_of_measurement"],
+                            self._state_convert_unit,
+                        ),
+                    )
+                ):
+                    self._update_estimate()
+
+                return
+
+            except Exception as e:
+                self.log_exception(self.DEBUG, e, "updating estimate")
+
+    def _update_estimate(self):
+        pass
+
+    def _restore_history(self, history_start_time: dt.datetime):
+        if self._restore_history_exit:
+            return
+
+        observed_entity_states = history.state_changes_during_period(
+            self.hass,
+            history_start_time,
+            None,
+            self.observed_entity_id,
+            no_attributes=False,
+        )
+
+        for state in observed_entity_states[self.observed_entity_id]:
+            if self._restore_history_exit:
+                return
+            try:
+                self.estimator.add_observation(
+                    estimator.Observation(
+                        state.last_updated_timestamp,
+                        self._state_convert_func(
+                            float(state.state),
+                            state.attributes["unit_of_measurement"],
+                            self._state_convert_unit,
+                        ),
+                    )
+                )
+            except:
+                # in case the state doesn't represent a proper value
+                # just discard it
+                pass
+
+        if pmc.DEBUG:
+            filepath = pmc.DEBUG.get_debug_output_filename(
+                self.hass,
+                f"model_{self.observed_entity_id}_{self.config.get('name', self.TYPE).lower().replace(" ", "_")}.json",
+            )
+            json.save_json(filepath, self.estimator.as_dict())

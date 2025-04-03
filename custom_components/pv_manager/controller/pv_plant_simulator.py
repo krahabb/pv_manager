@@ -8,7 +8,7 @@ import typing
 
 from homeassistant import const as hac
 from homeassistant.core import callback
-from homeassistant.helpers import event, config_validation as cv
+from homeassistant.helpers import config_validation as cv, event
 from homeassistant.util.unit_conversion import DistanceConverter, TemperatureConverter
 
 from .. import const as pmc, controller, helpers
@@ -19,6 +19,7 @@ if typing.TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import Event, HomeAssistant, State
     from homeassistant.helpers.event import EventStateChangedData
+
     from ..sensor import SensorArgs
 
 

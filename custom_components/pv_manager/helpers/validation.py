@@ -64,7 +64,7 @@ def select_selector(**kwargs: "typing.Unpack[selector.SelectSelectorConfig]"):
 if typing.TYPE_CHECKING:
 
     class _sensor_selector_args(typing.TypedDict):
-        device_class: typing.NotRequired[str]
+        device_class: typing.NotRequired[str | list[str]]
 
 
 def sensor_selector(**kwargs: "typing.Unpack[_sensor_selector_args]"):
