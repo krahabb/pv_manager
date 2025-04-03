@@ -70,5 +70,16 @@
             "error": {},
             "abort": {}
         }
+    },
+    "options": {
+        "step": {
+            "init": {
+                "title": "Diagnostic settings",
+                "data": {
+                    "logging_level": "Logging level",
+                    "create_diagnostic_entities": "Create diagnostic entities"
+                }
+            }
+        }
     }
 }

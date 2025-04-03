@@ -1,9 +1,10 @@
 import typing
 
+from homeassistant.helpers import entity
+
 from . import Loggable
 
 if typing.TYPE_CHECKING:
-    from homeassistant.helpers import entity
 
     from .. import const as pmc
     from ..controller import Controller
@@ -17,6 +18,12 @@ if typing.TYPE_CHECKING:
 class Entity(Loggable, entity.Entity if typing.TYPE_CHECKING else object):
 
     PLATFORM: typing.ClassVar[str]
+
+    EntityCategory = entity.EntityCategory
+
+    is_diagnostic: bool = False
+
+    controller: "Controller"
 
     __slots__ = (
         "controller",
@@ -42,8 +49,15 @@ class Entity(Loggable, entity.Entity if typing.TYPE_CHECKING else object):
         for _attr_name, _attr_value in kwargs.items():
             setattr(self, _attr_name, _attr_value)
         Loggable.__init__(self, id, logger=controller)
-        platform_entities = controller.entities.setdefault(self.PLATFORM, {})
-        platform_entities[id] = self
+        controller.entities.setdefault(self.PLATFORM, {})[id] = self
+        if self.PLATFORM in controller.platforms:
+            controller.platforms[self.PLATFORM](
+                [self], config_subentry_id=self.config_subentry_id
+            )
+
+    async def async_shutdown(self):
+        self.controller.entities[self.PLATFORM].pop(self.id)
+        self.controller = None  # type: ignore
 
     async def async_added_to_hass(self):
         await super().async_added_to_hass()
@@ -54,3 +68,15 @@ class Entity(Loggable, entity.Entity if typing.TYPE_CHECKING else object):
         self._added_to_hass = False
         await super().async_will_remove_from_hass()
         self.log(self.DEBUG, "removed from hass")
+
+    def update(self, value):
+        # stub
+        pass
+
+
+class DiagnosticEntity(Entity if typing.TYPE_CHECKING else object):
+
+    is_diagnostic: typing.Final = True
+
+    # HA core entity attributes:
+    _attr_entity_category = entity.EntityCategory.DIAGNOSTIC

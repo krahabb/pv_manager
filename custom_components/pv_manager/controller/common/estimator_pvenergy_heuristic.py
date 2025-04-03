@@ -198,16 +198,17 @@ class Estimator_PVEnergy_Heuristic(Estimator_PVEnergy):
 
         sum_energy_max = 0
         sum_observed_weighted = 0
-        for observed_energy in self.observed_samples:
-            try:
+        try:
+            for observed_energy in self.observed_samples:
                 model = self.model[observed_energy.time_ts % 86400]
                 sum_energy_max += model.energy_max
                 sum_observed_weighted += (observed_energy.energy - model.energy_max) * (
                     model.energy_max / self._model_energy_max
                 )
-            except KeyError:
-                pass
-        self.observed_ratio = 1 + (sum_observed_weighted / sum_energy_max)
+            self.observed_ratio = 1 + (sum_observed_weighted / sum_energy_max)
+        except (KeyError, ZeroDivisionError):
+            # no data or invalid
+            self.observed_ratio = 1
 
     def get_estimated_energy(
         self, time_begin_ts: float | int, time_end_ts: float | int

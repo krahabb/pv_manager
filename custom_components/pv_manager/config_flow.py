@@ -10,6 +10,7 @@ import voluptuous as vol
 
 from . import const as pmc
 from .controller import Controller
+from .helpers import validation as hv
 
 if typing.TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry, ConfigSubentry
@@ -86,6 +87,12 @@ class ConfigFlow(config_entries.ConfigFlow, domain=pmc.DOMAIN):
 
     reconfigure_entry: "ConfigEntry | None" = None
 
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry):
+        """Create the options flow."""
+        return OptionsFlow()
+
     @classmethod
     @callback
     def async_get_supported_subentry_types(
@@ -151,5 +158,33 @@ class ConfigFlow(config_entries.ConfigFlow, domain=pmc.DOMAIN):
             step_id=controller_type,
             data_schema=vol.Schema(
                 controller_class.get_config_entry_schema(user_input)
+            ),
+        )
+
+
+class OptionsFlow(config_entries.OptionsFlow):
+    async def async_step_init(self, user_input):
+        """Manage the options."""
+        if user_input:
+            return self.async_create_entry(data=user_input)
+
+        user_input = self.config_entry.options
+
+        return self.async_show_form(
+            step_id="init",
+            data_schema=self.add_suggested_values_to_schema(
+                vol.Schema(
+                    {
+                        hv.required(
+                            "logging_level", user_input, "default"
+                        ): hv.select_selector(
+                            options=list(pmc.CONF_LOGGING_LEVEL_OPTIONS.keys())
+                        ),
+                        hv.required(
+                            "create_diagnostic_entities", user_input, False
+                        ): bool,
+                    }
+                ),
+                self.config_entry.options,
             ),
         )

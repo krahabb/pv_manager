@@ -63,33 +63,36 @@ CONFIGENTRY_SUBENTRY_MAP: dict[ConfigEntryType, tuple[ConfigSubentryType, ...]] 
 }
 
 CONF_TYPE: typing.Final = "type"
-# sets the logging level x ConfigEntry
-CONF_LOGGING_LEVEL: typing.Final = "logging_level"
-CONF_LOGGING_VERBOSE: typing.Final = 5
-CONF_LOGGING_DEBUG: typing.Final = logging.DEBUG
-CONF_LOGGING_INFO: typing.Final = logging.INFO
-CONF_LOGGING_WARNING: typing.Final = logging.WARNING
-CONF_LOGGING_CRITICAL: typing.Final = logging.CRITICAL
-CONF_LOGGING_LEVEL_OPTIONS: typing.Final = {
-    logging.NOTSET: "default",
-    CONF_LOGGING_CRITICAL: "critical",
-    CONF_LOGGING_WARNING: "warning",
-    CONF_LOGGING_INFO: "info",
-    CONF_LOGGING_DEBUG: "debug",
-    CONF_LOGGING_VERBOSE: "verbose",
-}
 
 
 class EntryConfig(typing.TypedDict):
     """Base (common) definition for ConfigEntry.data"""
 
-    logging_level: typing.NotRequired[int]
+    pass
 
 
 class SubentryConfig(typing.TypedDict):
     """Base (common) definition for ConfigSubentry.data"""
 
     pass
+
+
+# sets the logging level x ConfigEntry
+CONF_LOGGING_LEVEL_OPTIONS: typing.Final = {
+    "default": logging.NOTSET,
+    "critical": logging.CRITICAL,
+    "warning": logging.WARNING,
+    "info": logging.INFO,
+    "debug": logging.DEBUG,
+    "verbose": 5,
+}
+
+
+class EntryOptionsConfig(typing.TypedDict):
+    """Base (common) definition for ConfigEntry.options"""
+
+    logging_level: typing.NotRequired[str]
+    create_diagnostic_entities: typing.NotRequired[bool]
 
 
 class EntityConfig(typing.TypedDict):

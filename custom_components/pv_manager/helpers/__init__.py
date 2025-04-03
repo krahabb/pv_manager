@@ -183,9 +183,9 @@ class _Logger(logging.Logger if typing.TYPE_CHECKING else object):
             trap_key = (msg, args)
             if trap_key in _Logger._LOGGER_TIMEOUTS:
                 if (epoch - _Logger._LOGGER_TIMEOUTS[trap_key]) < timeout:
-                    if self.isEnabledFor(pmc.CONF_LOGGING_VERBOSE):
+                    if self.isEnabledFor(Loggable.VERBOSE):
                         super()._log(
-                            pmc.CONF_LOGGING_VERBOSE,
+                            Loggable.VERBOSE,
                             f"dropped log message for {msg}",
                             args,
                             **kwargs,
@@ -210,11 +210,12 @@ class Loggable(abc.ABC):
 
     hac = hac
 
-    VERBOSE = pmc.CONF_LOGGING_VERBOSE
-    DEBUG = pmc.CONF_LOGGING_DEBUG
-    INFO = pmc.CONF_LOGGING_INFO
-    WARNING = pmc.CONF_LOGGING_WARNING
-    CRITICAL = pmc.CONF_LOGGING_CRITICAL
+    DEFAULT = logging.NOTSET
+    VERBOSE = 5
+    DEBUG = logging.DEBUG
+    INFO = logging.INFO
+    WARNING = logging.WARNING
+    CRITICAL = logging.CRITICAL
 
     __slots__ = (
         "id",

@@ -40,12 +40,16 @@ class Controller[_ConfigT: pmc.EntryConfig](helpers.Loggable):
     """Default entity platforms used by the controller"""
 
     config: _ConfigT
+    options: pmc.EntryOptionsConfig
+    platforms: typing.Final[dict[str, "AddConfigEntryEntitiesCallback"]]
     entities: typing.Final[dict[str, dict[str, "Entity"]]]
     hass: "HomeAssistant"
 
     __slots__ = (
         "config_entry",
         "config",
+        "options",
+        "platforms",
         "entities",
         "hass",
         "_entry_update_listener_unsub",
@@ -73,6 +77,8 @@ class Controller[_ConfigT: pmc.EntryConfig](helpers.Loggable):
     def __init__(self, hass: "HomeAssistant", config_entry: "ConfigEntry"):
         self.config_entry = config_entry
         self.config = config_entry.data  # type: ignore
+        self.options = config_entry.options  # type: ignore
+        self.platforms = {}
         self.entities = {platform: {} for platform in self.PLATFORMS}
         self.hass = hass
         helpers.Loggable.__init__(self, config_entry.title)
@@ -85,15 +91,12 @@ class Controller[_ConfigT: pmc.EntryConfig](helpers.Loggable):
         """
         self.logtag = f"{self.TYPE}({self.id})"
         # using helpers.getLogger (instead of logger.getChild) to 'wrap' the Logger class ..
-        self.logger = logger = helpers.getLogger(f"{helpers.LOGGER.name}.{self.logtag}")
-        try:
-            logger.setLevel(self.config.get("logging_level", self.DEBUG))
-        except Exception as exception:
-            # do not use self Loggable interface since we might be not set yet
-            helpers.LOGGER.warning(
-                "error (%s) setting log level: likely a corrupted configuration entry",
-                str(exception),
+        self.logger = helpers.getLogger(f"{helpers.LOGGER.name}.{self.logtag}")
+        self.logger.setLevel(
+            pmc.CONF_LOGGING_LEVEL_OPTIONS.get(
+                self.options.get("logging_level", "default"), self.DEFAULT
             )
+        )
 
     def log(self, level: int, msg: str, *args, **kwargs):
         if (logger := self.logger).isEnabledFor(level):
@@ -104,6 +107,8 @@ class Controller[_ConfigT: pmc.EntryConfig](helpers.Loggable):
         self._entry_update_listener_unsub = self.config_entry.add_update_listener(
             self._entry_update_listener
         )
+        if self.options.get("create_diagnostic_entities"):
+            await self._async_create_diagnostic_entities()
         # Here we're forwarding to all the platform registerd in self.entities.
         # This is by default preset in the constructor with a list of (default) PLATFORMS
         # for the controller class.
@@ -120,26 +125,31 @@ class Controller[_ConfigT: pmc.EntryConfig](helpers.Loggable):
         add_entities: "AddConfigEntryEntitiesCallback",
     ):
         """Generic async_setup_entry for any platform where entities are instantiated
-        in the controller constructor. This should be overriden with it's more specific
-        async_setup_entry_{platform} for more optimized initialization"""
+        in the controller constructor."""
+        # cache the add_entities callback so we can dinamically add later
+        self.platforms[platform] = add_entities
         # manage config_subentry forwarding...
-        e: dict[str | None, list] = {}
+        entities_per_config_subentry: dict[str | None, list] = {}
         for entity in self.entities[platform].values():
-            if entity.config_subentry_id in e:
-                e[entity.config_subentry_id].append(entity)
+            if entity.config_subentry_id in entities_per_config_subentry:
+                entities_per_config_subentry[entity.config_subentry_id].append(entity)
             else:
-                e[entity.config_subentry_id] = [entity]
-        for config_subentry_id, entities in e.items():
+                entities_per_config_subentry[entity.config_subentry_id] = [entity]
+        for config_subentry_id, entities in entities_per_config_subentry.items():
             add_entities(entities, config_subentry_id=config_subentry_id)
 
     async def async_shutdown(self):
         if not await self.hass.config_entries.async_unload_platforms(
-            self.config_entry, self.entities.keys()
+            self.config_entry, self.platforms.keys()
         ):
             return False
         self._entry_update_listener_unsub()
-        # removing circular refs here...maybe invoke entity shutdown?
-        self.entities.clear()
+        # removing circular refs here
+        for entities_per_platform in self.entities.values():
+            for entity in list(entities_per_platform.values()):
+                await entity.async_shutdown()
+            assert not entities_per_platform
+        self.platforms.clear()
         return True
 
     def get_entity_registry(self):
@@ -172,6 +182,33 @@ class Controller[_ConfigT: pmc.EntryConfig](helpers.Loggable):
         self, hass: "HomeAssistant", config_entry: "ConfigEntry"
     ):
         self.config = config_entry.data  # type: ignore
+        if self.options != config_entry.options:
+            self.options = config_entry.options  # type: ignore
+            self.logger.setLevel(
+                pmc.CONF_LOGGING_LEVEL_OPTIONS.get(
+                    self.options.get("logging_level", "default"), self.DEFAULT
+                )
+            )
+            if self.options.get("create_diagnostic_entities"):
+                await self._async_create_diagnostic_entities()
+            else:
+                await self._async_destroy_diagnostic_entities()
+
+    async def _async_create_diagnostic_entities(self):
+        """Dynamically create some diagnostic entities depending on configuration"""
+        pass
+
+    async def _async_destroy_diagnostic_entities(self):
+        """Cleanup diagnostic entities, when the entry is unloaded. If 'remove' is True
+        it will be removed from the entity registry as well."""
+        ent_reg = self.get_entity_registry()
+        for entities_per_platform in self.entities.values():
+            for entity in list(entities_per_platform.values()):
+                if entity.is_diagnostic:
+                    if entity._added_to_hass:
+                        await entity.async_remove(force_remove=True)
+                    await entity.async_shutdown()
+                    ent_reg.async_remove(entity.entity_id)
 
 
 class EnergyEstimatorControllerConfig(pmc.EntryConfig, estimator.EstimatorConfig):

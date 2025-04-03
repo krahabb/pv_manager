@@ -3,7 +3,7 @@ import typing
 from homeassistant.components import sensor
 
 from . import const as pmc, helpers
-from .helpers.entity import Entity
+from .helpers.entity import DiagnosticEntity, Entity
 
 if typing.TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -17,7 +17,7 @@ if typing.TYPE_CHECKING:
 
     class SensorArgs(EntityArgs):
         device_class: typing.NotRequired[sensor.SensorDeviceClass]
-        state_class: typing.NotRequired[sensor.SensorStateClass|None]
+        state_class: typing.NotRequired[sensor.SensorStateClass | None]
         native_value: typing.NotRequired[SensorStateType]
         native_unit_of_measurement: typing.NotRequired[str]
 
@@ -27,7 +27,9 @@ async def async_setup_entry(
     config_entry: "ConfigEntry[Controller]",
     add_entities: "AddConfigEntryEntitiesCallback",
 ):
-    await config_entry.runtime_data.async_setup_entry_platform(sensor.DOMAIN, add_entities)
+    await config_entry.runtime_data.async_setup_entry_platform(
+        sensor.DOMAIN, add_entities
+    )
 
 
 class Sensor(Entity, sensor.SensorEntity):
@@ -37,11 +39,15 @@ class Sensor(Entity, sensor.SensorEntity):
     DeviceClass = sensor.SensorDeviceClass
     StateClass = sensor.SensorStateClass
 
-    DEVICE_CLASS_TO_STATE_CLASS: dict[sensor.SensorDeviceClass | None, sensor.SensorStateClass] = {
-        sensor.SensorDeviceClass.POWER: sensor.SensorStateClass.MEASUREMENT,
-        sensor.SensorDeviceClass.ENERGY: sensor.SensorStateClass.TOTAL_INCREASING,
-        sensor.SensorDeviceClass.VOLTAGE: sensor.SensorStateClass.MEASUREMENT,
-        sensor.SensorDeviceClass.CURRENT: sensor.SensorStateClass.MEASUREMENT,
+    DEVICE_CLASS_TO_STATE_CLASS: dict[
+        sensor.SensorDeviceClass | None, sensor.SensorStateClass | None
+    ] = {
+        None: StateClass.MEASUREMENT,  # generic numeric sensors
+        DeviceClass.CURRENT: StateClass.MEASUREMENT,
+        DeviceClass.ENUM: None,
+        DeviceClass.ENERGY: StateClass.TOTAL_INCREASING,
+        DeviceClass.POWER: StateClass.MEASUREMENT,
+        DeviceClass.VOLTAGE: StateClass.MEASUREMENT,
     }
 
     _attr_device_class: typing.ClassVar[sensor.SensorDeviceClass | None] = None
@@ -62,7 +68,9 @@ class Sensor(Entity, sensor.SensorEntity):
     ):
         self.device_class = kwargs.pop("device_class", self._attr_device_class)
         self.native_value = kwargs.pop("native_value", None)
-        self.native_unit_of_measurement = kwargs.pop("native_unit_of_measurement", self._attr_native_unit_of_measurement)
+        self.native_unit_of_measurement = kwargs.pop(
+            "native_unit_of_measurement", self._attr_native_unit_of_measurement
+        )
         if "state_class" in kwargs:
             self.state_class = kwargs.pop("state_class")
         else:
@@ -79,3 +87,6 @@ class Sensor(Entity, sensor.SensorEntity):
 class RestoreSensor(Sensor, sensor.RestoreSensor):
     pass
 
+
+class DiagnosticSensor(DiagnosticEntity, Sensor):
+    pass

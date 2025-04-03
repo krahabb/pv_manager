@@ -3,6 +3,7 @@ Controller for pv energy production estimation
 """
 
 import datetime as dt
+import enum
 import time
 import typing
 
@@ -24,7 +25,7 @@ from homeassistant.util.unit_conversion import (
 
 from .. import const as pmc, controller, helpers
 from ..helpers import validation as hv
-from ..sensor import Sensor
+from ..sensor import DiagnosticSensor, Sensor
 from .common.estimator_pvenergy_heuristic import (
     Estimator_PVEnergy_Heuristic,
     TimeSpanEnergyModel,
@@ -74,6 +75,11 @@ class EnergyEstimatorSensor(Sensor):
             native_unit_of_measurement=hac.UnitOfEnergy.WATT_HOUR,
             **kwargs,
         )
+
+
+class DiagnosticSensorsEnum(enum.StrEnum):
+    observed_ratio = enum.auto()
+    weather_cloud_constant = enum.auto()
 
 
 class Controller(controller.EnergyEstimatorController[EntryConfig]):
@@ -225,15 +231,26 @@ class Controller(controller.EnergyEstimatorController[EntryConfig]):
         for subentry_id in estimator_sensors.keys():
             # these were removed subentries
             estimator_sensor = self.estimator_sensors.pop(subentry_id)
-            self.entities[Sensor.PLATFORM].pop(estimator_sensor.id)
+            await estimator_sensor.async_shutdown()
 
         await super()._entry_update_listener(hass, config_entry)
+
+    async def _async_create_diagnostic_entities(self):
+        sensors = self.entities[Sensor.PLATFORM]
+        for diagnostic_sensor_enum in DiagnosticSensorsEnum:
+            if diagnostic_sensor_enum not in sensors:
+                DiagnosticSensor(self, diagnostic_sensor_enum)
+
+    async def _async_destroy_diagnostic_entities(self):
+        await super()._async_destroy_diagnostic_entities()
 
     # interface: EnergyEstimatorController
     def _update_estimate(self):
         estimator = self.estimator
 
         estimator.update_estimate()
+
+        sensors = self.entities[Sensor.PLATFORM]
 
         self.today_energy_estimate_sensor.extra_state_attributes = {
             # "today_ts": estimator._today_local_ts,
@@ -244,9 +261,9 @@ class Controller(controller.EnergyEstimatorController[EntryConfig]):
             "observed_time": helpers.datetime_from_epoch(
                 estimator.observed_time_ts
             ).isoformat(),
-            "observed_ratio": estimator.observed_ratio,
+            # "observed_ratio": estimator.observed_ratio,
             "model_energy_max": estimator._model_energy_max,
-            "model_Wc": TimeSpanEnergyModel.Wc,
+            # "model_Wc": TimeSpanEnergyModel.Wc,
             "weather": estimator.get_weather_at(estimator.observed_time_ts),
         }
         self.today_energy_estimate_sensor.update(
@@ -265,6 +282,15 @@ class Controller(controller.EnergyEstimatorController[EntryConfig]):
         for sensor in self.estimator_sensors.values():
             sensor.update(
                 estimator.get_estimated_energy(now, now + sensor.forecast_duration_ts)
+            )
+
+        if DiagnosticSensorsEnum.observed_ratio in sensors:
+            sensors[DiagnosticSensorsEnum.observed_ratio].update(
+                estimator.observed_ratio
+            )
+        if DiagnosticSensorsEnum.weather_cloud_constant in sensors:
+            sensors[DiagnosticSensorsEnum.weather_cloud_constant].update(
+                TimeSpanEnergyModel.Wc
             )
 
     def _restore_history(self, history_start_time: dt.datetime):
