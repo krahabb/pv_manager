@@ -1,4 +1,4 @@
-import datetime
+from datetime import datetime, timedelta
 import enum
 import time
 import typing
@@ -53,8 +53,11 @@ class EnergySensor(RestoreSensor):
 
     __slots__ = (
         "cycle_mode",
-        "_dt_last_reset",
-        "_dt_next_reset",
+        "last_reset", # HA property
+        "last_reset_dt",
+        "last_reset_ts", # UTC timestamp of last reset
+        "next_reset_dt",
+        "next_reset_ts", # UTC timestamp of next reset
         "_async_track_cycle_job",
         "_async_track_cycle_unsub",
     )
@@ -64,17 +67,19 @@ class EnergySensor(RestoreSensor):
         controller: "Controller",
         cycle_mode: CycleMode,
     ):
+        self.cycle_mode: typing.Final = cycle_mode
+        self.last_reset = None
         RestoreSensor.__init__(
             self,
             controller,
             f"pv_energy_sensor_{cycle_mode}",
             device_class=self.DeviceClass.ENERGY,
+            state_class=self.StateClass.TOTAL,
             name=controller.config.get("name", "pv_energy_sensor")
             + ("" if cycle_mode == CycleMode.NONE else f" ({cycle_mode})"),
             native_value=0,
             native_unit_of_measurement=hac.UnitOfEnergy.WATT_HOUR,
         )
-        self.cycle_mode: typing.Final = cycle_mode
 
     async def async_added_to_hass(self):
 
@@ -84,55 +89,15 @@ class EnergySensor(RestoreSensor):
                 self.native_value = restored_sensor_data.native_value  # type: ignore
 
         else:
-            now = dt_util.now()
-            match self.cycle_mode:
-                case CycleMode.YEARLY:
-                    self._dt_last_reset = datetime.datetime(
-                        year=now.year, month=1, day=1, tzinfo=now.tzinfo
-                    )
-                    self._dt_next_reset = datetime.datetime(
-                        year=now.year + 1, month=1, day=1, tzinfo=now.tzinfo
-                    )
-                case CycleMode.MONTHLY:
-                    self._dt_last_reset = datetime.datetime(
-                        year=now.year, month=now.month, day=1, tzinfo=now.tzinfo
-                    )
-                    self._dt_next_reset = (
-                        self._dt_last_reset + datetime.timedelta(days=32)
-                    ).replace(day=1)
-                case CycleMode.WEEKLY:
-                    today = datetime.datetime(
-                        year=now.year, month=now.month, day=now.day, tzinfo=now.tzinfo
-                    )
-                    self._dt_last_reset = today - datetime.timedelta(
-                        days=today.weekday()
-                    )
-                    self._dt_next_reset = self._dt_last_reset + datetime.timedelta(
-                        weeks=1
-                    )
-                case CycleMode.DAILY:
-                    self._dt_last_reset = datetime.datetime(
-                        year=now.year, month=now.month, day=now.day, tzinfo=now.tzinfo
-                    )
-                    self._dt_next_reset = self._dt_last_reset + datetime.timedelta(
-                        days=1
-                    )
-                case CycleMode.HOURLY:
-                    self._dt_last_reset = datetime.datetime(
-                        year=now.year,
-                        month=now.month,
-                        day=now.day,
-                        hour=now.hour,
-                        tzinfo=now.tzinfo,
-                    )
-                    self._dt_next_reset = self._dt_last_reset + datetime.timedelta(
-                        hours=1
-                    )
+            self._compute_cycle(False)
 
             restored_state = await self.async_get_last_state()
             if restored_state:
-                last_changed = restored_state.last_changed
-                if last_changed.astimezone(now.tzinfo) > self._dt_last_reset:
+                if (
+                    self.last_reset_ts
+                    < restored_state.last_changed_timestamp
+                    < self.next_reset_ts
+                ):
                     restored_sensor_data = await self.async_get_last_sensor_data()
                     if restored_sensor_data:
                         self.native_value = restored_sensor_data.native_value  # type: ignore
@@ -140,12 +105,7 @@ class EnergySensor(RestoreSensor):
             self._async_track_cycle_job = HassJob(
                 self._async_track_cycle, f"_async_track_cycle({self.cycle_mode})"
             )
-            self._async_track_cycle_unsub = event.async_track_point_in_utc_time(self.hass, self._async_track_cycle_job, self._dt_next_reset)  # type: ignore
-            self.log(
-                self.DEBUG,
-                "Scheduled first cycle at: %s",
-                self._dt_next_reset.isoformat(),
-            )
+            self._async_track_cycle_unsub = event.async_track_point_in_utc_time(self.hass, self._async_track_cycle_job, self.next_reset_dt)  # type: ignore
 
         await super().async_added_to_hass()
         self.controller.energy_sensors.add(self)
@@ -159,55 +119,75 @@ class EnergySensor(RestoreSensor):
         return await super().async_will_remove_from_hass()
 
     def accumulate(self, energy_wh: float):
-        self.native_value += energy_wh
+        if self.cycle_mode == CycleMode.NONE:
+            self.native_value += energy_wh
+        else:
+            now_ts = time.time()
+            if now_ts >= self.next_reset_ts:
+                self._async_track_cycle_unsub()
+                self._compute_cycle(True)
+                self.native_value = energy_wh
+            else:
+                self.native_value += energy_wh
+
         self._async_write_ha_state()
 
-    async def _async_track_cycle(self, _dt: "datetime.datetime"):
+    async def _async_track_cycle(self, _dt: datetime):
+        self._compute_cycle(True)
+        # TODO: adjust fractions of accumulated energy? shouldn't be really needed
+        self.native_value = 0
+        self._async_write_ha_state()
 
-        self._dt_last_reset = now = dt_util.now()
+    def _compute_cycle(self, reschedule: bool):
+        """'now' is local time."""
+        now = dt_util.now()
         match self.cycle_mode:
             case CycleMode.YEARLY:
-                self._dt_next_reset = datetime.datetime(
+                self.last_reset_dt = datetime(
+                    year=now.year, month=1, day=1, tzinfo=now.tzinfo
+                )
+                self.next_reset_dt = datetime(
                     year=now.year + 1, month=1, day=1, tzinfo=now.tzinfo
                 )
             case CycleMode.MONTHLY:
-                month = now.month
-                if month < 12:
-                    month += 1
-                    year = now.year
-                else:
-                    month = 1
-                    year = now.year + 1
-                self._dt_next_reset = datetime.datetime(
-                    year=year, month=month, day=1, tzinfo=now.tzinfo
+                self.last_reset_dt = datetime(
+                    year=now.year, month=now.month, day=1, tzinfo=now.tzinfo
+                )
+                self.next_reset_dt = (self.last_reset_dt + timedelta(days=32)).replace(
+                    day=1
                 )
             case CycleMode.WEEKLY:
-                today = datetime.datetime(
+                today = datetime(
                     year=now.year, month=now.month, day=now.day, tzinfo=now.tzinfo
                 )
-                self._dt_next_reset = today + datetime.timedelta(
-                    days=7 - today.weekday()
-                )
+                self.last_reset_dt = today - timedelta(days=today.weekday())
+                self.next_reset_dt = self.last_reset_dt + timedelta(weeks=1)
             case CycleMode.DAILY:
-                self._dt_next_reset = datetime.datetime(
+                self.last_reset_dt = datetime(
                     year=now.year, month=now.month, day=now.day, tzinfo=now.tzinfo
-                ) + datetime.timedelta(days=1)
+                )
+                self.next_reset_dt = self.last_reset_dt + timedelta(days=1)
             case CycleMode.HOURLY:
-                self._dt_next_reset = datetime.datetime(
+                self.last_reset_dt = datetime(
                     year=now.year,
                     month=now.month,
                     day=now.day,
                     hour=now.hour,
                     tzinfo=now.tzinfo,
-                ) + datetime.timedelta(hours=1)
+                )
+                self.next_reset_dt = self.last_reset_dt + timedelta(hours=1)
 
-        self._async_track_cycle_unsub = event.async_track_point_in_utc_time(self.hass, self._async_track_cycle_job, self._dt_next_reset)  # type: ignore
-        self.log(
-            self.DEBUG, "Scheduled next cycle at: %s", self._dt_next_reset.isoformat()
-        )
-        # TODO: adjust fractions of accumulated energy? shouldn't be really needed
-        self.native_value = 0
-        self._async_write_ha_state()
+        self.last_reset_dt = self.last_reset_dt.astimezone(dt_util.UTC)
+        self.last_reset_ts = self.last_reset_dt.timestamp()
+        self.next_reset_dt = self.next_reset_dt.astimezone(dt_util.UTC)
+        self.next_reset_ts = self.next_reset_dt.timestamp()
+
+        self.last_reset = self.last_reset_dt
+        if reschedule:
+            self._async_track_cycle_unsub = event.async_track_point_in_utc_time(self.hass, self._async_track_cycle_job, self.next_reset_dt)  # type: ignore
+            self.log(
+                self.DEBUG, "Scheduled next cycle at: %s", self.next_reset_dt.isoformat()
+            )
 
 
 class Controller(controller.Controller[EntryConfig]):
