@@ -210,6 +210,9 @@ class Estimator_PVEnergy_Heuristic(Estimator_PVEnergy):
             # no data or invalid
             self.observed_ratio = 1
 
+        if self.on_update_estimate:
+            self.on_update_estimate()
+
     def get_estimated_energy(
         self, time_begin_ts: float | int, time_end_ts: float | int
     ) -> float:

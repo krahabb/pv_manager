@@ -87,6 +87,8 @@ class Controller(controller.EnergyEstimatorController[EntryConfig]):
 
     TYPE = pmc.ConfigEntryType.PV_ENERGY_ESTIMATOR
 
+    PLATFORMS = {Sensor.PLATFORM}
+
     estimator: Estimator_PVEnergy_Heuristic
 
     __slots__ = (
@@ -183,9 +185,6 @@ class Controller(controller.EnergyEstimatorController[EntryConfig]):
                 self.hass.states.get(self.weather_entity_id)
             )
 
-        self._update_estimate()
-        self._process_observation(self.hass.states.get(self.observed_entity_id))
-
     async def async_shutdown(self):
         if await super().async_shutdown():
             if self._weather_tracking_unsub:
@@ -216,7 +215,6 @@ class Controller(controller.EnergyEstimatorController[EntryConfig]):
                             subentry_config.get("forecast_duration_hours", 1) * 3600
                         )
                     else:
-                        # TODO: this isnt working as of now since we need to forward platform entry setup
                         self.estimator_sensors[subentry_id] = EnergyEstimatorSensor(
                             self,
                             f"{pmc.ConfigSubentryType.PV_ENERGY_ESTIMATOR_SENSOR}_{subentry_id}",
@@ -235,20 +233,15 @@ class Controller(controller.EnergyEstimatorController[EntryConfig]):
 
         await super()._entry_update_listener(hass, config_entry)
 
-    async def _async_create_diagnostic_entities(self):
+    def _create_diagnostic_entities(self):
         sensors = self.entities[Sensor.PLATFORM]
         for diagnostic_sensor_enum in DiagnosticSensorsEnum:
             if diagnostic_sensor_enum not in sensors:
                 DiagnosticSensor(self, diagnostic_sensor_enum)
 
-    async def _async_destroy_diagnostic_entities(self):
-        await super()._async_destroy_diagnostic_entities()
-
     # interface: EnergyEstimatorController
     def _update_estimate(self):
         estimator = self.estimator
-
-        estimator.update_estimate()
 
         sensors = self.entities[Sensor.PLATFORM]
 
@@ -327,84 +320,102 @@ class Controller(controller.EnergyEstimatorController[EntryConfig]):
 
     async def _async_update_weather(self, weather_state: "State | None"):
         self.weather_state = weather_state
-        if weather_state:
-            self.estimator.add_weather(Controller._weather_from_state(weather_state))
-
-            forecasts: list[WeatherSample] = []
-            try:
-                response = await self.hass.services.async_call(
-                    "weather",
-                    "get_forecasts",
-                    service_data={
-                        "type": "hourly",
-                        "entity_id": self.weather_entity_id,
-                    },
-                    blocking=True,
-                    return_response=True,
+        try:
+            if weather_state:
+                self.estimator.add_weather(
+                    Controller._weather_from_state(weather_state)
                 )
-                forecasts = [
-                    self._weather_from_forecast(f)
-                    for f in response[self.weather_entity_id]["forecast"]  # type:ignore
-                ]
 
-            except Exception as e:
-                self.log_exception(self.DEBUG, e, "requesting hourly weather forecasts")
+                forecasts: list[WeatherSample] = []
+                try:
+                    response = await self.hass.services.async_call(
+                        "weather",
+                        "get_forecasts",
+                        service_data={
+                            "type": "hourly",
+                            "entity_id": self.weather_entity_id,
+                        },
+                        blocking=True,
+                        return_response=True,
+                    )
+                    forecasts = [
+                        self._weather_from_forecast(f)
+                        for f in response[self.weather_entity_id][  # type:ignore
+                            "forecast"
+                        ]
+                    ]
 
-            try:
-                response = await self.hass.services.async_call(
-                    "weather",
-                    "get_forecasts",
-                    service_data={
-                        "type": "daily",
-                        "entity_id": self.weather_entity_id,
-                    },
-                    blocking=True,
-                    return_response=True,
-                )
-                daily_weather_forecasts = [
-                    self._weather_from_forecast(f)
-                    for f in response[self.weather_entity_id]["forecast"]  # type:ignore
-                ]
-                if daily_weather_forecasts:
-                    if forecasts:
-                        # We're adding daily forecasts at the end of our (eventual) hourly forecasts
-                        # When doing so, we take special care as to not overlap the end of the hourly
-                        # list with the beginning of the daily list
-                        last_hourly_forecast = forecasts[-1]
-                        last_hourly_forecast_end_ts = (
-                            last_hourly_forecast.time_ts + 3600
-                        )
-                        index = 0
-                        for daily_forecast in daily_weather_forecasts:
+                except Exception as e:
+                    self.log_exception(
+                        self.DEBUG, e, "requesting hourly weather forecasts"
+                    )
 
-                            if daily_forecast.time_ts < last_hourly_forecast_end_ts:
-                                index += 1
-                                continue
+                try:
+                    response = await self.hass.services.async_call(
+                        "weather",
+                        "get_forecasts",
+                        service_data={
+                            "type": "daily",
+                            "entity_id": self.weather_entity_id,
+                        },
+                        blocking=True,
+                        return_response=True,
+                    )
+                    daily_weather_forecasts = [
+                        self._weather_from_forecast(f)
+                        for f in response[self.weather_entity_id][  # type:ignore
+                            "forecast"
+                        ]
+                    ]
+                    if daily_weather_forecasts:
+                        if forecasts:
+                            # We're adding daily forecasts at the end of our (eventual) hourly forecasts
+                            # When doing so, we take special care as to not overlap the end of the hourly
+                            # list with the beginning of the daily list
+                            last_hourly_forecast = forecasts[-1]
+                            last_hourly_forecast_end_ts = (
+                                last_hourly_forecast.time_ts + 3600
+                            )
+                            index = 0
+                            for daily_forecast in daily_weather_forecasts:
 
-                            if (
-                                daily_forecast.time_ts > last_hourly_forecast_end_ts
-                            ) and index:
-                                # this is not the first daily so we add an 'interpolation' between
-                                # the end of the hourly list with the beginning of the daily one
-                                daily_forecast_prev = daily_weather_forecasts[index - 1]
-                                daily_forecast_prev.time_ts = (
-                                    last_hourly_forecast_end_ts
-                                )
-                                daily_forecast_prev.time = helpers.datetime_from_epoch(
-                                    last_hourly_forecast_end_ts
-                                )
-                                forecasts.append(daily_forecast_prev)
+                                if daily_forecast.time_ts < last_hourly_forecast_end_ts:
+                                    index += 1
+                                    continue
 
-                            forecasts += daily_weather_forecasts[index:]
-                            break
+                                if (
+                                    daily_forecast.time_ts > last_hourly_forecast_end_ts
+                                ) and index:
+                                    # this is not the first daily so we add an 'interpolation' between
+                                    # the end of the hourly list with the beginning of the daily one
+                                    daily_forecast_prev = daily_weather_forecasts[
+                                        index - 1
+                                    ]
+                                    daily_forecast_prev.time_ts = (
+                                        last_hourly_forecast_end_ts
+                                    )
+                                    daily_forecast_prev.time = (
+                                        helpers.datetime_from_epoch(
+                                            last_hourly_forecast_end_ts
+                                        )
+                                    )
+                                    forecasts.append(daily_forecast_prev)
 
-                    else:
-                        forecasts = daily_weather_forecasts
+                                forecasts += daily_weather_forecasts[index:]
+                                break
 
-            except Exception as e:
-                self.log_exception(self.DEBUG, e, "requesting daily weather forecasts")
+                        else:
+                            forecasts = daily_weather_forecasts
 
-            self.estimator.set_weather_forecasts(forecasts)
+                except Exception as e:
+                    self.log_exception(
+                        self.DEBUG, e, "requesting daily weather forecasts"
+                    )
+
+                self.estimator.set_weather_forecasts(forecasts)
+
+        except Exception as e:
+            self.log_exception(self.DEBUG, e, "_async_update_weather")
 
     _WEATHER_CONDITION_TO_CLOUD: typing.Final[dict[str | None, float | None]] = {
         None: None,

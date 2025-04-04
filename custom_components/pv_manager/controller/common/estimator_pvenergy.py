@@ -150,6 +150,7 @@ class Estimator_PVEnergy(Estimator):
             for weather in weather_forecasts:
                 prev.next = weather
                 prev = weather
+        self.update_estimate()
 
     def get_weather_forecast_at(self, time_ts: float):
         try:

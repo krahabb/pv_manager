@@ -65,6 +65,8 @@ class Estimator(abc.ABC):
 
     local_offset_ts: typing.Final[int]
 
+    on_update_estimate: typing.Callable | None
+
     observed_time_ts: int
     _today_local_ts: int
     _tomorrow_local_ts: int
@@ -79,6 +81,7 @@ class Estimator(abc.ABC):
         "observation_duration_ts",
         "maximum_latency_ts",
         "local_offset_ts",
+        "on_update_estimate",
         # state
         "observed_samples",
         "observed_time_ts",  # time of most recent observed sample
@@ -105,7 +108,7 @@ class Estimator(abc.ABC):
         self.maximum_latency_ts: typing.Final = kwargs.get("maximum_latency_minutes", 5) * 60
         # offset of local time with respect to UTC for solar day alignment
         self.local_offset_ts = local_offset_ts
-
+        self.on_update_estimate = None
         self.observed_samples: typing.Final[deque[ObservedEnergy]] = deque()
         self.observed_time_ts = 0
         self._today_local_ts = 0
@@ -189,6 +192,12 @@ class Estimator(abc.ABC):
                     # at start when observed_samples is empty
                     return False
 
+                if self.on_update_estimate:
+                    # this is used as a possible optimization when initially loading history samples
+                    # where we don't want to update_estimate inline. Once a listener is installed then
+                    # we proceed to keeping the estimate updated
+                    self.update_estimate()
+
                 return True
 
         except AttributeError as e:
@@ -220,7 +229,8 @@ class Estimator(abc.ABC):
 
     @abc.abstractmethod
     def update_estimate(self):
-        pass
+        if self.on_update_estimate:
+            self.on_update_estimate()
 
     @abc.abstractmethod
     def get_estimated_energy(self, time_begin_ts: float, time_end_ts: float) -> float:

@@ -37,12 +37,17 @@ class Controller[_ConfigT: pmc.EntryConfig](helpers.Loggable):
     TYPE: typing.ClassVar[pmc.ConfigEntryType]
 
     PLATFORMS: typing.ClassVar[set[str]] = set()
-    """Default entity platforms used by the controller"""
+    """Default entity platforms used by the controller. This is used to prepopulate the entities dict so
+    that we'll (at least) forward entry setup to these platforms (even if we've still not registered any entity for those).
+    This in turn allows us to later create and register entities since we'll register the add_entities callback in our platforms."""
 
     config: _ConfigT
     options: pmc.EntryOptionsConfig
     platforms: typing.Final[dict[str, "AddConfigEntryEntitiesCallback"]]
+    """Dict of add_entities callbacks."""
     entities: typing.Final[dict[str, dict[str, "Entity"]]]
+    """Dict of registered entities for this controller/entry. This will be scanned in order to forward entry setup during
+    initialization."""
     hass: "HomeAssistant"
 
     __slots__ = (
@@ -82,6 +87,8 @@ class Controller[_ConfigT: pmc.EntryConfig](helpers.Loggable):
         self.entities = {platform: {} for platform in self.PLATFORMS}
         self.hass = hass
         helpers.Loggable.__init__(self, config_entry.title)
+        if self.options.get("create_diagnostic_entities"):
+            self._create_diagnostic_entities()
         config_entry.runtime_data = self
 
     # interface: Loggable
@@ -107,8 +114,6 @@ class Controller[_ConfigT: pmc.EntryConfig](helpers.Loggable):
         self._entry_update_listener_unsub = self.config_entry.add_update_listener(
             self._entry_update_listener
         )
-        if self.options.get("create_diagnostic_entities"):
-            await self._async_create_diagnostic_entities()
         # Here we're forwarding to all the platform registerd in self.entities.
         # This is by default preset in the constructor with a list of (default) PLATFORMS
         # for the controller class.
@@ -190,11 +195,11 @@ class Controller[_ConfigT: pmc.EntryConfig](helpers.Loggable):
                 )
             )
             if self.options.get("create_diagnostic_entities"):
-                await self._async_create_diagnostic_entities()
+                self._create_diagnostic_entities()
             else:
                 await self._async_destroy_diagnostic_entities()
 
-    async def _async_create_diagnostic_entities(self):
+    def _create_diagnostic_entities(self):
         """Dynamically create some diagnostic entities depending on configuration"""
         pass
 
@@ -300,11 +305,12 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
 
         self.refresh_period_ts = self.config.get("refresh_period_minutes", 5) * 60
         self.estimator = estimator_class(**(estimator_kwargs | self.config))  # type: ignore
-        self._refresh_callback_unsub = None
         self._observed_entity_tracking_unsub = None
+        self._refresh_callback_unsub = None
+        self._restore_history_task = None
+        self._restore_history_exit = False
 
     async def async_init(self):
-        self._restore_history_exit = False
         self._restore_history_task = recorder_instance(
             self.hass
         ).async_add_executor_job(
@@ -321,9 +327,12 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
             self.observed_entity_id,
             self._observed_entity_tracking_callback,
         )
-        self._refresh_callback_unsub = self.schedule_async_callback(
-            self.refresh_period_ts, self._async_refresh_callback
+        self._refresh_callback_unsub = self.schedule_callback(
+            self.refresh_period_ts, self._refresh_callback
         )
+        self.estimator.on_update_estimate = self._update_estimate
+        self.estimator.update_estimate()
+        self._process_observation(self.hass.states.get(self.observed_entity_id))
         return await super().async_init()
 
     async def async_shutdown(self):
@@ -339,6 +348,7 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
             if self._observed_entity_tracking_unsub:
                 self._observed_entity_tracking_unsub()
                 self._observed_entity_tracking_unsub = None
+            self.estimator.on_update_estimate = None
             self.estimator: "estimator.Estimator" = None  # type: ignore
             return True
         return False
@@ -349,16 +359,16 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
     ):
         self._process_observation(event.data.get("new_state"))
 
-    async def _async_refresh_callback(self):
-        self._refresh_callback_unsub = self.schedule_async_callback(
-            self.refresh_period_ts, self._async_refresh_callback
+    def _refresh_callback(self):
+        self._refresh_callback_unsub = self.schedule_callback(
+            self.refresh_period_ts, self._refresh_callback
         )
         self._process_observation(self.hass.states.get(self.observed_entity_id))
 
     def _process_observation(self, tracked_state: "State | None"):
         if tracked_state:
             try:
-                if self.estimator.add_observation(
+                self.estimator.add_observation(
                     estimator.Observation(
                         time.time(),
                         self._state_convert_func(
@@ -367,11 +377,7 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
                             self._state_convert_unit,
                         ),
                     )
-                ):
-                    self._update_estimate()
-
-                return
-
+                )
             except Exception as e:
                 self.log_exception(self.DEBUG, e, "updating estimate")
 

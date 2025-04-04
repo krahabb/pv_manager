@@ -49,11 +49,14 @@ class Entity(Loggable, entity.Entity if typing.TYPE_CHECKING else object):
         for _attr_name, _attr_value in kwargs.items():
             setattr(self, _attr_name, _attr_value)
         Loggable.__init__(self, id, logger=controller)
-        controller.entities.setdefault(self.PLATFORM, {})[id] = self
-        if self.PLATFORM in controller.platforms:
-            controller.platforms[self.PLATFORM](
-                [self], config_subentry_id=self.config_subentry_id
-            )
+        if self.PLATFORM in controller.entities:
+            controller.entities[self.PLATFORM][id] = self
+            if self.PLATFORM in controller.platforms:
+                controller.platforms[self.PLATFORM](
+                    [self], config_subentry_id=self.config_subentry_id
+                )
+        else:
+            controller.entities[self.PLATFORM] = {id: self}
 
     async def async_shutdown(self):
         self.controller.entities[self.PLATFORM].pop(self.id)
