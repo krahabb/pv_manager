@@ -12,6 +12,7 @@ from ...helpers import datetime_from_epoch
 from .estimator_pvenergy import Estimator_PVEnergy, ObservedPVEnergy, WeatherSample
 
 if typing.TYPE_CHECKING:
+    import datetime as dt
     from .estimator import EstimatorConfig
 
 
@@ -48,40 +49,28 @@ class TimeSpanEnergyModel:
     def __init__(self, sample: ObservedPVEnergy):
         self.samples = [sample]
         self.sample_max = sample
-        cloud_coverage = sample.cloud_coverage
-        if cloud_coverage is not None:
-            self.energy_max = sample.energy / (
-                1 - TimeSpanEnergyModel.Wc * cloud_coverage
-            )
-        else:
-            self.energy_max = sample.energy
+        self.energy_max = sample.energy
 
     def add_sample(self, sample: ObservedPVEnergy):
         self.samples.append(sample)
         if sample.energy > self.sample_max.energy:
             self.sample_max = sample
+        if sample.energy > self.energy_max:
+            self.energy_max = sample.energy
 
         # only estimate params if weather data are available
         if sample.weather:
             energy_estimate = self.get_energy_estimate(sample.weather)
             error = energy_estimate - sample.energy
-
             cloud_coverage = sample.cloud_coverage
             if cloud_coverage:
                 TimeSpanEnergyModel.Wc += (
-                    error
-                    * (cloud_coverage / self.energy_max)
-                    * TimeSpanEnergyModel.Wc_lr
+                    error * cloud_coverage * TimeSpanEnergyModel.Wc_lr
                 )
                 if TimeSpanEnergyModel.Wc > TimeSpanEnergyModel.Wc_max:
                     TimeSpanEnergyModel.Wc = TimeSpanEnergyModel.Wc_max
                 elif TimeSpanEnergyModel.Wc < 0.0:
                     TimeSpanEnergyModel.Wc = 0.0
-
-            self.energy_max -= error * TimeSpanEnergyModel.energy_lr
-
-        if self.energy_max < self.sample_max.energy:
-            self.energy_max = self.sample_max.energy
 
     def get_energy_estimate(self, weather: WeatherSample):
         cloud_coverage = weather.cloud_coverage
@@ -90,25 +79,23 @@ class TimeSpanEnergyModel:
         return self.energy_max
 
     def pop_sample(self, sample: ObservedPVEnergy):
-        try:
-            self.samples.remove(sample)
-            if sample == self.sample_max:
-                if self.samples:
-                    self._recalc()
-        except ValueError:
-            # sample not in list
-            pass
-        return len(self.samples) == 0
-
-    def _recalc(self):
-        self.sample_max = self.samples[0]
-        for sample in self.samples:
-            if sample.energy > self.sample_max.energy:
-                self.sample_max = sample
-
-        # TEMP: test with and without weather
-        if self.sample_max.weather is None:
-            self.energy_max = self.sample_max.energy
+        self.samples.remove(sample)
+        if self.samples:
+            # Energy max is slowly varying and linked to sunny days when yield is at maximum.
+            # When we discard history we might be left with only cloudy days with lower yields than
+            # the potential maximum so we just derate the energy_max (assuming over the history lenght
+            # the maximum yield will only eventually decay so fast)
+            self.energy_max *= 0.95
+            self.sample_max = self.samples[0]
+            for sample in self.samples:
+                if self.sample_max.energy < sample.energy:
+                    self.sample_max = sample
+                if self.energy_max < sample.energy:
+                    self.energy_max = sample.energy
+            return False
+        else:
+            # This model will be discarded
+            return True
 
     def as_dict(self):
         return {
@@ -149,11 +136,13 @@ class Estimator_PVEnergy_Heuristic(Estimator_PVEnergy):
         self,
         *,
         astral_observer: "astral.sun.Observer",
+        tzinfo: "dt.tzinfo",
         **kwargs: "typing.Unpack[EstimatorConfig]",
     ):
         Estimator_PVEnergy.__init__(
             self,
             astral_observer=astral_observer,
+            tzinfo=tzinfo,
             **kwargs,
         )
         self.history_samples: typing.Final = deque()
@@ -287,9 +276,35 @@ class Estimator_PVEnergy_Heuristic(Estimator_PVEnergy):
             return energy / self.sampling_interval_ts
         else:
             return (
-                self._get_estimated_energy_max(time_begin_ts, time_end_ts)[0]
+                self.get_estimated_energy_max(time_begin_ts, time_end_ts)
                 * self.observed_ratio
             )
+
+    def get_estimated_energy_max(
+        self, time_begin_ts: float | int, time_end_ts: float | int
+    ):
+        """Computes the 'maximum' expected energy in the time window."""
+        energy = 0
+        time_begin_ts = int(time_begin_ts)
+        time_end_ts = int(time_end_ts)
+        model_time_ts = time_begin_ts - (time_begin_ts % self.sampling_interval_ts)
+
+        while time_begin_ts < time_end_ts:
+            model_time_next_ts = model_time_ts + self.sampling_interval_ts
+            try:
+                model = self.model[model_time_ts % 86400]
+                if time_end_ts < model_time_next_ts:
+                    energy += model.energy_max * (time_end_ts - time_begin_ts)
+                    break
+                else:
+                    energy += model.energy_max * (model_time_next_ts - time_begin_ts)
+            except KeyError:
+                # no energy in model
+                pass
+
+            time_begin_ts = model_time_ts = model_time_next_ts
+
+        return energy / self.sampling_interval_ts
 
     def _observed_energy_history_add(self, history_sample: ObservedPVEnergy):
 
@@ -338,31 +353,3 @@ class Estimator_PVEnergy_Heuristic(Estimator_PVEnergy):
             for model in self.model.values():
                 if self._model_energy_max < model.energy_max:
                     self._model_energy_max = model.energy_max
-
-    # interface: self
-    def _get_estimated_energy_max(
-        self, time_begin_ts: float | int, time_end_ts: float | int
-    ):
-        """Computes the 'maximum' expected energy in the time window."""
-        energy = 0
-        missing = False
-        time_begin_ts = int(time_begin_ts)
-        time_end_ts = int(time_end_ts)
-        model_time_ts = time_begin_ts - (time_begin_ts % self.sampling_interval_ts)
-
-        while time_begin_ts < time_end_ts:
-            model_time_next_ts = model_time_ts + self.sampling_interval_ts
-            try:
-                model = self.model[model_time_ts % 86400]
-                if time_end_ts < model_time_next_ts:
-                    energy += model.energy_max * (time_end_ts - time_begin_ts)
-                    break
-                else:
-                    energy += model.energy_max * (model_time_next_ts - time_begin_ts)
-            except KeyError:
-                # no energy in model
-                missing = True
-
-            time_begin_ts = model_time_ts = model_time_next_ts
-
-        return energy / self.sampling_interval_ts, missing

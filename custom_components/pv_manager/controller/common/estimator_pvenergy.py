@@ -83,11 +83,12 @@ class Estimator_PVEnergy(Estimator):
         self,
         *,
         astral_observer: "sun.Observer",
+        tzinfo: dt.tzinfo,
         **kwargs: "typing.Unpack[EstimatorConfig]",
     ):
         Estimator.__init__(
             self,
-            local_offset_ts=int(astral_observer.longitude * 4 * 60),
+            tzinfo=tzinfo,
             **kwargs,
         )
         self.astral_observer = astral_observer

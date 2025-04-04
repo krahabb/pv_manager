@@ -58,18 +58,18 @@ class EstimatorConfig(typing.TypedDict):
     maximum_latency_minutes: int
     """Maximum time between source pv power/energy samples before considering an error in data sampling."""
 
+
 class Estimator(abc.ABC):
     """
     Base class for all (energy) estimators.
     """
 
-    local_offset_ts: typing.Final[int]
-
+    tzinfo: dt.tzinfo
     on_update_estimate: typing.Callable | None
 
     observed_time_ts: int
-    _today_local_ts: int
-    _tomorrow_local_ts: int
+    today_ts: int
+    tomorrow_ts: int
     today_energy: float
     _observed_sample_curr: ObservedEnergy
     _observation_prev: Observation
@@ -80,13 +80,13 @@ class Estimator(abc.ABC):
         "history_duration_ts",
         "observation_duration_ts",
         "maximum_latency_ts",
-        "local_offset_ts",
+        "tzinfo",
         "on_update_estimate",
         # state
         "observed_samples",
         "observed_time_ts",  # time of most recent observed sample
-        "_today_local_ts",  # UTC time of local midnight (start of today)
-        "_tomorrow_local_ts",  # UTC time of local midnight tomorrow (start of tomorrow)
+        "today_ts",  # UTC time of local midnight (start of today)
+        "tomorrow_ts",  # UTC time of local midnight tomorrow (start of tomorrow)
         "today_energy",  # energy accumulated today
         "_observed_sample_curr",
         "_observation_prev",
@@ -95,24 +95,29 @@ class Estimator(abc.ABC):
     def __init__(
         self,
         *,
-        local_offset_ts: int,
-        **kwargs: typing.Unpack[EstimatorConfig]
+        tzinfo: dt.tzinfo,
+        **kwargs: typing.Unpack[EstimatorConfig],
     ):
         sampling_interval_ts = kwargs.get("sampling_interval_minutes", 5) * 60
         assert (
             sampling_interval_ts % 300
         ) == 0, "sampling_interval must be a multiple of 5 minutes"
         self.sampling_interval_ts: typing.Final = sampling_interval_ts
-        self.history_duration_ts: typing.Final = kwargs.get("history_duration_days", 7) * 86400
-        self.observation_duration_ts: typing.Final = kwargs.get("observation_duration_minutes", 20) * 60
-        self.maximum_latency_ts: typing.Final = kwargs.get("maximum_latency_minutes", 5) * 60
-        # offset of local time with respect to UTC for solar day alignment
-        self.local_offset_ts = local_offset_ts
+        self.history_duration_ts: typing.Final = (
+            kwargs.get("history_duration_days", 7) * 86400
+        )
+        self.observation_duration_ts: typing.Final = (
+            kwargs.get("observation_duration_minutes", 20) * 60
+        )
+        self.maximum_latency_ts: typing.Final = (
+            kwargs.get("maximum_latency_minutes", 5) * 60
+        )
+        self.tzinfo = tzinfo
         self.on_update_estimate = None
         self.observed_samples: typing.Final[deque[ObservedEnergy]] = deque()
         self.observed_time_ts = 0
-        self._today_local_ts = 0
-        self._tomorrow_local_ts = 0
+        self.today_ts = 0
+        self.tomorrow_ts = 0
         self.today_energy = 0
         # do not define here..we're relying on AttributeError for proper initialization
         # self._history_sample_curr = None
@@ -138,8 +143,8 @@ class Estimator(abc.ABC):
             if observation.time_ts < self._observed_sample_curr.time_next_ts:
                 delta_time_ts = observation.time_ts - self._observation_prev.time_ts
                 if delta_time_ts < self.maximum_latency_ts:
-                    self._observed_sample_curr.energy += (
-                        self._observer_energy_compute(observation, delta_time_ts)
+                    self._observed_sample_curr.energy += self._observer_energy_compute(
+                        observation, delta_time_ts
                     )
                     self._observed_sample_curr.samples += 1
 
@@ -168,7 +173,7 @@ class Estimator(abc.ABC):
                 self.observed_samples.append(history_sample_prev)
                 self.observed_time_ts = history_sample_prev.time_next_ts
 
-                if history_sample_prev.time_ts >= self._tomorrow_local_ts:
+                if history_sample_prev.time_ts >= self.tomorrow_ts:
                     # new day
                     self._observed_energy_daystart(history_sample_prev.time_ts)
 
@@ -239,16 +244,36 @@ class Estimator(abc.ABC):
         """
         return 0
 
+    @abc.abstractmethod
+    def get_estimated_energy_max(
+        self, time_begin_ts: float | int, time_end_ts: float | int
+    ):
+        """
+        Returns the estimated maximum energy (the 'capacity' of the plant) in the (forward) time
+        interval at current estimator state.
+        """
+        return 0
+
+
     def _observed_energy_new(self, observation: Observation):
         """Called when starting data collection for a new ObservedEnergy sample."""
         return ObservedEnergy(observation, self.sampling_interval_ts)
 
     def _observed_energy_daystart(self, time_ts: int):
         """Called when starting a new day in observations."""
-        self._today_local_ts = (
-            time_ts - (time_ts % 86400) - self.local_offset_ts # sun hour without considering local declination for simplicity
+        time_local = datetime_from_epoch(time_ts, self.tzinfo)
+        today_local = dt.datetime(
+            time_local.year, time_local.month, time_local.day, tzinfo=self.tzinfo
         )
-        self._tomorrow_local_ts = self._today_local_ts + 86400
+        tomorrow_local = today_local + dt.timedelta(days=1)
+        self.today_ts = int(today_local.astimezone(dt.UTC).timestamp())
+        self.tomorrow_ts = int(tomorrow_local.astimezone(dt.UTC).timestamp())
+        # previous day alignment was based off location with:
+        # local_offset_ts=int(longitude * 4 * 60),
+        # self.today_ts = (
+        #    time_ts - (time_ts % 86400) - self.local_offset_ts # sun hour without considering local declination for simplicity
+        # )
+        # self.tomorrow_ts = self._today_local_ts + 86400
         self.today_energy = 0
 
     @abc.abstractmethod
@@ -257,9 +282,7 @@ class Estimator(abc.ABC):
         pass
 
     @abc.abstractmethod
-    def _observer_energy_compute(
-        self, observation: Observation, delta_time_ts: float
-    ):
+    def _observer_energy_compute(self, observation: Observation, delta_time_ts: float):
         """To be implemented in the Observer mixin."""
         return 0
 
@@ -287,9 +310,7 @@ class Estimator(abc.ABC):
 class EnergyObserver(Estimator if typing.TYPE_CHECKING else object):
     """Mixin class to add to the actual Estimator in order to process energy input observations."""
 
-    def _observer_energy_compute(
-        self, observation: Observation, delta_time_ts: float
-    ):
+    def _observer_energy_compute(self, observation: Observation, delta_time_ts: float):
         if observation.value >= self._observation_prev.value:
             return observation.value - self._observation_prev.value
         else:
@@ -326,9 +347,7 @@ class EnergyObserver(Estimator if typing.TYPE_CHECKING else object):
 class PowerObserver(Estimator if typing.TYPE_CHECKING else object):
     """Mixin class to add to the actual Estimator in order to process power input observations."""
 
-    def _observer_energy_compute(
-        self, observation: Observation, delta_time_ts: float
-    ):
+    def _observer_energy_compute(self, observation: Observation, delta_time_ts: float):
         return (self._observation_prev.value + observation.value) * delta_time_ts / 7200
 
     def _observer_energy_interpolate(
