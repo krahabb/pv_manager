@@ -4,7 +4,6 @@ Controller for pv energy production estimation
 
 import datetime as dt
 import enum
-import time
 import typing
 
 import astral
@@ -58,7 +57,7 @@ class Controller(controller.EnergyEstimatorController[EntryConfig]):
 
     TYPE = pmc.ConfigEntryType.PV_ENERGY_ESTIMATOR
 
-    PLATFORMS = {Sensor.PLATFORM}
+
 
     estimator: Estimator_PVEnergy_Heuristic
 
@@ -68,8 +67,6 @@ class Controller(controller.EnergyEstimatorController[EntryConfig]):
         # state
         "weather_state",
         "_weather_tracking_unsub",
-        "today_energy_estimate_sensor",
-        "tomorrow_energy_estimate_sensor",
     )
 
     # interface: EnergyEstimatorController
@@ -104,13 +101,6 @@ class Controller(controller.EnergyEstimatorController[EntryConfig]):
         self._weather_tracking_unsub = None
         self.weather_state = None
 
-        self.today_energy_estimate_sensor = controller.EnergyEstimatorSensor(
-            self, "today_energy_estimate", name="Today energy estimate"
-        )
-        self.tomorrow_energy_estimate_sensor = controller.EnergyEstimatorSensor(
-            self, "tomorrow_energy_estimate", name="Tomorrow energy estimate"
-        )
-
     async def async_init(self):
         await super().async_init()
         if self.weather_entity_id:
@@ -128,8 +118,6 @@ class Controller(controller.EnergyEstimatorController[EntryConfig]):
             if self._weather_tracking_unsub:
                 self._weather_tracking_unsub()
                 self._weather_tracking_unsub = None
-            self.today_energy_estimate_sensor: controller.EnergyEstimatorSensor = None  # type: ignore
-            self.tomorrow_energy_estimate_sensor: controller.EnergyEstimatorSensor = None  # type: ignore
             return True
         return False
 
@@ -140,37 +128,9 @@ class Controller(controller.EnergyEstimatorController[EntryConfig]):
                 DiagnosticSensor(self, diagnostic_sensor_enum)
 
     # interface: EnergyEstimatorController
-    def _update_estimate(self):
-        estimator = self.estimator
+    def _update_estimate(self, estimator: Estimator_PVEnergy_Heuristic):
 
         sensors = self.entities[Sensor.PLATFORM]
-
-        self.today_energy_estimate_sensor.extra_state_attributes = {
-            # "today_ts": estimator._today_local_ts,
-            # "today": helpers.datetime_from_epoch(estimator._today_local_ts).isoformat(),
-            # "tomorrow_ts": estimator._tomorrow_local_ts,
-            # "tomorrow": helpers.datetime_from_epoch(estimator._tomorrow_local_ts).isoformat(),
-            # "observed_time_ts": estimator.observed_time_ts,
-            "observed_time": helpers.datetime_from_epoch(
-                estimator.observed_time_ts
-            ).isoformat(),
-            # "observed_ratio": estimator.observed_ratio,
-            "model_energy_max": estimator._model_energy_max,
-            "today_energy_max": estimator.get_estimated_energy_max(estimator.today_ts, estimator.tomorrow_ts),
-            # "model_Wc": TimeSpanEnergyModel.Wc,
-            "weather": estimator.get_weather_at(estimator.observed_time_ts),
-        }
-        self.today_energy_estimate_sensor.update(
-            estimator.today_energy
-            + estimator.get_estimated_energy(
-                estimator.observed_time_ts, estimator.tomorrow_ts
-            )
-        )
-        self.tomorrow_energy_estimate_sensor.update(
-            estimator.get_estimated_energy(
-                estimator.tomorrow_ts, estimator.tomorrow_ts + 86400
-            )
-        )
 
         if DiagnosticSensorsEnum.observed_ratio in sensors:
             sensors[DiagnosticSensorsEnum.observed_ratio].update(
@@ -181,7 +141,7 @@ class Controller(controller.EnergyEstimatorController[EntryConfig]):
                 TimeSpanEnergyModel.Wc
             )
 
-        super()._update_estimate()
+        super()._update_estimate(estimator)
 
     def _restore_history(self, history_start_time: dt.datetime):
         if self._restore_history_exit:

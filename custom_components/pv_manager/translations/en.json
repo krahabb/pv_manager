@@ -10,7 +10,9 @@
                 "title": "Create configuration",
                 "menu_options": {
                     "energy_calculator": "Energy calculator",
+                    "consumption_estimator": "Consumption estimator",
                     "pv_energy_estimator": "PV energy estimator",
+                    "battery_helper": "Battery helper",
                     "pv_plant_simulator": "PV plant simulator"
                 }
             },
@@ -25,13 +27,25 @@
                     "maximum_latency_seconds": "Maximum latency"
                 }
             },
+            "consumption_estimator": {
+                "title": "Consumed energy estimator",
+                "description": "Estimate energy consumption",
+                "data": {
+                    "name": "Entity name(s)",
+                    "observed_entity_id": "Observed consumed power/energy entity",
+                    "sampling_interval_minutes": "Sampling interval",
+                    "observation_duration_minutes": "Observation period",
+                    "history_duration_days": "History length",
+                    "refresh_period_minutes": "Refresh interval",
+                    "maximum_latency_minutes": "Maximum latency"
+                }
+            },
             "pv_energy_estimator": {
                 "title": "PV Energy estimator",
                 "description": "Estimate PV energy production",
                 "data": {
                     "name": "Entity name(s)",
-                    "pv_power_entity_id": "Source PV power entity",
-                    "pv_energy_entity_id": "Source PV energy entity",
+                    "observed_entity_id": "Observed PV power/energy entity",
                     "weather_entity_id": "Weather entity",
                     "sampling_interval_minutes": "Sampling interval",
                     "observation_duration_minutes": "Observation period",
@@ -53,7 +67,7 @@
         }
     },
     "config_subentries": {
-        "pv_energy_estimator_sensor": {
+        "energy_estimator_sensor": {
             "initiate_flow": {
                 "user": "Forecast sensor"
             },

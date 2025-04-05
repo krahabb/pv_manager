@@ -45,7 +45,7 @@ class ObservedEnergy:
         self.time_ts = time_ts
         self.time_next_ts = time_ts + sampling_interval_ts
         self.energy = 0
-        self.samples = 1
+        self.samples = 0
 
 
 class EstimatorConfig(typing.TypedDict):
@@ -64,8 +64,11 @@ class Estimator(abc.ABC):
     Base class for all (energy) estimators.
     """
 
+    OPS_DECAY: typing.Final = 0.9
+    """Decay factor for the average number of observations per sample."""
+
     tzinfo: dt.tzinfo
-    on_update_estimate: typing.Callable | None
+    on_update_estimate: typing.Callable[["Estimator"], None] | None
 
     observed_time_ts: int
     today_ts: int
@@ -85,6 +88,7 @@ class Estimator(abc.ABC):
         # state
         "observed_samples",
         "observed_time_ts",  # time of most recent observed sample
+        "observations_per_sample_avg",
         "today_ts",  # UTC time of local midnight (start of today)
         "tomorrow_ts",  # UTC time of local midnight tomorrow (start of tomorrow)
         "today_energy",  # energy accumulated today
@@ -116,6 +120,7 @@ class Estimator(abc.ABC):
         self.on_update_estimate = None
         self.observed_samples: typing.Final[deque[ObservedEnergy]] = deque()
         self.observed_time_ts = 0
+        self.observations_per_sample_avg = 0
         self.today_ts = 0
         self.tomorrow_ts = 0
         self.today_energy = 0
@@ -124,12 +129,32 @@ class Estimator(abc.ABC):
         # self._observation_prev = None
 
     def as_dict(self):
-        """Returns the state info of the estimator as a dictionary."""
+        """Returns the full state info of the estimator as a dictionary.
+        Used for serialization to debug logs or so."""
         return {
             "sampling_interval_minutes": self.sampling_interval_ts / 60,
             "observation_duration_minutes": self.observation_duration_ts / 60,
             "history_duration_days": self.history_duration_ts / 86400,
             "maximum_latency_minutes": self.maximum_latency_ts / 60,
+        }
+
+    def get_state_dict(self):
+        """Returns a synthetic state string for the estimator.
+        Used for debugging purposes."""
+        return {
+            "today": datetime_from_epoch(self.today_ts).isoformat(),
+            # "tomorrow_ts": estimator._tomorrow_local_ts,
+            "tomorrow": datetime_from_epoch(self.tomorrow_ts).isoformat(),
+            # "observed_time_ts": estimator.observed_time_ts,
+            "observed_time": datetime_from_epoch(self.observed_time_ts).isoformat(),
+            "observations_per_sample_avg": self.observations_per_sample_avg,
+            "today_energy": self.today_energy,
+            "today_energy_max": self.get_estimated_energy_max(
+                self.today_ts, self.tomorrow_ts
+            ),
+            "today_energy_min": self.get_estimated_energy_min(
+                self.today_ts, self.tomorrow_ts
+            ),
         }
 
     def add_observation(self, observation: Observation) -> bool:
@@ -168,7 +193,14 @@ class Estimator(abc.ABC):
                             self._observed_sample_curr,
                             history_sample_prev,
                         )
+                        # for simplicity we consider interpolation as adding a full 1 sample
+                        history_sample_prev.samples += 1
+                        self._observed_sample_curr.samples += 1
 
+                self.observations_per_sample_avg = (
+                    self.observations_per_sample_avg * Estimator.OPS_DECAY
+                    + history_sample_prev.samples * (1 - Estimator.OPS_DECAY)
+                )
                 self._observation_prev = observation
                 self.observed_samples.append(history_sample_prev)
                 self.observed_time_ts = history_sample_prev.time_next_ts
@@ -235,7 +267,7 @@ class Estimator(abc.ABC):
     @abc.abstractmethod
     def update_estimate(self):
         if self.on_update_estimate:
-            self.on_update_estimate()
+            self.on_update_estimate(self)
 
     @abc.abstractmethod
     def get_estimated_energy(self, time_begin_ts: float, time_end_ts: float) -> float:
@@ -254,6 +286,15 @@ class Estimator(abc.ABC):
         """
         return 0
 
+    @abc.abstractmethod
+    def get_estimated_energy_min(
+        self, time_begin_ts: float | int, time_end_ts: float | int
+    ):
+        """
+        Returns the estimated minimum energy in the (forward) time
+        interval at current estimator state.
+        """
+        return 0
 
     def _observed_energy_new(self, observation: Observation):
         """Called when starting data collection for a new ObservedEnergy sample."""

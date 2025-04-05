@@ -17,20 +17,6 @@ if typing.TYPE_CHECKING:
 
 
 class TimeSpanEnergyModel:
-    samples: list[ObservedPVEnergy]
-
-    sample_max: ObservedPVEnergy
-
-    energy_max: float
-
-    # initial value means 100% cloud_coverage would reduce output by 80%
-    Wc: typing.ClassVar = 0.008
-    Wc_max: typing.ClassVar = 0.008
-
-    # 'learning rate'
-    energy_lr: typing.ClassVar = 0.2
-    Wc_lr: typing.ClassVar = 0.0000005
-
     """
     Trying to implement a very basic linear model where
 
@@ -46,10 +32,34 @@ class TimeSpanEnergyModel:
     - Wc is global for the whole model (of EnergyModels)
     """
 
+    samples: list[ObservedPVEnergy]
+
+    sample_max: ObservedPVEnergy
+
+    energy_max: float
+
+    # initial value means 100% cloud_coverage would reduce output by 70%
+    Wc: typing.ClassVar = 0.007
+    Wc_max: typing.ClassVar = 0.008
+    Wc_lr: typing.ClassVar = 0.0000005  # 'learning rate'
+
+    __slots__ = (
+        "samples",
+        "sample_max",
+        "energy_max",
+    )
+
     def __init__(self, sample: ObservedPVEnergy):
         self.samples = [sample]
         self.sample_max = sample
         self.energy_max = sample.energy
+
+    def as_dict(self):
+        return {
+            "samples": self.samples,
+            "sample_max": self.sample_max,
+            "energy_max": self.energy_max,
+        }
 
     def add_sample(self, sample: ObservedPVEnergy):
         self.samples.append(sample)
@@ -97,13 +107,6 @@ class TimeSpanEnergyModel:
             # This model will be discarded
             return True
 
-    def as_dict(self):
-        return {
-            "samples": self.samples,
-            "sample_max": self.sample_max,
-            "energy_max": self.energy_max,
-        }
-
 
 class Estimator_PVEnergy_Heuristic(Estimator_PVEnergy):
     """
@@ -117,9 +120,6 @@ class Estimator_PVEnergy_Heuristic(Estimator_PVEnergy):
     Also, the estimation is adjusted on the fly by observing current energy production over an
     'observation time window' and comparing it against its estimation. The ratio will be used to adjust
     the forecasts for the time ahead.
-
-    Weather could also be considered to provide more stable long term estimations (not implemented atm).
-
     """
 
     history_samples: deque[ObservedPVEnergy]
@@ -159,6 +159,15 @@ class Estimator_PVEnergy_Heuristic(Estimator_PVEnergy):
     # interface: Estimator_PVEnergy
     def as_dict(self):
         return super().as_dict() | {"model": self.model}
+
+    def get_state_dict(self):
+        """Returns a synthetic state string for the estimator.
+        Used for debugging purposes."""
+        return super().get_state_dict() | {
+            "model_energy_max": self._model_energy_max,
+            "observed_ratio": self.observed_ratio,
+            "cloud_weight": TimeSpanEnergyModel.Wc,
+        }
 
     def update_estimate(self):
         """Process a new sample trying to update the forecast of energy production."""
@@ -200,7 +209,7 @@ class Estimator_PVEnergy_Heuristic(Estimator_PVEnergy):
             self.observed_ratio = 1
 
         if self.on_update_estimate:
-            self.on_update_estimate()
+            self.on_update_estimate(self)
 
     def get_estimated_energy(
         self, time_begin_ts: float | int, time_end_ts: float | int
@@ -305,6 +314,11 @@ class Estimator_PVEnergy_Heuristic(Estimator_PVEnergy):
             time_begin_ts = model_time_ts = model_time_next_ts
 
         return energy / self.sampling_interval_ts
+
+    def get_estimated_energy_min(
+        self, time_begin_ts: float | int, time_end_ts: float | int
+    ):
+        return 0
 
     def _observed_energy_history_add(self, history_sample: ObservedPVEnergy):
 

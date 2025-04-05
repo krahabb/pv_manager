@@ -105,6 +105,13 @@ class Estimator_PVEnergy(Estimator):
             "weather_forecasts": self.weather_forecasts,
         }
 
+    def get_state_dict(self):
+        """Returns a synthetic state string for the estimator.
+        Used for debugging purposes."""
+        return super().get_state_dict() | {
+            "weather": self.get_weather_at(self.observed_time_ts),
+        }
+
     def _observed_energy_new(self, observation: Observation):
         return ObservedPVEnergy(
             observation,

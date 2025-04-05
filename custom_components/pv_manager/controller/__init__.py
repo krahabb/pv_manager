@@ -258,12 +258,16 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
     Controller[_ConfigT]
 ):
 
+    PLATFORMS = {Sensor.PLATFORM}
+
     __slots__ = (
         # configuration
         "observed_entity_id",
         "refresh_period_ts",
         # state
         "estimator",
+        "today_energy_estimate_sensor",
+        "tomorrow_energy_estimate_sensor",
         "estimator_sensors",
         "_state_convert_func",
         "_state_convert_unit",
@@ -356,6 +360,17 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
             tzinfo=dt_util.get_default_time_zone(),
             **(estimator_kwargs | self.config),  # type: ignore
         )
+        self.today_energy_estimate_sensor = EnergyEstimatorSensor(
+            self,
+            "today_energy_estimate",
+            name=f"{self.config.get("name", "Estimated energy")} (today)",
+        )
+        self.tomorrow_energy_estimate_sensor = EnergyEstimatorSensor(
+            self,
+            "tomorrow_energy_estimate",
+            name=f"{self.config.get("name", "Estimated energy")} (tomorrow)",
+        )
+
         self.estimator_sensors: dict[str, EnergyEstimatorSensor] = {}
         for subentry_id, config_subentry in config_entry.subentries.items():
             match config_subentry.subentry_type:
@@ -417,6 +432,8 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
                 self._observed_entity_tracking_unsub = None
             self.estimator.on_update_estimate = None
             self.estimator: "estimator.Estimator" = None  # type: ignore
+            self.today_energy_estimate_sensor: EnergyEstimatorSensor = None  # type: ignore
+            self.tomorrow_energy_estimate_sensor: EnergyEstimatorSensor = None  # type: ignore
             self.estimator_sensors.clear()
             return True
         return False
@@ -487,12 +504,28 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
             except Exception as e:
                 self.log_exception(self.DEBUG, e, "updating estimate")
 
-    def _update_estimate(self):
-        now = time.time()
+    def _update_estimate(self, estimator: "estimator.Estimator"):
+
+        self.today_energy_estimate_sensor.extra_state_attributes = (
+            estimator.get_state_dict()
+        )
+        self.today_energy_estimate_sensor.update(
+            estimator.today_energy
+            + estimator.get_estimated_energy(
+                estimator.observed_time_ts, estimator.tomorrow_ts
+            )
+        )
+        self.tomorrow_energy_estimate_sensor.update(
+            estimator.get_estimated_energy(
+                estimator.tomorrow_ts, estimator.tomorrow_ts + 86400
+            )
+        )
+
         for sensor in self.estimator_sensors.values():
             sensor.update(
                 self.estimator.get_estimated_energy(
-                    now, now + sensor.forecast_duration_ts
+                    estimator.observed_time_ts,
+                    estimator.observed_time_ts + sensor.forecast_duration_ts,
                 )
             )
 
