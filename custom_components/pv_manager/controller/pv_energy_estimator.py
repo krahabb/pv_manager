@@ -57,8 +57,6 @@ class Controller(controller.EnergyEstimatorController[EntryConfig]):
 
     TYPE = pmc.ConfigEntryType.PV_ENERGY_ESTIMATOR
 
-
-
     estimator: Estimator_PVEnergy_Heuristic
 
     __slots__ = (
@@ -66,7 +64,6 @@ class Controller(controller.EnergyEstimatorController[EntryConfig]):
         "weather_entity_id",
         # state
         "weather_state",
-        "_weather_tracking_unsub",
     )
 
     # interface: EnergyEstimatorController
@@ -98,28 +95,15 @@ class Controller(controller.EnergyEstimatorController[EntryConfig]):
         )
 
         self.weather_entity_id = self.config.get("weather_entity_id")
-        self._weather_tracking_unsub = None
         self.weather_state = None
 
     async def async_init(self):
         await super().async_init()
         if self.weather_entity_id:
-            self._weather_tracking_unsub = event.async_track_state_change_event(
-                self.hass,
-                self.weather_entity_id,
-                self._weather_tracking_callback,
-            )
+            self.track_state(self.weather_entity_id, self._weather_tracking_callback)
             await self._async_update_weather(
                 self.hass.states.get(self.weather_entity_id)
             )
-
-    async def async_shutdown(self):
-        if await super().async_shutdown():
-            if self._weather_tracking_unsub:
-                self._weather_tracking_unsub()
-                self._weather_tracking_unsub = None
-            return True
-        return False
 
     def _create_diagnostic_entities(self):
         sensors = self.entities[Sensor.PLATFORM]

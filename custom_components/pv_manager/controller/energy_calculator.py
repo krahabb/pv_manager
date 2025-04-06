@@ -53,11 +53,11 @@ class EnergySensor(RestoreSensor):
 
     __slots__ = (
         "cycle_mode",
-        "last_reset", # HA property
+        "last_reset",  # HA property
         "last_reset_dt",
-        "last_reset_ts", # UTC timestamp of last reset
+        "last_reset_ts",  # UTC timestamp of last reset
         "next_reset_dt",
-        "next_reset_ts", # UTC timestamp of next reset
+        "next_reset_ts",  # UTC timestamp of next reset
         "_async_track_cycle_job",
         "_async_track_cycle_unsub",
     )
@@ -186,7 +186,9 @@ class EnergySensor(RestoreSensor):
         if reschedule:
             self._async_track_cycle_unsub = event.async_track_point_in_utc_time(self.hass, self._async_track_cycle_job, self.next_reset_dt)  # type: ignore
             self.log(
-                self.DEBUG, "Scheduled next cycle at: %s", self.next_reset_dt.isoformat()
+                self.DEBUG,
+                "Scheduled next cycle at: %s",
+                self.next_reset_dt.isoformat(),
             )
 
 
@@ -204,7 +206,6 @@ class Controller(controller.Controller[EntryConfig]):
         "maximum_latency_alarm_binary_sensor",
         "_power",
         "_power_epoch",
-        "_power_tracking_unsub",
         "_integration_callback_unsub",
         "_maximum_latency_callback_unsub",
     )
@@ -239,11 +240,8 @@ class Controller(controller.Controller[EntryConfig]):
         )
         self._power_epoch = time.monotonic()
 
-        self._power_tracking_unsub = event.async_track_state_change_event(
-            self.hass,
-            self.config["power_entity_id"],
-            self._power_tracking_callback,
-        )
+        self.track_state(self.config["power_entity_id"], self._power_tracking_callback)
+
         self._integration_callback_unsub = (
             self.schedule_callback(
                 self.config["integration_period_seconds"], self._integration_callback
@@ -266,19 +264,14 @@ class Controller(controller.Controller[EntryConfig]):
             self._maximum_latency_callback_unsub = None
 
     async def async_shutdown(self):
-        if await super().async_shutdown():
-            self._power_tracking_unsub()
-            if self._integration_callback_unsub:
-                self._integration_callback_unsub.cancel()
-                self._integration_callback_unsub = None
-            if self._maximum_latency_callback_unsub:
-                self._maximum_latency_callback_unsub.cancel()
-                self._maximum_latency_callback_unsub = None
-                self.maximum_latency_alarm_binary_sensor: BinarySensor = (
-                    None
-                )  # type:ignore
-            return True
-        return False
+        await super().async_shutdown()
+        if self._integration_callback_unsub:
+            self._integration_callback_unsub.cancel()
+            self._integration_callback_unsub = None
+        if self._maximum_latency_callback_unsub:
+            self._maximum_latency_callback_unsub.cancel()
+            self._maximum_latency_callback_unsub = None
+            self.maximum_latency_alarm_binary_sensor: BinarySensor = None  # type:ignore
 
     @callback
     def _power_tracking_callback(self, event: "Event[event.EventStateChangedData]"):

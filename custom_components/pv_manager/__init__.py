@@ -25,7 +25,5 @@ async def async_unload_entry(
     hass: "HomeAssistant", config_entry: "ConfigEntry[controller.Controller]"
 ):
     cntrl = config_entry.runtime_data
-    if not await cntrl.async_shutdown():
-        return False
-
+    await cntrl.async_shutdown()
     return True

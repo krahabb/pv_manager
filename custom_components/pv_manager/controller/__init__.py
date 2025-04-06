@@ -22,7 +22,6 @@ from ..sensor import Sensor
 from .common import estimator
 
 if typing.TYPE_CHECKING:
-    from typing import Any, Callable, Coroutine
 
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import Event, HomeAssistant, State
@@ -51,6 +50,9 @@ class Controller[_ConfigT: pmc.EntryConfig](helpers.Loggable):
     initialization."""
     hass: "HomeAssistant"
 
+    _callbacks_unsub: set[typing.Callable[[], None]]
+    """Dict of callbacks to be unsubscribed when the entry is unloaded."""
+
     __slots__ = (
         "config_entry",
         "config",
@@ -58,7 +60,7 @@ class Controller[_ConfigT: pmc.EntryConfig](helpers.Loggable):
         "platforms",
         "entities",
         "hass",
-        "_entry_update_listener_unsub",
+        "_callbacks_unsub",
     )
 
     @staticmethod
@@ -87,6 +89,7 @@ class Controller[_ConfigT: pmc.EntryConfig](helpers.Loggable):
         self.platforms = {}
         self.entities = {platform: {} for platform in self.PLATFORMS}
         self.hass = hass
+        self._callbacks_unsub = set()
         helpers.Loggable.__init__(self, config_entry.title)
         if self.options.get("create_diagnostic_entities"):
             self._create_diagnostic_entities()
@@ -112,8 +115,8 @@ class Controller[_ConfigT: pmc.EntryConfig](helpers.Loggable):
 
     # interface: self
     async def async_init(self):
-        self._entry_update_listener_unsub = self.config_entry.add_update_listener(
-            self._entry_update_listener
+        self._callbacks_unsub.add(
+            self.config_entry.add_update_listener(self._entry_update_listener)
         )
         # Here we're forwarding to all the platform registerd in self.entities.
         # This is by default preset in the constructor with a list of (default) PLATFORMS
@@ -148,21 +151,22 @@ class Controller[_ConfigT: pmc.EntryConfig](helpers.Loggable):
         if not await self.hass.config_entries.async_unload_platforms(
             self.config_entry, self.platforms.keys()
         ):
-            return False
-        self._entry_update_listener_unsub()
+            raise Exception("Failed to unload platforms")
+
+        for unsub in self._callbacks_unsub:
+            unsub()
         # removing circular refs here
         for entities_per_platform in self.entities.values():
             for entity in list(entities_per_platform.values()):
                 await entity.async_shutdown()
             assert not entities_per_platform
         self.platforms.clear()
-        return True
 
     def get_entity_registry(self):
         return entity_registry.async_get(self.hass)
 
     def schedule_async_callback(
-        self, delay: float, target: "Callable[..., Coroutine]", *args
+        self, delay: float, target: "typing.Callable[..., typing.Coroutine]", *args
     ):
         @callback
         def _callback(_target, *_args):
@@ -170,19 +174,29 @@ class Controller[_ConfigT: pmc.EntryConfig](helpers.Loggable):
 
         return self.hass.loop.call_later(delay, _callback, target, *args)
 
-    def schedule_callback(self, delay: float, target: "Callable", *args):
+    def schedule_callback(self, delay: float, target: "typing.Callable", *args):
         return self.hass.loop.call_later(delay, target, *args)
 
     @callback
     def async_create_task[_R](
         self,
-        target: "Coroutine[Any, Any, _R]",
+        target: "typing.Coroutine[typing.Any, typing.Any, _R]",
         name: str,
         eager_start: bool = True,
     ):
         return self.config_entry.async_create_task(
             self.hass, target, f"{self.logtag}{name}", eager_start
         )
+
+    def track_state(
+        self,
+        entity_id: str,
+        action: "typing.Callable[[Event[event.EventStateChangedData]], typing.Any]",
+    ):
+        """Track a state change for the given entity_id."""
+        self._callbacks_unsub.add(event.async_track_state_change_event(
+            self.hass, entity_id, action
+        ))
 
     async def _entry_update_listener(
         self, hass: "HomeAssistant", config_entry: "ConfigEntry"
@@ -418,25 +432,23 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
         return await super().async_init()
 
     async def async_shutdown(self):
-        if await super().async_shutdown():
-            if self._restore_history_task:
-                if not self._restore_history_task.done():
-                    self._restore_history_exit = True
-                    await self._restore_history_task
-                self._restore_history_task = None
-            if self._refresh_callback_unsub:
-                self._refresh_callback_unsub.cancel()
-                self._refresh_callback_unsub = None
-            if self._observed_entity_tracking_unsub:
-                self._observed_entity_tracking_unsub()
-                self._observed_entity_tracking_unsub = None
-            self.estimator.on_update_estimate = None
-            self.estimator: "estimator.Estimator" = None  # type: ignore
-            self.today_energy_estimate_sensor: EnergyEstimatorSensor = None  # type: ignore
-            self.tomorrow_energy_estimate_sensor: EnergyEstimatorSensor = None  # type: ignore
-            self.estimator_sensors.clear()
-            return True
-        return False
+        await super().async_shutdown()
+        if self._restore_history_task:
+            if not self._restore_history_task.done():
+                self._restore_history_exit = True
+                await self._restore_history_task
+            self._restore_history_task = None
+        if self._refresh_callback_unsub:
+            self._refresh_callback_unsub.cancel()
+            self._refresh_callback_unsub = None
+        if self._observed_entity_tracking_unsub:
+            self._observed_entity_tracking_unsub()
+            self._observed_entity_tracking_unsub = None
+        self.estimator.on_update_estimate = None
+        self.estimator: "estimator.Estimator" = None  # type: ignore
+        self.today_energy_estimate_sensor: EnergyEstimatorSensor = None  # type: ignore
+        self.tomorrow_energy_estimate_sensor: EnergyEstimatorSensor = None  # type: ignore
+        self.estimator_sensors.clear()
 
     async def _entry_update_listener(
         self, hass: "HomeAssistant", config_entry: "ConfigEntry"

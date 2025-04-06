@@ -1,6 +1,7 @@
 """
 Controller for creating an entity simulating pv power based off sun tracking
 """
+
 import math
 import random
 import time
@@ -57,14 +58,11 @@ class Controller(controller.Controller[EntryConfig]):
         "battery_current_sensor",
         "battery_charge_sensor",
         "_power_last_update_ts",
-        "_sun_tracking_unsub",
-        "_weather_tracking_unsub",
         "_weather_state",
         "_weather_cloud_coverage",
         "_weather_temperature",
         "_weather_visibility",
     )
-
 
     @staticmethod
     def get_config_entry_schema(user_input: dict):
@@ -77,9 +75,15 @@ class Controller(controller.Controller[EntryConfig]):
             hv.optional("weather_entity_id", user_input): hv.weather_selector(),
             hv.optional("battery_voltage", user_input, 48): cv.positive_int,
             hv.optional("battery_capacity", user_input, 100): cv.positive_int,
-            hv.optional("consumption_baseload_power_w", user_input, 100): hv.positive_number_selector(unit_of_measurement=hac.UnitOfPower.WATT),
-            hv.optional("consumption_daily_extra_power_w", user_input, 500): hv.positive_number_selector(unit_of_measurement=hac.UnitOfPower.WATT),
-            hv.optional("consumption_daily_fill_factor", user_input, 0.2): hv.positive_number_selector(max=1, step=0.1)
+            hv.optional(
+                "consumption_baseload_power_w", user_input, 100
+            ): hv.positive_number_selector(unit_of_measurement=hac.UnitOfPower.WATT),
+            hv.optional(
+                "consumption_daily_extra_power_w", user_input, 500
+            ): hv.positive_number_selector(unit_of_measurement=hac.UnitOfPower.WATT),
+            hv.optional(
+                "consumption_daily_fill_factor", user_input, 0.2
+            ): hv.positive_number_selector(max=1, step=0.1),
         }
 
     def __init__(self, hass: "HomeAssistant", config_entry: "ConfigEntry"):
@@ -88,7 +92,6 @@ class Controller(controller.Controller[EntryConfig]):
         self.weather_entity_id = self.config.get("weather_entity_id")
 
         self._power_last_update_ts = None
-        self._weather_tracking_unsub = None
         self._weather_state = None
 
         self.pv_power_simulator_sensor = Sensor(
@@ -126,9 +129,15 @@ class Controller(controller.Controller[EntryConfig]):
                 native_value=self.battery_capacity / 2,
             )
 
-        self.consumption_baseload_power_w = self.config.get("consumption_baseload_power_w", 0)
-        self.consumption_daily_extra_power_w = self.config.get("consumption_daily_extra_power_w", 0)
-        self.consumption_daily_fill_factor = self.config.get("consumption_daily_fill_factor", 0.2)
+        self.consumption_baseload_power_w = self.config.get(
+            "consumption_baseload_power_w", 0
+        )
+        self.consumption_daily_extra_power_w = self.config.get(
+            "consumption_daily_extra_power_w", 0
+        )
+        self.consumption_daily_fill_factor = self.config.get(
+            "consumption_daily_fill_factor", 0.2
+        )
         self.consumption_sensor = Sensor(
             self,
             "consumption",
@@ -140,35 +149,20 @@ class Controller(controller.Controller[EntryConfig]):
 
     async def async_init(self):
         if self.weather_entity_id:
+            self.track_state(self.weather_entity_id, self._weather_tracking_callback)
             self._update_weather(self.hass.states.get(self.weather_entity_id))
-            self._weather_tracking_unsub = event.async_track_state_change_event(
-                self.hass,
-                self.weather_entity_id,
-                self._weather_tracking_callback,
-            )
-        else:
-            self._weather_tracking_unsub = None
+        self.track_state("sun.sun", self._sun_tracking_callback)
         self._update_power(self.hass.states.get("sun.sun"))
-        self._sun_tracking_unsub = event.async_track_state_change_event(
-            self.hass, "sun.sun", self._sun_tracking_callback
-        )
-
         return await super().async_init()
 
     async def async_shutdown(self):
-        if await super().async_shutdown():
-            self._sun_tracking_unsub()
-            if self._weather_tracking_unsub:
-                self._weather_tracking_unsub()
-                self._weather_tracking_unsub = None
-            self.pv_power_simulator_sensor: Sensor = None # type: ignore
-            self.battery_voltage_sensor: Sensor = None # type: ignore
-            self.battery_current_sensor: Sensor = None # type: ignore
-            self.battery_charge_sensor: Sensor = None # type: ignore
-            self.consumption_sensor: Sensor = None # type: ignore
-            self._power_last_update_ts = None
-            return True
-        return False
+        await super().async_shutdown()
+        self.pv_power_simulator_sensor: Sensor = None  # type: ignore
+        self.battery_voltage_sensor: Sensor = None  # type: ignore
+        self.battery_current_sensor: Sensor = None  # type: ignore
+        self.battery_charge_sensor: Sensor = None  # type: ignore
+        self.consumption_sensor: Sensor = None  # type: ignore
+        self._power_last_update_ts = None
 
     @callback
     def _sun_tracking_callback(self, event: "Event[EventStateChangedData]"):
@@ -181,14 +175,16 @@ class Controller(controller.Controller[EntryConfig]):
     def _update_power(self, sun_state: "State | None"):
 
         try:
-            elevation = sun_state.attributes["elevation"] # type: ignore
-            if elevation > -5: # roughly dusk
+            elevation = sun_state.attributes["elevation"]  # type: ignore
+            if elevation > -5:  # roughly dusk
                 # it is very hard to model the transition night/day since when the sun is low
                 # and starts to rise/set the sun energy is very low even if the elevation is relatively high
                 # with respect to the plant slope. Here we take a simple approach with
                 # slope almost horizontal
                 slope = 85
-                pv_power = self.peak_power * math.cos((slope - elevation) * math.pi / 180)
+                pv_power = self.peak_power * math.cos(
+                    (slope - elevation) * math.pi / 180
+                )
                 if self._weather_state:
 
                     if self._weather_visibility is not None:
@@ -223,13 +219,12 @@ class Controller(controller.Controller[EntryConfig]):
                     elif gain < 1:
                         pv_power *= gain
 
-
                 consumption_power = self.consumption_baseload_power_w
-                p1 = random.randint(1,100) / 100
-                a = random.randint(1,100) / 100
+                p1 = random.randint(1, 100) / 100
+                a = random.randint(1, 100) / 100
                 if a < (self.consumption_daily_fill_factor / p1):
                     consumption_power += self.consumption_daily_extra_power_w * p1
-            else: # night time
+            else:  # night time
                 pv_power = 0
                 consumption_power = self.consumption_baseload_power_w
 
@@ -239,8 +234,12 @@ class Controller(controller.Controller[EntryConfig]):
                 battery_power = consumption_power - pv_power
                 battery_current = battery_power / self.battery_voltage
                 # assume a voltage drop of 5% of the battery voltage at 1C
-                battery_resistance = self.battery_voltage / (20 * (self.battery_capacity or 100))
-                battery_voltage = self.battery_voltage - battery_resistance * battery_current
+                battery_resistance = self.battery_voltage / (
+                    20 * (self.battery_capacity or 100)
+                )
+                battery_voltage = (
+                    self.battery_voltage - battery_resistance * battery_current
+                )
                 battery_current = battery_power / battery_voltage
                 self.battery_voltage_sensor.update(battery_voltage)
                 self.battery_current_sensor.update(battery_current)
@@ -248,11 +247,13 @@ class Controller(controller.Controller[EntryConfig]):
                 if self._power_last_update_ts:
                     delta_t = now_ts - self._power_last_update_ts
                     delta_battery_charge = battery_current * delta_t / 3600
-                    battery_charge: float = self.battery_charge_sensor.native_value or 0 # type: ignore
+                    battery_charge: float = self.battery_charge_sensor.native_value or 0  # type: ignore
                     battery_charge -= delta_battery_charge
                     if battery_charge < 0:
                         battery_charge = 0
-                    elif self.battery_capacity and (battery_charge > self.battery_capacity):
+                    elif self.battery_capacity and (
+                        battery_charge > self.battery_capacity
+                    ):
                         battery_charge = self.battery_capacity
                     self.battery_charge_sensor.update(battery_charge)
                     # we should now derate the pv output should the battery be full...
