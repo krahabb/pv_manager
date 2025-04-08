@@ -38,10 +38,11 @@ class TimeSpanEnergyModel:
 
     energy_max: float
 
-    # initial value means 100% cloud_coverage would reduce output by 70%
-    Wc: typing.ClassVar = 0.007
-    Wc_max: typing.ClassVar = 0.008
-    Wc_lr: typing.ClassVar = 0.0000005  # 'learning rate'
+    # initial value means 100% cloud_coverage would reduce output by 60%
+    Wc: typing.ClassVar = 0.006
+    Wc_max: typing.ClassVar = 0.008 # maximum 80% pv power derate when 100% clouds
+    Wc_min: typing.ClassVar = 0.004 # minimum 40% pv power derate when 100% clouds
+    Wc_lr: typing.ClassVar = 0.00000005  # 'learning rate'
 
     __slots__ = (
         "samples",
@@ -79,8 +80,8 @@ class TimeSpanEnergyModel:
                 )
                 if TimeSpanEnergyModel.Wc > TimeSpanEnergyModel.Wc_max:
                     TimeSpanEnergyModel.Wc = TimeSpanEnergyModel.Wc_max
-                elif TimeSpanEnergyModel.Wc < 0.0:
-                    TimeSpanEnergyModel.Wc = 0.0
+                elif TimeSpanEnergyModel.Wc < TimeSpanEnergyModel.Wc_min:
+                    TimeSpanEnergyModel.Wc = TimeSpanEnergyModel.Wc_min
 
     def get_energy_estimate(self, weather: WeatherSample):
         cloud_coverage = weather.cloud_coverage
