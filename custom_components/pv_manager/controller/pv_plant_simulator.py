@@ -7,9 +7,13 @@ import random
 import time
 import typing
 
+
+from astral import sun
+
 from homeassistant import const as hac
 from homeassistant.core import callback
-from homeassistant.helpers import config_validation as cv, event
+from homeassistant.helpers import config_validation as cv, sun as sun_helpers
+from homeassistant.util import dt as dt_util
 from homeassistant.util.unit_conversion import DistanceConverter, TemperatureConverter
 
 from .. import const as pmc, controller, helpers
@@ -53,6 +57,7 @@ class Controller(controller.Controller[EntryConfig]):
         "consumption_baseload_power_w",
         "consumption_daily_extra_power_w",
         "consumption_daily_fill_factor",
+        "astral_observer",
         "pv_power_simulator_sensor",
         "battery_voltage_sensor",
         "battery_current_sensor",
@@ -63,6 +68,7 @@ class Controller(controller.Controller[EntryConfig]):
         "_weather_cloud_coverage",
         "_weather_temperature",
         "_weather_visibility",
+        "_timer_callback_unsub",
     )
 
     @staticmethod
@@ -89,6 +95,12 @@ class Controller(controller.Controller[EntryConfig]):
 
     def __init__(self, hass: "HomeAssistant", config_entry: "ConfigEntry"):
         super().__init__(hass, config_entry)
+
+        location, elevation = sun_helpers.get_astral_location(hass)
+        self.astral_observer = sun.Observer(
+            location.latitude, location.longitude, elevation
+        )
+
         self.peak_power = self.config["peak_power"]
         self.weather_entity_id = self.config.get("weather_entity_id")
 
@@ -151,12 +163,24 @@ class Controller(controller.Controller[EntryConfig]):
     async def async_init(self):
         if self.weather_entity_id:
             self.track_state_update(self.weather_entity_id, self._weather_update)
-        self.track_state_update("sun.sun", self._sun_update)
+        self._timer_callback()
         return await super().async_init()
 
-    def _sun_update(self, sun_state: "State | None"):
+    async def async_shutdown(self):
+        await super().async_shutdown()
+        self._timer_callback_unsub.cancel()  # type: ignore
+        self._timer_callback_unsub = None
+
+    @callback
+    def _timer_callback(self):
+        self._timer_callback_unsub = self.schedule_callback(5, self._timer_callback)
+
         try:
-            elevation = sun_state.attributes["elevation"]  # type: ignore
+            sun_zenith, sun_azimuth = sun.zenith_and_azimuth(
+                self.astral_observer,
+                dt_util.now(),
+            )
+            elevation = 90 - sun_zenith
             if elevation > -5:  # roughly dusk
                 # it is very hard to model the transition night/day since when the sun is low
                 # and starts to rise/set the sun energy is very low even if the elevation is relatively high
@@ -207,7 +231,7 @@ class Controller(controller.Controller[EntryConfig]):
                     consumption_power += self.consumption_daily_extra_power_w * p1
             else:  # night time
                 pv_power = 0
-                consumption_power = self.consumption_baseload_power_w
+                consumption_power = self.consumption_baseload_power_w * random.randint(90, 110) / 100
 
             self.pv_power_simulator_sensor.update(pv_power)
             self.consumption_sensor.update(consumption_power)
