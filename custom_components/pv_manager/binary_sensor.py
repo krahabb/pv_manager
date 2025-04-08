@@ -23,7 +23,9 @@ async def async_setup_entry(
     config_entry: "ConfigEntry[Controller]",
     add_entities: "AddConfigEntryEntitiesCallback",
 ):
-    await config_entry.runtime_data.async_setup_entry_platform(binary_sensor.DOMAIN, add_entities)
+    await config_entry.runtime_data.async_setup_entry_platform(
+        binary_sensor.DOMAIN, add_entities
+    )
 
 
 class BinarySensor(Entity, binary_sensor.BinarySensorEntity):
@@ -47,9 +49,8 @@ class BinarySensor(Entity, binary_sensor.BinarySensorEntity):
         self.is_on = kwargs.pop("is_on", None)
         Entity.__init__(self, controller, id, **kwargs)
 
-
     def update(self, is_on: bool | None):
         if self.is_on != is_on:
             self.is_on = is_on
-            if self._added_to_hass:
+            if self.added_to_hass:
                 self._async_write_ha_state()

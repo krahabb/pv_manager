@@ -57,6 +57,7 @@ class Controller(controller.Controller[EntryConfig]):
         "battery_voltage_sensor",
         "battery_current_sensor",
         "battery_charge_sensor",
+        "consumption_sensor",
         "_power_last_update_ts",
         "_weather_state",
         "_weather_cloud_coverage",
@@ -149,31 +150,11 @@ class Controller(controller.Controller[EntryConfig]):
 
     async def async_init(self):
         if self.weather_entity_id:
-            self.track_state(self.weather_entity_id, self._weather_tracking_callback)
-            self._update_weather(self.hass.states.get(self.weather_entity_id))
-        self.track_state("sun.sun", self._sun_tracking_callback)
-        self._update_power(self.hass.states.get("sun.sun"))
+            self.track_state_update(self.weather_entity_id, self._weather_update)
+        self.track_state_update("sun.sun", self._sun_update)
         return await super().async_init()
 
-    async def async_shutdown(self):
-        await super().async_shutdown()
-        self.pv_power_simulator_sensor: Sensor = None  # type: ignore
-        self.battery_voltage_sensor: Sensor = None  # type: ignore
-        self.battery_current_sensor: Sensor = None  # type: ignore
-        self.battery_charge_sensor: Sensor = None  # type: ignore
-        self.consumption_sensor: Sensor = None  # type: ignore
-        self._power_last_update_ts = None
-
-    @callback
-    def _sun_tracking_callback(self, event: "Event[EventStateChangedData]"):
-        self._update_power(event.data.get("new_state"))
-
-    @callback
-    def _weather_tracking_callback(self, event: "Event[EventStateChangedData]"):
-        self._update_weather(event.data.get("new_state"))
-
-    def _update_power(self, sun_state: "State | None"):
-
+    def _sun_update(self, sun_state: "State | None"):
         try:
             elevation = sun_state.attributes["elevation"]  # type: ignore
             if elevation > -5:  # roughly dusk
@@ -267,7 +248,7 @@ class Controller(controller.Controller[EntryConfig]):
                 self.battery_voltage_sensor.update(self.battery_voltage)
                 self.battery_current_sensor.update(0)
 
-    def _update_weather(self, state: "State | None"):
+    def _weather_update(self, state: "State | None"):
         if state:
             self._weather_state = state.state
             attributes = state.attributes

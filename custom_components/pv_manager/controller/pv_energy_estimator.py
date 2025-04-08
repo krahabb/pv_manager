@@ -100,10 +100,7 @@ class Controller(controller.EnergyEstimatorController[EntryConfig]):
     async def async_init(self):
         await super().async_init()
         if self.weather_entity_id:
-            self.track_state(self.weather_entity_id, self._weather_tracking_callback)
-            await self._async_update_weather(
-                self.hass.states.get(self.weather_entity_id)
-            )
+            await self.async_track_state_update(self.weather_entity_id, self._async_weather_update)
 
     def _create_diagnostic_entities(self):
         sensors = self.entities[Sensor.PLATFORM]
@@ -152,14 +149,7 @@ class Controller(controller.EnergyEstimatorController[EntryConfig]):
         super()._restore_history(history_start_time)
 
     # interface: self
-    @callback
-    def _weather_tracking_callback(self, event: "Event[event.EventStateChangedData]"):
-        self.async_create_task(
-            self._async_update_weather(event.data.get("new_state")),
-            "_async_update_weather",
-        )
-
-    async def _async_update_weather(self, weather_state: "State | None"):
+    async def _async_weather_update(self, weather_state: "State | None"):
         self.weather_state = weather_state
         try:
             if weather_state:

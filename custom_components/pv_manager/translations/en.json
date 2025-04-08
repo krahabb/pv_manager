@@ -12,7 +12,7 @@
                     "energy_calculator": "Energy calculator",
                     "consumption_estimator": "Consumption estimator",
                     "pv_energy_estimator": "PV energy estimator",
-                    "battery_helper": "Battery helper",
+                    "battery_estimator": "Battery estimator",
                     "pv_plant_simulator": "PV plant simulator"
                 }
             },

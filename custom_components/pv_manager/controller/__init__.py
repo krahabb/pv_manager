@@ -22,6 +22,7 @@ from ..sensor import Sensor
 from .common import estimator
 
 if typing.TYPE_CHECKING:
+    from typing import Any, Callable, Coroutine
 
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import Event, HomeAssistant, State
@@ -194,9 +195,50 @@ class Controller[_ConfigT: pmc.EntryConfig](helpers.Loggable):
         action: "typing.Callable[[Event[event.EventStateChangedData]], typing.Any]",
     ):
         """Track a state change for the given entity_id."""
-        self._callbacks_unsub.add(event.async_track_state_change_event(
-            self.hass, entity_id, action
-        ))
+        self._callbacks_unsub.add(
+            event.async_track_state_change_event(self.hass, entity_id, action)
+        )
+
+    def track_state_update(
+        self, entity_id: str, target: "typing.Callable[[State | None], None]"
+    ):
+        """Start tracking state updates for the given entity_id and immediately call target with current state."""
+
+        @callback
+        def _track_state_callback(
+            event: "Event[event.EventStateChangedData]",
+        ):
+            target(event.data.get("new_state"))
+
+        self._callbacks_unsub.add(
+            event.async_track_state_change_event(
+                self.hass, entity_id, _track_state_callback
+            )
+        )
+        target(self.hass.states.get(entity_id))
+
+    async def async_track_state_update(
+        self,
+        entity_id: str,
+        target: "Callable[[State | None], Coroutine[Any, Any, Any]]",
+    ):
+        """Start tracking state updates for the given entity_id and immediately call target with current state."""
+
+        @callback
+        def _track_state_callback(
+            event: "Event[event.EventStateChangedData]",
+        ):
+            self.async_create_task(
+                target(event.data.get("new_state")),
+                f"_track_state_callback({entity_id})",
+            )
+
+        self._callbacks_unsub.add(
+            event.async_track_state_change_event(
+                self.hass, entity_id, _track_state_callback
+            )
+        )
+        await target(self.hass.states.get(entity_id))
 
     async def _entry_update_listener(
         self, hass: "HomeAssistant", config_entry: "ConfigEntry"
@@ -225,7 +267,7 @@ class Controller[_ConfigT: pmc.EntryConfig](helpers.Loggable):
         for entities_per_platform in self.entities.values():
             for entity in list(entities_per_platform.values()):
                 if entity.is_diagnostic:
-                    if entity._added_to_hass:
+                    if entity.added_to_hass:
                         await entity.async_remove(force_remove=True)
                     await entity.async_shutdown()
                     ent_reg.async_remove(entity.entity_id)
@@ -285,7 +327,6 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
         "estimator_sensors",
         "_state_convert_func",
         "_state_convert_unit",
-        "_observed_entity_tracking_unsub",
         "_refresh_callback_unsub",
         "_restore_history_task",
         "_restore_history_exit",
@@ -400,7 +441,6 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
                         * 3600,
                     )
 
-        self._observed_entity_tracking_unsub = None
         self._refresh_callback_unsub = None
         self._restore_history_task = None
         self._restore_history_exit = False
@@ -418,36 +458,26 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
         await self._restore_history_task
         self._restore_history_task = None
 
-        self._observed_entity_tracking_unsub = event.async_track_state_change_event(
-            self.hass,
-            self.observed_entity_id,
-            self._observed_entity_tracking_callback,
-        )
         self._refresh_callback_unsub = self.schedule_callback(
             self.refresh_period_ts, self._refresh_callback
         )
         self.estimator.on_update_estimate = self._update_estimate
         self.estimator.update_estimate()
-        self._process_observation(self.hass.states.get(self.observed_entity_id))
+        self.track_state_update(self.observed_entity_id, self._process_observation)
         return await super().async_init()
 
     async def async_shutdown(self):
-        await super().async_shutdown()
         if self._restore_history_task:
             if not self._restore_history_task.done():
                 self._restore_history_exit = True
                 await self._restore_history_task
             self._restore_history_task = None
+        await super().async_shutdown()
         if self._refresh_callback_unsub:
             self._refresh_callback_unsub.cancel()
             self._refresh_callback_unsub = None
-        if self._observed_entity_tracking_unsub:
-            self._observed_entity_tracking_unsub()
-            self._observed_entity_tracking_unsub = None
         self.estimator.on_update_estimate = None
         self.estimator: "estimator.Estimator" = None  # type: ignore
-        self.today_energy_estimate_sensor: EnergyEstimatorSensor = None  # type: ignore
-        self.tomorrow_energy_estimate_sensor: EnergyEstimatorSensor = None  # type: ignore
         self.estimator_sensors.clear()
 
     async def _entry_update_listener(
@@ -478,6 +508,7 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
                                 "forecast_duration_hours", 0
                             )
                             * 3600,
+                            parent_attr=None,
                         )
 
         for subentry_id in estimator_sensors.keys():
@@ -488,12 +519,6 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
         await super()._entry_update_listener(hass, config_entry)
 
     # interface: self
-    @callback
-    def _observed_entity_tracking_callback(
-        self, event: "Event[event.EventStateChangedData]"
-    ):
-        self._process_observation(event.data.get("new_state"))
-
     def _refresh_callback(self):
         self._refresh_callback_unsub = self.schedule_callback(
             self.refresh_period_ts, self._refresh_callback
