@@ -12,10 +12,7 @@ from homeassistant import const as hac
 from homeassistant.components import weather
 from homeassistant.components.recorder import history
 from homeassistant.core import callback
-from homeassistant.helpers import (
-    event,
-    sun as sun_helpers,
-)
+from homeassistant.helpers import sun as sun_helpers
 from homeassistant.util import dt as dt_util
 from homeassistant.util.unit_conversion import (
     DistanceConverter,

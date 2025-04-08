@@ -85,13 +85,14 @@ class Controller(controller.Controller[EntryConfig]):
         # state
         "battery_voltage",
         "battery_current",
-        "_battery_current_last_ts" "battery_charge",
+        "_battery_current_last_ts",
+        "battery_charge",
         "battery_charge_estimate",
         "battery_power",
         "_time_last_ts",
         "battery_charge_sensor",
-        "battery_energy_in_sensor",
-        "battery_energy_out_sensor",
+        "battery_energy_in_none_sensor",
+        "battery_energy_out_none_sensor",
     )
 
     @staticmethod
@@ -124,8 +125,8 @@ class Controller(controller.Controller[EntryConfig]):
         self._time_last_ts: float | None = None
 
         self.battery_charge_sensor: BatteryChargeSensor | None = None
-        self.battery_energy_in_sensor: EnergySensor | None = None
-        self.battery_energy_out_sensor: EnergySensor | None = None
+        self.battery_energy_in_none_sensor: EnergySensor | None = None
+        self.battery_energy_out_none_sensor: EnergySensor | None = None
 
         # TODO: setup according to some sort of configuration
         BatteryChargeSensor(
@@ -169,12 +170,10 @@ class Controller(controller.Controller[EntryConfig]):
     # interface: self
     def _battery_voltage_update(self, state: "State | None"):
         try:
-            self.battery_voltage = (
-                ElectricPotentialConverter.convert(
-                    float(state.state),  # type: ignore
-                    state.attributes["unit_of_measurement"],  # type: ignore
-                    self.VOLTAGE_UNIT,
-                )
+            self.battery_voltage = ElectricPotentialConverter.convert(
+                float(state.state),  # type: ignore
+                state.attributes["unit_of_measurement"],  # type: ignore
+                self.VOLTAGE_UNIT,
             )
 
         except Exception as e:
@@ -184,12 +183,10 @@ class Controller(controller.Controller[EntryConfig]):
 
     def _battery_current_update(self, state: "State | None"):
         try:
-            battery_current = (
-                ElectricCurrentConverter.convert(
-                    float(state.state),  # type: ignore
-                    state.attributes["unit_of_measurement"],  # type: ignore
-                    self.CURRENT_UNIT,
-                )
+            battery_current = ElectricCurrentConverter.convert(
+                float(state.state),  # type: ignore
+                state.attributes["unit_of_measurement"],  # type: ignore
+                self.CURRENT_UNIT,
             )
         except Exception as e:
             self.battery_current = None
@@ -218,11 +215,11 @@ class Controller(controller.Controller[EntryConfig]):
             energy = self.battery_voltage * charge  # type: ignore
 
             if energy >= 0:
-                if self.battery_energy_in_sensor:
-                    self.battery_energy_in_sensor.accumulate(energy)
+                if self.battery_energy_in_none_sensor:
+                    self.battery_energy_in_none_sensor.accumulate(energy)
             else:
-                if self.battery_energy_out_sensor:
-                    self.battery_energy_out_sensor.accumulate(-energy)
+                if self.battery_energy_out_none_sensor:
+                    self.battery_energy_out_none_sensor.accumulate(-energy)
 
         except Exception as e:
             # catch self.battery_voltage == None
