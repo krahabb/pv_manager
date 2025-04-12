@@ -1,7 +1,7 @@
 import enum
 import typing
 
-from homeassistant.helpers import entity
+from homeassistant.helpers import entity, restore_state
 
 from . import Loggable
 
@@ -23,6 +23,7 @@ class ParentAttr(enum.Enum):
     the availability of the entity in the controller instance.
     The Entity will (eventually) create a reference member in the parent controller named as
     f{id}_{PLATFORM}."""
+
     REMOVE = 1
     """The entity will remove its reference at shutdown."""
     STATIC = 2
@@ -30,13 +31,13 @@ class ParentAttr(enum.Enum):
     DYNAMIC = 3
     """The entity will set a reference when added to hass and clear it when removed."""
 
+
 class Entity(Loggable, entity.Entity if typing.TYPE_CHECKING else object):
 
     PLATFORM: typing.ClassVar[str]
 
     EntityCategory = entity.EntityCategory
     ParentAttr = ParentAttr
-
 
     is_diagnostic: bool = False
 
@@ -93,7 +94,6 @@ class Entity(Loggable, entity.Entity if typing.TYPE_CHECKING else object):
         self.controller.entities[self.PLATFORM].pop(self.id)
         self.controller = None  # type: ignore
 
-
     async def async_added_to_hass(self):
         await super().async_added_to_hass()
         self.added_to_hass = True
@@ -111,6 +111,22 @@ class Entity(Loggable, entity.Entity if typing.TYPE_CHECKING else object):
     def update(self, value):
         # stub
         pass
+
+
+class ExtraStoredDataDict(dict, restore_state.ExtraStoredData):
+    """Object to hold extra stored data as a plain dict"""
+
+    def as_dict(self) -> dict[str, typing.Any]:
+        return self
+
+    @classmethod
+    def from_dict(cls, restored: dict[str, typing.Any]) -> typing.Self | None:
+        """Initialize a stored state from a dict."""
+        return cls(restored)
+
+
+class RestoreEntity(restore_state.RestoreEntity):
+    pass
 
 
 class DiagnosticEntity(Entity if typing.TYPE_CHECKING else object):

@@ -9,8 +9,8 @@ from homeassistant.helpers import event
 from homeassistant.util import dt as dt_util
 
 
-from . import const as pmc, helpers
-from .helpers.entity import DiagnosticEntity, Entity
+from . import const as pmc
+from .helpers import entity as he
 
 if typing.TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -39,7 +39,7 @@ async def async_setup_entry(
     )
 
 
-class Sensor(Entity, sensor.SensorEntity):
+class Sensor(he.Entity, sensor.SensorEntity):
 
     PLATFORM = sensor.DOMAIN
 
@@ -58,6 +58,7 @@ class Sensor(Entity, sensor.SensorEntity):
     }
 
     _attr_device_class: typing.ClassVar[sensor.SensorDeviceClass | None] = None
+    _attr_native_value = None
     _attr_native_unit_of_measurement: typing.ClassVar[str | None] = None
 
     __slots__ = (
@@ -74,7 +75,7 @@ class Sensor(Entity, sensor.SensorEntity):
         **kwargs: "typing.Unpack[SensorArgs]",
     ):
         self.device_class = kwargs.pop("device_class", self._attr_device_class)
-        self.native_value = kwargs.pop("native_value", None)
+        self.native_value = kwargs.pop("native_value", self._attr_native_value)
         self.native_unit_of_measurement = kwargs.pop(
             "native_unit_of_measurement", self._attr_native_unit_of_measurement
         )
@@ -82,7 +83,7 @@ class Sensor(Entity, sensor.SensorEntity):
             self.state_class = kwargs.pop("state_class")
         else:
             self.state_class = self.DEVICE_CLASS_TO_STATE_CLASS.get(self.device_class)
-        Entity.__init__(self, controller, id, **kwargs)
+        he.Entity.__init__(self, controller, id, **kwargs)
 
     def update(self, native_value: "SensorStateType"):
         if self.native_value != native_value:
@@ -91,11 +92,7 @@ class Sensor(Entity, sensor.SensorEntity):
                 self._async_write_ha_state()
 
 
-class RestoreSensor(Sensor, sensor.RestoreSensor):
-    pass
-
-
-class DiagnosticSensor(DiagnosticEntity, Sensor):
+class DiagnosticSensor(he.DiagnosticEntity, Sensor):
     pass
 
 
@@ -108,13 +105,18 @@ class CycleMode(enum.StrEnum):
     HOURLY = enum.auto()
 
 
-class EnergySensor(RestoreSensor):
+class EnergySensor(Sensor, he.RestoreEntity):
 
     CycleMode = CycleMode
 
     controller: "Controller"
 
     native_value: float
+    _integral_value: float
+
+    _attr_device_class = Sensor.DeviceClass.ENERGY
+    _attr_native_value = 0
+    _attr_native_unit_of_measurement = Sensor.hac.UnitOfEnergy.WATT_HOUR
 
     __slots__ = (
         "cycle_mode",
@@ -123,6 +125,7 @@ class EnergySensor(RestoreSensor):
         "last_reset_ts",  # UTC timestamp of last reset
         "next_reset_dt",
         "next_reset_ts",  # UTC timestamp of next reset
+        "_integral_value",
         "_async_track_cycle_job",
         "_async_track_cycle_unsub",
     )
@@ -136,49 +139,47 @@ class EnergySensor(RestoreSensor):
     ):
         self.cycle_mode: typing.Final = cycle_mode
         self.last_reset = None
+        self._integral_value = 0
         self._async_track_cycle_unsub = None
 
         if cycle_mode != CycleMode.NONE:
             name = kwargs.pop("name", id)
             kwargs["name"] = f"{name} ({cycle_mode})"
 
-        RestoreSensor.__init__(
+        Sensor.__init__(
             self,
             controller,
             f"{id}_{cycle_mode}",
-            device_class=self.DeviceClass.ENERGY,
             state_class=self.StateClass.TOTAL,
-            native_value=0,
-            native_unit_of_measurement=self.hac.UnitOfEnergy.WATT_HOUR,
             **kwargs,
         )
 
     async def async_added_to_hass(self):
-
+        restored_data = self._async_get_restored_data()
         if self.cycle_mode == CycleMode.NONE:
-            restored_sensor_data = await self.async_get_last_sensor_data()
-            if restored_sensor_data:
-                self.native_value = restored_sensor_data.native_value  # type: ignore
-
+            try:
+                extra_data = restored_data.extra_data.as_dict()  # type: ignore
+                self._integral_value = extra_data["native_value"]
+            except:
+                pass
         else:
             self._compute_cycle(False)
-
-            restored_state = await self.async_get_last_state()
-            if restored_state:
+            try:
                 if (
                     self.last_reset_ts
-                    < restored_state.last_changed_timestamp
+                    < restored_data.state.last_changed_timestamp  # type: ignore
                     < self.next_reset_ts
                 ):
-                    restored_sensor_data = await self.async_get_last_sensor_data()
-                    if restored_sensor_data:
-                        self.native_value = restored_sensor_data.native_value  # type: ignore
-
+                    extra_data = restored_data.extra_data.as_dict()  # type: ignore
+                    self._integral_value = extra_data["native_value"]
+            except:
+                pass
             self._async_track_cycle_job = HassJob(
                 self._async_track_cycle, f"_async_track_cycle({self.cycle_mode})"
             )
             self._async_track_cycle_unsub = event.async_track_point_in_utc_time(self.hass, self._async_track_cycle_job, self.next_reset_dt)  # type: ignore
 
+        self.native_value = int(self._integral_value)
         await super().async_added_to_hass()
 
     async def async_will_remove_from_hass(self):
@@ -187,9 +188,13 @@ class EnergySensor(RestoreSensor):
             self._async_track_cycle_unsub = None
         return await super().async_will_remove_from_hass()
 
+    @property
+    def extra_restore_state_data(self):
+        return he.ExtraStoredDataDict({"native_value": self._integral_value})
+
     def accumulate(self, energy_wh: float):
         if self.cycle_mode == CycleMode.NONE:
-            self.native_value += energy_wh
+            self._integral_value += energy_wh
         else:
             now_ts = time.time()
             if now_ts >= self.next_reset_ts:
@@ -197,16 +202,20 @@ class EnergySensor(RestoreSensor):
                     self._async_track_cycle_unsub()
                     self._async_track_cycle_unsub = None
                 self._compute_cycle(self.added_to_hass)
-                self.native_value = energy_wh
+                self._integral_value = energy_wh
             else:
-                self.native_value += energy_wh
-        if self.added_to_hass:
-            self._async_write_ha_state()
+                self._integral_value += energy_wh
+
+        _rounded = int(self._integral_value)
+        if self.native_value != _rounded:
+            self.native_value = _rounded
+            if self.added_to_hass:
+                self._async_write_ha_state()
 
     async def _async_track_cycle(self, _dt: datetime):
         self._async_track_cycle_unsub = None
         self._compute_cycle(True)
-        # TODO: adjust fractions of accumulated energy? shouldn't be really needed
+        self._integral_value -= self.native_value
         self.native_value = 0
         self._async_write_ha_state()
 
