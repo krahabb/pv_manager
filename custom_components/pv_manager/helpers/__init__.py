@@ -130,37 +130,9 @@ def apply_config(obj, config: "MappingProxyType[str, object]", td_class):
             setattr(obj, key, value)
 
 
-def getLogger(name):
+class Logger(logging.Logger if typing.TYPE_CHECKING else object):
     """
-    Replaces the default Logger with our wrapped implementation:
-    replace your logging.getLogger with helpers.getLogger et voilà
-    """
-    logger = logging.getLogger(name)
-    # watchout: getLogger could return an instance already
-    # subclassed if we previously asked for the same name
-    # for example when we reload a config entry
-    _class = logger.__class__
-    if _class not in _Logger._CLASS_HOOKS.values():
-        # getLogger returned a 'virgin' class
-        if _class in _Logger._CLASS_HOOKS.keys():
-            # we've alread subclassed this type, so we reuse it
-            logger.__class__ = _Logger._CLASS_HOOKS[_class]
-        else:
-            logger.__class__ = _Logger._CLASS_HOOKS[_class] = type(
-                "Logger",
-                (
-                    _Logger,
-                    logger.__class__,
-                ),
-                {},
-            )
-
-    return logger
-
-
-class _Logger(logging.Logger if typing.TYPE_CHECKING else object):
-    """
-    This wrapper will 'filter' log messages and avoid
+    This mixin-style wrapper will 'filter' log messages and avoid
     verbose over-logging for the same message by using a timeout
     to prevent repeating the very same log before the timeout expires.
     The implementation 'hacks' a standard Logger instance by mixin-ing
@@ -181,8 +153,8 @@ class _Logger(logging.Logger if typing.TYPE_CHECKING else object):
             timeout = kwargs.pop("timeout")
             epoch = time()
             trap_key = (msg, args)
-            if trap_key in _Logger._LOGGER_TIMEOUTS:
-                if (epoch - _Logger._LOGGER_TIMEOUTS[trap_key]) < timeout:
+            if trap_key in Logger._LOGGER_TIMEOUTS:
+                if (epoch - Logger._LOGGER_TIMEOUTS[trap_key]) < timeout:
                     if self.isEnabledFor(Loggable.VERBOSE):
                         super()._log(
                             Loggable.VERBOSE,
@@ -191,9 +163,46 @@ class _Logger(logging.Logger if typing.TYPE_CHECKING else object):
                             **kwargs,
                         )
                     return
-            _Logger._LOGGER_TIMEOUTS[trap_key] = epoch
+            Logger._LOGGER_TIMEOUTS[trap_key] = epoch
 
         super()._log(level, msg, args, **kwargs)
+
+    def log_exception(
+        self, level: int, exception: Exception, msg: str, *args, **kwargs
+    ):
+        self.log(
+            level,
+            f"{exception.__class__.__name__}({str(exception)}) in {msg}",
+            *args,
+            **kwargs,
+        )
+
+
+def getLogger(name) -> "Logger":
+    """
+    Replaces the default Logger with our wrapped implementation:
+    replace your logging.getLogger with helpers.getLogger et voilà
+    """
+    logger = logging.getLogger(name)
+    # watchout: getLogger could return an instance already
+    # subclassed if we previously asked for the same name
+    # for example when we reload a config entry
+    _class = logger.__class__
+    if _class not in Logger._CLASS_HOOKS.values():
+        # getLogger returned a 'virgin' class
+        try:
+            logger.__class__ = Logger._CLASS_HOOKS[_class]
+        except KeyError:
+            logger.__class__ = Logger._CLASS_HOOKS[_class] = type(
+                "Logger",
+                (
+                    Logger,
+                    logger.__class__,
+                ),
+                {},
+            )
+
+    return logger  # type: ignore
 
 
 LOGGER = getLogger(__name__[:-8])  # get base custom_component name for logging

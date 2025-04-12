@@ -99,7 +99,12 @@ class ConfigFlow(config_entries.ConfigFlow, domain=pmc.DOMAIN):
         cls, config_entry: "ConfigEntry"
     ) -> dict[str, type[config_entries.ConfigSubentryFlow]]:
         """Return subentries supported by this integration."""
-        return SUBENTRY_FLOW_MAP[pmc.ConfigEntryType.get_from_entry(config_entry)]
+        try:
+            return SUBENTRY_FLOW_MAP[pmc.ConfigEntryType.get_from_entry(config_entry)]
+        except:
+            # no log since the entry is likely unloadable and more detailed logging should
+            # be available in async_setup_entry
+            return {}
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
