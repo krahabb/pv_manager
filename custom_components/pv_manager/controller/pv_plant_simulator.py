@@ -43,6 +43,9 @@ class EntryConfig(pmc.SensorConfig, pmc.EntryConfig):
     consumption_daily_extra_power_w: typing.NotRequired[float]
     consumption_daily_fill_factor: typing.NotRequired[float]
 
+    inverter_zeroload_power_w: typing.NotRequired[float]
+    inverter_efficiency: typing.NotRequired[float]
+
 
 class Controller(controller.Controller[EntryConfig]):
     """Base controller class for managing ConfigEntry behavior."""
@@ -57,12 +60,15 @@ class Controller(controller.Controller[EntryConfig]):
         "consumption_baseload_power_w",
         "consumption_daily_extra_power_w",
         "consumption_daily_fill_factor",
+        "inverter_zeroload_power",
+        "inverter_efficiency",
         "astral_observer",
         "pv_power_simulator_sensor",
         "battery_voltage_sensor",
         "battery_current_sensor",
         "battery_charge_sensor",
         "consumption_sensor",
+        "inverter_losses_sensor",
         "_power_last_update_ts",
         "_weather_state",
         "_weather_cloud_coverage",
@@ -91,6 +97,12 @@ class Controller(controller.Controller[EntryConfig]):
             hv.optional(
                 "consumption_daily_fill_factor", user_input, 0.2
             ): hv.positive_number_selector(max=1, step=0.1),
+            hv.optional(
+                "inverter_zeroload_power_w", user_input, 20
+            ): hv.positive_number_selector(unit_of_measurement=hac.UnitOfPower.WATT),
+            hv.optional(
+                "inverter_efficiency", user_input, 0.9
+            ): hv.positive_number_selector(max=1, step=0.01),
         }
 
     def __init__(self, hass: "HomeAssistant", config_entry: "ConfigEntry"):
@@ -156,6 +168,17 @@ class Controller(controller.Controller[EntryConfig]):
             "consumption",
             device_class=Sensor.DeviceClass.POWER,
             name="Consumption",
+            native_unit_of_measurement=hac.UnitOfPower.WATT,
+            state_class=Sensor.StateClass.MEASUREMENT,
+        )
+
+        self.inverter_zeroload_power = self.config.get("inverter_zeroload_power_w", 20)
+        self.inverter_efficiency = self.config.get("inverter_efficiency", 0.9)
+        self.inverter_losses_sensor = Sensor(
+            self,
+            "inverter_losees",
+            device_class=Sensor.DeviceClass.POWER,
+            name="Inverter losses",
             native_unit_of_measurement=hac.UnitOfPower.WATT,
             state_class=Sensor.StateClass.MEASUREMENT,
         )
@@ -237,8 +260,16 @@ class Controller(controller.Controller[EntryConfig]):
 
             self.pv_power_simulator_sensor.update(round(pv_power, 2))
             self.consumption_sensor.update(round(consumption_power, 2))
+
+            total_consumption_power = (
+                consumption_power / self.inverter_efficiency
+                + self.inverter_zeroload_power
+            )
+            inverter_losses = total_consumption_power - consumption_power
+            self.inverter_losses_sensor.update(round(inverter_losses, 2))
+
             if self.battery_voltage:
-                battery_power = consumption_power - pv_power
+                battery_power = total_consumption_power - pv_power
                 battery_current = battery_power / self.battery_voltage
                 # assume a voltage drop of 5% of the battery voltage at 1C
                 battery_resistance = self.battery_voltage / (
@@ -270,6 +301,7 @@ class Controller(controller.Controller[EntryConfig]):
             self._power_last_update_ts = None
             self.pv_power_simulator_sensor.update(None)
             self.consumption_sensor.update(None)
+            self.inverter_losses_sensor.update(None)
             if self.battery_voltage:
                 self.battery_voltage_sensor.update(self.battery_voltage)
                 self.battery_current_sensor.update(0)
