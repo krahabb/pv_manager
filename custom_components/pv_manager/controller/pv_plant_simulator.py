@@ -231,10 +231,12 @@ class Controller(controller.Controller[EntryConfig]):
                     consumption_power += self.consumption_daily_extra_power_w * p1
             else:  # night time
                 pv_power = 0
-                consumption_power = self.consumption_baseload_power_w * random.randint(90, 110) / 100
+                consumption_power = (
+                    self.consumption_baseload_power_w * random.randint(90, 110) / 100
+                )
 
-            self.pv_power_simulator_sensor.update(pv_power)
-            self.consumption_sensor.update(consumption_power)
+            self.pv_power_simulator_sensor.update(round(pv_power, 2))
+            self.consumption_sensor.update(round(consumption_power, 2))
             if self.battery_voltage:
                 battery_power = consumption_power - pv_power
                 battery_current = battery_power / self.battery_voltage
@@ -246,8 +248,8 @@ class Controller(controller.Controller[EntryConfig]):
                     self.battery_voltage - battery_resistance * battery_current
                 )
                 battery_current = battery_power / battery_voltage
-                self.battery_voltage_sensor.update(battery_voltage)
-                self.battery_current_sensor.update(battery_current)
+                self.battery_voltage_sensor.update(round(battery_voltage, 2))
+                self.battery_current_sensor.update(round(battery_current, 2))
                 now_ts = time.monotonic()
                 if self._power_last_update_ts:
                     delta_t = now_ts - self._power_last_update_ts
@@ -260,7 +262,7 @@ class Controller(controller.Controller[EntryConfig]):
                         battery_charge > self.battery_capacity
                     ):
                         battery_charge = self.battery_capacity
-                    self.battery_charge_sensor.update(battery_charge)
+                    self.battery_charge_sensor.update(round(battery_charge, 2))
                     # we should now derate the pv output should the battery be full...
                 self._power_last_update_ts = now_ts
 
