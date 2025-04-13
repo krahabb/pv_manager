@@ -16,7 +16,7 @@ from homeassistant.util.unit_conversion import (
 
 from .. import const as pmc, controller
 from ..binary_sensor import BinarySensor
-from ..helpers import validation as hv, entity as he
+from ..helpers import entity as he, validation as hv
 from ..sensor import EnergySensor, Sensor
 
 if typing.TYPE_CHECKING:
@@ -266,7 +266,7 @@ class Controller(controller.Controller[EntryConfig]):
     """Off-grid plant manager: a collection of integrated helpers for a basic off-grid system
     with PV BATTERY and LOAD."""
 
-    TYPE = pmc.ConfigEntryType.BATTERY_ESTIMATOR
+    TYPE = pmc.ConfigEntryType.OFF_GRID_MANAGER
     PLATFORMS = {Sensor.PLATFORM}
 
     __slots__ = (

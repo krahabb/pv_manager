@@ -44,7 +44,7 @@ class ConfigEntryType(enum.StrEnum):
     ENERGY_CALCULATOR = enum.auto()
     PV_ENERGY_ESTIMATOR = enum.auto()
     CONSUMPTION_ESTIMATOR = enum.auto()
-    BATTERY_ESTIMATOR = enum.auto()
+    OFF_GRID_MANAGER = enum.auto()
     PV_PLANT_SIMULATOR = enum.auto()
 
     @staticmethod
@@ -63,7 +63,7 @@ CONFIGENTRY_SUBENTRY_MAP: dict[ConfigEntryType, tuple[ConfigSubentryType, ...]] 
     ConfigEntryType.CONSUMPTION_ESTIMATOR: (
         ConfigSubentryType.ENERGY_ESTIMATOR_SENSOR,
     ),
-    ConfigEntryType.BATTERY_ESTIMATOR: (ConfigSubentryType.MANAGER_ENERGY_SENSOR,),
+    ConfigEntryType.OFF_GRID_MANAGER: (ConfigSubentryType.MANAGER_ENERGY_SENSOR,),
 }
 
 CONF_TYPE: typing.Final = "type"
