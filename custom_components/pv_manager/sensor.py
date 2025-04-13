@@ -111,6 +111,7 @@ class EnergySensor(Sensor, he.RestoreEntity):
 
     controller: "Controller"
 
+    cycle_mode: typing.Final[CycleMode]
     native_value: float
     _integral_value: float
 
@@ -137,7 +138,7 @@ class EnergySensor(Sensor, he.RestoreEntity):
         cycle_mode: CycleMode,
         **kwargs: "typing.Unpack[EntityArgs]",
     ):
-        self.cycle_mode: typing.Final = cycle_mode
+        self.cycle_mode = cycle_mode
         self.last_reset = None
         self._integral_value = 0
         self._async_track_cycle_unsub = None

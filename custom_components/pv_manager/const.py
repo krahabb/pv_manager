@@ -49,11 +49,13 @@ class ConfigEntryType(enum.StrEnum):
 
     @staticmethod
     def get_from_entry(config_entry: "ConfigEntry"):
+        # might raise ValueError if config_entry.unique_id does not map to a valid enum
         return ConfigEntryType((config_entry.unique_id).split(".")[0])  # type: ignore
 
 
 class ConfigSubentryType(enum.StrEnum):
     ENERGY_ESTIMATOR_SENSOR = enum.auto()
+    MANAGER_ENERGY_SENSOR = enum.auto()
 
 
 CONFIGENTRY_SUBENTRY_MAP: dict[ConfigEntryType, tuple[ConfigSubentryType, ...]] = {
@@ -61,6 +63,7 @@ CONFIGENTRY_SUBENTRY_MAP: dict[ConfigEntryType, tuple[ConfigSubentryType, ...]] 
     ConfigEntryType.CONSUMPTION_ESTIMATOR: (
         ConfigSubentryType.ENERGY_ESTIMATOR_SENSOR,
     ),
+    ConfigEntryType.BATTERY_ESTIMATOR: (ConfigSubentryType.MANAGER_ENERGY_SENSOR,),
 }
 
 CONF_TYPE: typing.Final = "type"
