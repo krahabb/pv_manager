@@ -51,6 +51,7 @@ class Entity(Loggable, entity.Entity if typing.TYPE_CHECKING else object):
     __slots__ = (
         "controller",
         "config_subentry_id",
+        "device_info",
         "name",
         "should_poll",
         "unique_id",
@@ -66,6 +67,7 @@ class Entity(Loggable, entity.Entity if typing.TYPE_CHECKING else object):
     ):
         self.controller = controller
         self.config_subentry_id = kwargs.pop("config_subentry_id", None)
+        self.device_info = controller.device_info
         self.name = kwargs.pop("name", None) or id
         self.should_poll = False
         self.unique_id = "_".join((controller.config_entry.entry_id, id))

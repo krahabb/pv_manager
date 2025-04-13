@@ -6,6 +6,7 @@ from homeassistant import const as hac
 from homeassistant.components.recorder import get_instance as recorder_instance, history
 from homeassistant.core import callback
 from homeassistant.helpers import (
+    device_registry,
     entity_registry,
     event,
     json,
@@ -22,7 +23,7 @@ from ..sensor import Sensor
 from .common import estimator
 
 if typing.TYPE_CHECKING:
-    from typing import Any, Callable, Coroutine
+    from typing import Any, Callable, ClassVar, Coroutine, Final, Unpack
 
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import Event, HomeAssistant, State
@@ -35,32 +36,34 @@ if typing.TYPE_CHECKING:
 class Controller[_ConfigT: pmc.EntryConfig](helpers.Loggable):
     """Base controller class for managing ConfigEntry behavior."""
 
-    TYPE: typing.ClassVar[pmc.ConfigEntryType]
+    TYPE: "ClassVar[pmc.ConfigEntryType]"
 
-    PLATFORMS: typing.ClassVar[set[str]] = set()
+    PLATFORMS: "ClassVar[set[str]]" = set()
     """Default entity platforms used by the controller. This is used to prepopulate the entities dict so
     that we'll (at least) forward entry setup to these platforms (even if we've still not registered any entity for those).
     This in turn allows us to later create and register entities since we'll register the add_entities callback in our platforms."""
 
+    hass: "Final[HomeAssistant]"
+    device_info: "Final[device_registry.DeviceInfo]"
+
     config: _ConfigT
     options: pmc.EntryOptionsConfig
-    platforms: typing.Final[dict[str, "AddConfigEntryEntitiesCallback"]]
+    platforms: "Final[dict[str, AddConfigEntryEntitiesCallback]]"
     """Dict of add_entities callbacks."""
-    entities: typing.Final[dict[str, dict[str, "Entity"]]]
+    entities: "Final[dict[str, dict[str, Entity]]]"
     """Dict of registered entities for this controller/entry. This will be scanned in order to forward entry setup during
     initialization."""
-    hass: "HomeAssistant"
-
-    _callbacks_unsub: set[typing.Callable[[], None]]
+    _callbacks_unsub: "Final[set[Callable[[], None]]]"
     """Dict of callbacks to be unsubscribed when the entry is unloaded."""
 
     __slots__ = (
         "config_entry",
+        "hass",
+        "device_info",
         "config",
         "options",
         "platforms",
         "entities",
-        "hass",
         "_callbacks_unsub",
     )
 
@@ -85,13 +88,20 @@ class Controller[_ConfigT: pmc.EntryConfig](helpers.Loggable):
 
     def __init__(self, hass: "HomeAssistant", config_entry: "ConfigEntry"):
         self.config_entry = config_entry
+        self.hass = hass
+        self.device_info = {"identifiers": {(pmc.DOMAIN, config_entry.entry_id)}}
         self.config = config_entry.data  # type: ignore
         self.options = config_entry.options  # type: ignore
         self.platforms = {}
         self.entities = {platform: {} for platform in self.PLATFORMS}
-        self.hass = hass
         self._callbacks_unsub = set()
         helpers.Loggable.__init__(self, config_entry.title)
+        self.get_device_registry().async_get_or_create(
+            config_entry_id=config_entry.entry_id,
+            name=config_entry.title,
+            model=self.TYPE,
+            **self.device_info,  # type: ignore
+        )
         if self.options.get("create_diagnostic_entities"):
             self._create_diagnostic_entities()
         config_entry.runtime_data = self
@@ -163,11 +173,14 @@ class Controller[_ConfigT: pmc.EntryConfig](helpers.Loggable):
             assert not entities_per_platform
         self.platforms.clear()
 
+    def get_device_registry(self):
+        return device_registry.async_get(self.hass)
+
     def get_entity_registry(self):
         return entity_registry.async_get(self.hass)
 
     def schedule_async_callback(
-        self, delay: float, target: "typing.Callable[..., typing.Coroutine]", *args
+        self, delay: float, target: "Callable[..., Coroutine]", *args
     ):
         @callback
         def _callback(_target, *_args):
@@ -175,13 +188,13 @@ class Controller[_ConfigT: pmc.EntryConfig](helpers.Loggable):
 
         return self.hass.loop.call_later(delay, _callback, target, *args)
 
-    def schedule_callback(self, delay: float, target: "typing.Callable", *args):
+    def schedule_callback(self, delay: float, target: "Callable", *args):
         return self.hass.loop.call_later(delay, target, *args)
 
     @callback
     def async_create_task[_R](
         self,
-        target: "typing.Coroutine[typing.Any, typing.Any, _R]",
+        target: "Coroutine[Any, Any, _R]",
         name: str,
         eager_start: bool = True,
     ):
@@ -192,7 +205,7 @@ class Controller[_ConfigT: pmc.EntryConfig](helpers.Loggable):
     def track_state(
         self,
         entity_id: str,
-        action: "typing.Callable[[Event[event.EventStateChangedData]], typing.Any]",
+        action: "Callable[[Event[event.EventStateChangedData]], Any]",
     ):
         """Track a state change for the given entity_id."""
         self._callbacks_unsub.add(
@@ -200,7 +213,7 @@ class Controller[_ConfigT: pmc.EntryConfig](helpers.Loggable):
         )
 
     def track_state_update(
-        self, entity_id: str, target: "typing.Callable[[State | None], None]"
+        self, entity_id: str, target: "Callable[[State | None], None]"
     ):
         """Start tracking state updates for the given entity_id and immediately call target with current state."""
 
@@ -289,7 +302,7 @@ class EnergyEstimatorSensor(Sensor):
         id,
         *,
         forecast_duration_ts: float = 0,
-        **kwargs: "typing.Unpack[EntityArgs]",
+        **kwargs: "Unpack[EntityArgs]",
     ):
         self.forecast_duration_ts = forecast_duration_ts
         super().__init__(
