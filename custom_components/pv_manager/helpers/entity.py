@@ -111,9 +111,12 @@ class Entity(Loggable, entity.Entity if typing.TYPE_CHECKING else object):
         self.log(self.DEBUG, "removed from hass")
 
     def update(self, value):
-        # stub
+        """Optimized update and flush to HA without checking the entity is added."""
         pass
 
+    def update_safe(self, value):
+        """Update and flush with safety check: only flush if added to HA"""
+        pass
 
 class ExtraStoredDataDict(dict, restore_state.ExtraStoredData):
     """Object to hold extra stored data as a plain dict"""

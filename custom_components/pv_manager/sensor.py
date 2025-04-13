@@ -8,7 +8,6 @@ from homeassistant.core import HassJob, callback
 from homeassistant.helpers import event
 from homeassistant.util import dt as dt_util
 
-
 from . import const as pmc
 from .helpers import entity as he
 
@@ -88,12 +87,36 @@ class Sensor(he.Entity, sensor.SensorEntity):
     def update(self, native_value: "SensorStateType"):
         if self.native_value != native_value:
             self.native_value = native_value
+            self._async_write_ha_state()
+
+    def update_safe(self, native_value: "SensorStateType"):
+        if self.native_value != native_value:
+            self.native_value = native_value
             if self.added_to_hass:
                 self._async_write_ha_state()
 
 
 class DiagnosticSensor(he.DiagnosticEntity, Sensor):
     pass
+
+
+class PowerSensor(Sensor):
+
+    _attr_device_class = Sensor.DeviceClass.POWER
+    _attr_native_unit_of_measurement = Sensor.hac.UnitOfPower.WATT
+
+    def __init__(
+        self,
+        controller: "Controller",
+        id: str,
+        **kwargs: "typing.Unpack[EntityArgs]",
+    ):
+        Sensor.__init__(
+            self,
+            controller,
+            id,
+            **kwargs,
+        )
 
 
 class CycleMode(enum.StrEnum):

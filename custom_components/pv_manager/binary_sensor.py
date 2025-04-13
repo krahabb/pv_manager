@@ -52,5 +52,10 @@ class BinarySensor(Entity, binary_sensor.BinarySensorEntity):
     def update(self, is_on: bool | None):
         if self.is_on != is_on:
             self.is_on = is_on
+            self._async_write_ha_state()
+
+    def update_safe(self, is_on: bool | None):
+        if self.is_on != is_on:
+            self.is_on = is_on
             if self.added_to_hass:
                 self._async_write_ha_state()

@@ -56,6 +56,7 @@ class ConfigEntryType(enum.StrEnum):
 class ConfigSubentryType(enum.StrEnum):
     ENERGY_ESTIMATOR_SENSOR = enum.auto()
     MANAGER_ENERGY_SENSOR = enum.auto()
+    MANAGER_YIELD = enum.auto()
 
 
 CONFIGENTRY_SUBENTRY_MAP: dict[ConfigEntryType, tuple[ConfigSubentryType, ...]] = {
@@ -63,7 +64,10 @@ CONFIGENTRY_SUBENTRY_MAP: dict[ConfigEntryType, tuple[ConfigSubentryType, ...]] 
     ConfigEntryType.CONSUMPTION_ESTIMATOR: (
         ConfigSubentryType.ENERGY_ESTIMATOR_SENSOR,
     ),
-    ConfigEntryType.OFF_GRID_MANAGER: (ConfigSubentryType.MANAGER_ENERGY_SENSOR,),
+    ConfigEntryType.OFF_GRID_MANAGER: (
+        ConfigSubentryType.MANAGER_ENERGY_SENSOR,
+        ConfigSubentryType.MANAGER_YIELD,
+    ),
 }
 
 CONF_TYPE: typing.Final = "type"

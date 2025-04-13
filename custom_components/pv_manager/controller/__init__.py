@@ -559,20 +559,20 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
         self.today_energy_estimate_sensor.extra_state_attributes = (
             estimator.get_state_dict()
         )
-        self.today_energy_estimate_sensor.update(
+        self.today_energy_estimate_sensor.update_safe(
             estimator.today_energy
             + estimator.get_estimated_energy(
                 estimator.observed_time_ts, estimator.tomorrow_ts
             )
         )
-        self.tomorrow_energy_estimate_sensor.update(
+        self.tomorrow_energy_estimate_sensor.update_safe(
             estimator.get_estimated_energy(
                 estimator.tomorrow_ts, estimator.tomorrow_ts + 86400
             )
         )
 
         for sensor in self.estimator_sensors.values():
-            sensor.update(
+            sensor.update_safe(
                 self.estimator.get_estimated_energy(
                     estimator.observed_time_ts,
                     estimator.observed_time_ts + sensor.forecast_duration_ts,

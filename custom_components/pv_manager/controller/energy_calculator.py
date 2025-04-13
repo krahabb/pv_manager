@@ -13,7 +13,6 @@ from .. import const as pmc, controller, sensor
 from ..binary_sensor import BinarySensor
 from ..helpers import validation as hv
 
-
 if typing.TYPE_CHECKING:
 
     from homeassistant.config_entries import ConfigEntry
@@ -162,7 +161,7 @@ class Controller(controller.Controller[EntryConfig]):
             self._maximum_latency_callback_unsub = self.schedule_callback(
                 self.config["maximum_latency_seconds"], self._maximum_latency_callback
             )
-            self.maximum_latency_alarm_binary_sensor.update(False)
+            self.maximum_latency_alarm_binary_sensor.update_safe(False)
 
     @callback
     def _integration_callback(self):
@@ -192,7 +191,7 @@ class Controller(controller.Controller[EntryConfig]):
             self.config["maximum_latency_seconds"], self._maximum_latency_callback
         )
         self._power = None
-        self.maximum_latency_alarm_binary_sensor.update(True)
+        self.maximum_latency_alarm_binary_sensor.update_safe(True)
 
     def _get_power_from_state(self, power_state: "State | None"):
         if power_state:

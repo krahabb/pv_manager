@@ -83,6 +83,38 @@
             },
             "error": {},
             "abort": {}
+        },
+        "manager_energy_sensor": {
+            "initiate_flow": {
+                "user": "Energy calculator"
+            },
+            "step": {
+                "user": {
+                    "title": "Energy calculator",
+                    "description": "Configure metering energy sensors",
+                    "data": {
+                        "name": "Sensor name(s)"
+                    }
+                }
+            },
+            "error": {},
+            "abort": {}
+        },
+        "manager_yield": {
+            "initiate_flow": {
+                "user": "Yield calculator"
+            },
+            "step": {
+                "user": {
+                    "title": "Yield calculator",
+                    "description": "Compute losses and yields based off sources observations",
+                    "data": {
+                        "name": "Losses sensor name(s)"
+                    }
+                }
+            },
+            "error": {},
+            "abort": {}
         }
     },
     "options": {

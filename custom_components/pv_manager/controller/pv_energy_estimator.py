@@ -97,7 +97,9 @@ class Controller(controller.EnergyEstimatorController[EntryConfig]):
     async def async_init(self):
         await super().async_init()
         if self.weather_entity_id:
-            await self.async_track_state_update(self.weather_entity_id, self._async_weather_update)
+            await self.async_track_state_update(
+                self.weather_entity_id, self._async_weather_update
+            )
 
     def _create_diagnostic_entities(self):
         sensors = self.entities[Sensor.PLATFORM]
@@ -111,11 +113,11 @@ class Controller(controller.EnergyEstimatorController[EntryConfig]):
         sensors = self.entities[Sensor.PLATFORM]
 
         if DiagnosticSensorsEnum.observed_ratio in sensors:
-            sensors[DiagnosticSensorsEnum.observed_ratio].update(
+            sensors[DiagnosticSensorsEnum.observed_ratio].update_safe(
                 estimator.observed_ratio
             )
         if DiagnosticSensorsEnum.weather_cloud_constant in sensors:
-            sensors[DiagnosticSensorsEnum.weather_cloud_constant].update(
+            sensors[DiagnosticSensorsEnum.weather_cloud_constant].update_safe(
                 TimeSpanEnergyModel.Wc
             )
 

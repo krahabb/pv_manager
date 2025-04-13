@@ -7,9 +7,7 @@ import random
 import time
 import typing
 
-
 from astral import sun
-
 from homeassistant import const as hac
 from homeassistant.core import callback
 from homeassistant.helpers import config_validation as cv, sun as sun_helpers
@@ -18,7 +16,7 @@ from homeassistant.util.unit_conversion import DistanceConverter, TemperatureCon
 
 from .. import const as pmc, controller, helpers
 from ..helpers import validation as hv
-from ..sensor import Sensor
+from ..sensor import PowerSensor, Sensor
 
 if typing.TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -163,24 +161,18 @@ class Controller(controller.Controller[EntryConfig]):
         self.consumption_daily_fill_factor = self.config.get(
             "consumption_daily_fill_factor", 0.2
         )
-        self.consumption_sensor = Sensor(
+        self.consumption_sensor = PowerSensor(
             self,
             "consumption",
-            device_class=Sensor.DeviceClass.POWER,
             name="Consumption",
-            native_unit_of_measurement=hac.UnitOfPower.WATT,
-            state_class=Sensor.StateClass.MEASUREMENT,
         )
 
         self.inverter_zeroload_power = self.config.get("inverter_zeroload_power_w", 20)
         self.inverter_efficiency = self.config.get("inverter_efficiency", 0.9)
-        self.inverter_losses_sensor = Sensor(
+        self.inverter_losses_sensor = PowerSensor(
             self,
             "inverter_losees",
-            device_class=Sensor.DeviceClass.POWER,
             name="Inverter losses",
-            native_unit_of_measurement=hac.UnitOfPower.WATT,
-            state_class=Sensor.StateClass.MEASUREMENT,
         )
 
     async def async_init(self):
@@ -258,15 +250,15 @@ class Controller(controller.Controller[EntryConfig]):
                     self.consumption_baseload_power_w * random.randint(90, 110) / 100
                 )
 
-            self.pv_power_simulator_sensor.update(round(pv_power, 2))
-            self.consumption_sensor.update(round(consumption_power, 2))
+            self.pv_power_simulator_sensor.update_safe(round(pv_power, 2))
+            self.consumption_sensor.update_safe(round(consumption_power, 2))
 
             total_consumption_power = (
                 consumption_power / self.inverter_efficiency
                 + self.inverter_zeroload_power
             )
             inverter_losses = total_consumption_power - consumption_power
-            self.inverter_losses_sensor.update(round(inverter_losses, 2))
+            self.inverter_losses_sensor.update_safe(round(inverter_losses, 2))
 
             if self.battery_voltage:
                 battery_power = total_consumption_power - pv_power
@@ -279,8 +271,8 @@ class Controller(controller.Controller[EntryConfig]):
                     self.battery_voltage - battery_resistance * battery_current
                 )
                 battery_current = battery_power / battery_voltage
-                self.battery_voltage_sensor.update(round(battery_voltage, 2))
-                self.battery_current_sensor.update(round(battery_current, 2))
+                self.battery_voltage_sensor.update_safe(round(battery_voltage, 2))
+                self.battery_current_sensor.update_safe(round(battery_current, 2))
                 now_ts = time.monotonic()
                 if self._power_last_update_ts:
                     delta_t = now_ts - self._power_last_update_ts
@@ -293,18 +285,18 @@ class Controller(controller.Controller[EntryConfig]):
                         battery_charge > self.battery_capacity
                     ):
                         battery_charge = self.battery_capacity
-                    self.battery_charge_sensor.update(round(battery_charge, 2))
+                    self.battery_charge_sensor.update_safe(round(battery_charge, 2))
                     # we should now derate the pv output should the battery be full...
                 self._power_last_update_ts = now_ts
 
         except (KeyError, AttributeError):
             self._power_last_update_ts = None
-            self.pv_power_simulator_sensor.update(None)
-            self.consumption_sensor.update(None)
-            self.inverter_losses_sensor.update(None)
+            self.pv_power_simulator_sensor.update_safe(None)
+            self.consumption_sensor.update_safe(None)
+            self.inverter_losses_sensor.update_safe(None)
             if self.battery_voltage:
-                self.battery_voltage_sensor.update(self.battery_voltage)
-                self.battery_current_sensor.update(0)
+                self.battery_voltage_sensor.update_safe(self.battery_voltage)
+                self.battery_current_sensor.update_safe(0)
 
     def _weather_update(self, state: "State | None"):
         if state:
