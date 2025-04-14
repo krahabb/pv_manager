@@ -452,6 +452,7 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
                             "forecast_duration_hours", 0
                         )
                         * 3600,
+                        parent_attr=None,
                     )
 
         self._refresh_callback_unsub = None
@@ -477,7 +478,7 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
         self.estimator.on_update_estimate = self._update_estimate
         self.estimator.update_estimate()
         self.track_state_update(self.observed_entity_id, self._process_observation)
-        return await super().async_init()
+        await super().async_init()
 
     async def async_shutdown(self):
         if self._restore_history_task:
@@ -485,13 +486,13 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
                 self._restore_history_exit = True
                 await self._restore_history_task
             self._restore_history_task = None
-        await super().async_shutdown()
         if self._refresh_callback_unsub:
             self._refresh_callback_unsub.cancel()
             self._refresh_callback_unsub = None
         self.estimator.on_update_estimate = None
         self.estimator: "estimator.Estimator" = None  # type: ignore
         self.estimator_sensors.clear()
+        await super().async_shutdown()
 
     async def _entry_update_listener(
         self, hass: "HomeAssistant", config_entry: "ConfigEntry"
