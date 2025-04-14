@@ -5,8 +5,8 @@ import time
 import typing
 
 from homeassistant import const as hac
-from homeassistant.core import HassJob, callback
-from homeassistant.helpers import event
+from homeassistant.core import callback
+from homeassistant.helpers import storage
 from homeassistant.util import dt as dt_util
 from homeassistant.util.unit_conversion import (
     ElectricCurrentConverter,
@@ -20,6 +20,7 @@ from ..helpers import entity as he, validation as hv
 from ..sensor import EnergySensor, PowerSensor, Sensor
 
 if typing.TYPE_CHECKING:
+    from typing import Final, NotRequired, Unpack
 
     from homeassistant.config_entries import ConfigEntry, ConfigSubentry
     from homeassistant.core import Event, HomeAssistant, State
@@ -45,15 +46,43 @@ class MeteringSource(enum.StrEnum):
     PV = enum.auto()
 
 
+class MeterStoreType(typing.TypedDict):
+    time_ts: float
+    energy: float
+
+
+class ControllerStoreType(typing.TypedDict):
+    time: str
+    time_ts: float
+    battery_charge_estimate: float
+    battery_capacity_estimate: float
+
+    battery: "NotRequired[MeterStoreType]"
+    battery_in: "NotRequired[MeterStoreType]"
+    battery_out: "NotRequired[MeterStoreType]"
+    load: "NotRequired[MeterStoreType]"
+    losses: "NotRequired[MeterStoreType]"
+    pv: "NotRequired[MeterStoreType]"
+
+class ControllerStore(storage.Store[ControllerStoreType]):
+    VERSION = 1
+
+    def __init__(self, hass: "HomeAssistant", entry_id: str):
+        super().__init__(
+            hass,
+            self.VERSION,
+            f"{pmc.DOMAIN}.{Controller.TYPE}.{entry_id}",
+        )
+
+
 @dataclass(slots=True)
 class BaseMeter:
-    controller: "typing.Final[Controller]"
-    metering_source: "typing.Final[MeteringSource]"
-    energy_sensors: "typing.Final[set[EnergySensor]]"
+    controller: "Final[Controller]"
+    metering_source: "Final[MeteringSource]"
+    energy_sensors: "Final[set[EnergySensor]]"
     time_ts: float
-    value: float
-    energy_delta: float
-    energy_total: float
+    value: float  # last sample in: might be power or energy
+    energy: float  # accumulated total energy
 
     def __init__(
         self, controller: "Controller", metering_source: MeteringSource, time_ts: float
@@ -63,23 +92,31 @@ class BaseMeter:
         self.energy_sensors = set()
         self.time_ts = time_ts
         self.value = 0
-        self.energy_delta = 0
-        self.energy_total = 0
+        self.energy = 0
         controller.energy_meters[metering_source] = self
 
     def add(self, value: float, time_ts: float):
         pass
 
-    def reset_partial(self, time_ts: float):
-        """Interpolates last reading, accumulates energy_total and returns energy_delta"""
-        self.add(self.value, time_ts)
-        energy_delta = self.energy_delta
-        self.energy_total += energy_delta
-        self.energy_delta = 0
-        return energy_delta
+    def interpolate(self, time_ts: float):
+        pass
 
     def track_state(self, state: "State | None"):
         pass
+
+    def load(self, data: ControllerStoreType):
+        try:
+            meter_data: MeterStoreType = data[self.metering_source.value]
+            self.energy = meter_data["energy"]
+        except:
+            pass
+
+    def save(self, data: ControllerStoreType):
+        # remember to 'reset_partial' so to save all of the energy accumulated so far
+        data[self.metering_source.value] = MeterStoreType({
+            "time_ts": self.time_ts,
+            "energy": self.energy,
+        })
 
 
 class PowerMeter(BaseMeter):
@@ -89,13 +126,16 @@ class PowerMeter(BaseMeter):
         if time_ts > self.time_ts:
             if self.energy_sensors:
                 energy = self.value * (time_ts - self.time_ts) / 3600
-                self.energy_delta += energy
+                self.energy += energy
                 for sensor in self.energy_sensors:
                     sensor.accumulate(energy)
             else:
-                self.energy_delta += self.value * (time_ts - self.time_ts) / 3600
+                self.energy += self.value * (time_ts - self.time_ts) / 3600
         self.value = value
         self.time_ts = time_ts
+
+    def interpolate(self, time_ts: float):
+        self.add(self.value, time_ts)
 
     def track_state(self, state: "State | None"):
         try:
@@ -110,7 +150,7 @@ class PowerMeter(BaseMeter):
         except Exception as e:
             # this is expected and silently managed when state == None or 'unknown'
             self.add(0, TIME_TS())
-            if state and state.state != hac.STATE_UNKNOWN:
+            if state and state.state not in (hac.STATE_UNKNOWN, hac.STATE_UNAVAILABLE):
                 self.controller.log_exception(
                     self.controller.WARNING,
                     e,
@@ -122,7 +162,7 @@ class PowerMeter(BaseMeter):
 class EnergyMeter(BaseMeter):
 
     def _add_internal(self, value: float, time_ts: float):
-        self.energy_delta += value
+        self.energy += value
         for sensor in self.energy_sensors:
             sensor.accumulate(value)
         self.value = value
@@ -148,7 +188,7 @@ class BatteryPowerMeter(PowerMeter):
         # left rectangle integration
         if time_ts > self.time_ts:
             energy = self.value * (time_ts - self.time_ts) / 3600
-            self.energy_delta += energy
+            self.energy += energy
             for sensor in self.energy_sensors:
                 sensor.accumulate(energy)
             if energy > 0:
@@ -162,20 +202,131 @@ class BatteryPowerMeter(PowerMeter):
 
 class LossesEnergyMeter(EnergyMeter):
 
-    def __init__(self, controller, time_ts: float):
+    __slots__ = (
+        "battery_energy",
+        "battery_in_energy",
+        "battery_out_energy",
+        "load_energy",
+        "pv_energy",
+        "_callback_interval_ts",
+        "_callback_unsub",
+    )
+
+    def __init__(self, controller, time_ts: float, callback_interval_ts: float):
+        self._callback_interval_ts = callback_interval_ts
+        self._callback_unsub = None
         super().__init__(controller, MeteringSource.LOSSES, time_ts)
 
-    def add(self, value: float, time_ts: float):
+    def start(self):
+        """Called after restoring data in the controller so to initialize incremental counters."""
+        self._losses_compute()
+        self._callback_unsub = self.controller.schedule_callback(
+            self._callback_interval_ts, self._losses_callback
+        )
+
+    def stop(self):
+        if self._callback_unsub:
+            self._callback_unsub.cancel()
+            self._callback_unsub = None
+
+    @callback
+    def _losses_callback(self):
+        time_ts = TIME_TS()
+        controller = self.controller
+        self._callback_unsub = controller.schedule_callback(
+            self._callback_interval_ts, self._losses_callback
+        )
+        battery_energy_old = self.battery_energy
+        battery_in_energy_old = self.battery_in_energy
+        battery_out_energy_old = self.battery_out_energy
+        load_energy_old = self.load_energy
+        pv_energy_old = self.pv_energy
+        losses_energy_old = self.energy
+        # get the 'new' total
+        controller.battery_meter.interpolate(time_ts)
+        controller.load_meter.interpolate(time_ts)
+        controller.pv_meter.interpolate(time_ts)
+        self._losses_compute()
+        # compute delta to get the average power in the sampling period
+        losses_energy_delta = self.energy - losses_energy_old
         if time_ts > self.time_ts:
-            power = value * 3600 / (time_ts - self.time_ts)
+            losses_power = losses_energy_delta * 3600 / (time_ts - self.time_ts)
         else:
-            power = None
-        self.energy_delta += value
+            losses_power = None
+        if controller.losses_power_sensor:
+            controller.losses_power_sensor.update(losses_power)
         for sensor in self.energy_sensors:
-            sensor.accumulate(value)
-        self.value = value
+            sensor.accumulate(losses_energy_delta)
+        self.value = losses_energy_delta
         self.time_ts = time_ts
-        return power
+
+        if controller.conversion_yield_actual_sensor:
+            try:
+                load_energy_delta = self.load_energy - load_energy_old
+                conversion_yield = load_energy_delta / (
+                    load_energy_delta + losses_energy_delta
+                )
+                controller.conversion_yield_actual_sensor.update(
+                    round(conversion_yield * 100)
+                )
+            except:
+                controller.conversion_yield_actual_sensor.update(None)
+
+    def _losses_compute(self):
+        controller = self.controller
+        self.battery_energy = battery_energy = controller.battery_meter.energy
+        self.battery_in_energy = battery_in_energy = (
+            controller.battery_meter.in_meter.energy
+        )
+        self.battery_out_energy = battery_out_energy = (
+            controller.battery_meter.out_meter.energy
+        )
+        self.load_energy = load_energy = controller.load_meter.energy
+        self.pv_energy = pv_energy = controller.pv_meter.energy
+        self.energy = losses_energy = pv_energy + battery_energy - load_energy
+
+        # Estimate energy actually stored in the battery:
+        # in the long term -> battery_in > battery_out with the difference being the energy 'eaten up'
+        # battery_yield = battery_out / (battery_in - battery_stored_energy)
+        # battery_stored_energy is hard to compute since it depends on the discharge current/voltage
+        # we'll use a conservative approach with the following formula. It's contribution to
+        # battery_yeild will nevertheless decay as far as battery_in, battery_out will increase
+        battery_stored_energy = (
+            controller.battery_charge_estimate * controller.battery_voltage * 0.9
+        )
+
+        if controller.conversion_yield_sensor:
+            try:
+                conversion_yield = load_energy / (load_energy + losses_energy)
+                controller.conversion_yield_sensor.update(round(conversion_yield * 100))
+            except:
+                controller.conversion_yield_sensor.update(None)
+
+        if controller.battery_yield_sensor:
+            try:
+                # battery_yield = battery_out_energy / (battery_in_energy - battery_stored_energy)
+                _temp = battery_in_energy - battery_stored_energy
+                if _temp > battery_out_energy:
+                    controller.battery_yield_sensor.update(
+                        round(battery_out_energy * 100 / _temp)
+                    )
+                else:
+                    controller.battery_yield_sensor.update(None)
+            except:
+                controller.battery_yield_sensor.update(None)
+
+        if controller.system_yield_sensor:
+            try:
+                # system_yield = load_energy / (pv_energy - battery_stored_energy)
+                _temp = pv_energy - battery_stored_energy
+                if _temp > load_energy:
+                    controller.system_yield_sensor.update(
+                        round(load_energy * 100 / _temp)
+                    )
+                else:
+                    controller.system_yield_sensor.update(None)
+            except:
+                controller.system_yield_sensor.update(None)
 
 
 class BatteryChargeSensor(Sensor, he.RestoreEntity):
@@ -191,7 +342,7 @@ class BatteryChargeSensor(Sensor, he.RestoreEntity):
 
     __slots__ = ("_integral_value",)
 
-    def __init__(self, controller: "Controller", **kwargs: "typing.Unpack[EntityArgs]"):
+    def __init__(self, controller: "Controller", **kwargs: "Unpack[EntityArgs]"):
         self._integral_value = 0
         super().__init__(
             controller,
@@ -213,12 +364,15 @@ class BatteryChargeSensor(Sensor, he.RestoreEntity):
     def extra_restore_state_data(self):
         return he.ExtraStoredDataDict({"native_value": self._integral_value})
 
-    def accumulate(self, value: float):
-        self._integral_value += value
+    def update(self, value: float):
+        self._integral_value = value
         _rounded = round(self._integral_value)
         if self.native_value != _rounded:
             self.native_value = _rounded
             self._async_write_ha_state()
+
+    def accumulate(self, value: float):
+        self.update(self._integral_value + value)
 
 
 MANAGER_ENERGY_SENSOR_NAME = "Energy"  # default name for ManagerEnergySensor
@@ -235,7 +389,7 @@ class ManagerEnergySensor(EnergySensor):
 
     controller: "Controller"
 
-    energy_meter: typing.Final[BaseMeter]
+    energy_meter: "Final[BaseMeter]"
 
     _attr_parent_attr = None
 
@@ -266,9 +420,6 @@ class ManagerEnergySensor(EnergySensor):
         return await super().async_will_remove_from_hass()
 
 
-MANAGER_LOSSES_SENSOR_NAME = "Losses"  # default name for ManagerLossesConfig
-
-
 class ManagerYieldConfig(pmc.EntityConfig, pmc.SubentryConfig):
     """Configure measuring of pv plant losses through observations of input power/energy measures
     (pv, battery and load). Losses are computed so:
@@ -283,7 +434,7 @@ class ManagerYieldConfig(pmc.EntityConfig, pmc.SubentryConfig):
 
     system efficiency = load / pv (should include losses + battery losses)
     conversion efficiency = load / (load + losses) (mainly inverter losses)
-    charging efficiency = battery_out / battery_in (sampled at same battery charge)
+    battery efficiency = battery_out / battery_in (sampled at same battery charge)
     """
 
     cycle_modes: list[EnergySensor.CycleMode]
@@ -291,23 +442,21 @@ class ManagerYieldConfig(pmc.EntityConfig, pmc.SubentryConfig):
 
     sampling_interval_seconds: int
 
-    system_yield: typing.NotRequired[str]
-    system_yield_total: typing.NotRequired[str]
-    charging_yield: typing.NotRequired[str]
-    charging_yield_total: typing.NotRequired[str]
-    conversion_yield: typing.NotRequired[str]
-    conversion_yield_total: typing.NotRequired[str]
+    system_yield: "NotRequired[str]"
+    battery_yield: "NotRequired[str]"
+    conversion_yield: "NotRequired[str]"
+    conversion_yield_actual: "NotRequired[str]"
 
 
 class ControllerConfig(typing.TypedDict):
     battery_voltage_entity_id: str
     battery_current_entity_id: str
-    battery_charge_entity_id: typing.NotRequired[str]
+    battery_charge_entity_id: "NotRequired[str]"
 
     battery_capacity: float
 
-    pv_power_entity_id: typing.NotRequired[str]
-    load_power_entity_id: typing.NotRequired[str]
+    pv_power_entity_id: "NotRequired[str]"
+    load_power_entity_id: "NotRequired[str]"
 
     maximum_latency_minutes: int
     """Maximum time between source pv power/energy samples before considering an error in data sampling."""
@@ -324,6 +473,18 @@ class Controller(controller.Controller[EntryConfig]):
     TYPE = pmc.ConfigEntryType.OFF_GRID_MANAGER
     PLATFORMS = {Sensor.PLATFORM}
 
+    energy_meters: "Final[dict[MeteringSource, BaseMeter]]"
+    battery_meter: BatteryPowerMeter
+    pv_meter: PowerMeter
+    load_meter: PowerMeter
+    losses_meter: LossesEnergyMeter
+
+    losses_power_sensor: PowerSensor
+    system_yield_sensor: Sensor
+    battery_yield_sensor: Sensor
+    conversion_yield_sensor: Sensor
+    conversion_yield_actual_sensor: Sensor
+
     __slots__ = (
         # config
         "battery_voltage_entity_id",
@@ -334,18 +495,23 @@ class Controller(controller.Controller[EntryConfig]):
         "load_power_entity_id",
         "maximum_latency_ts",
         # state
+        "_store",
         "battery_voltage",
         "battery_current",
         "_battery_current_last_ts",
         "battery_charge",
+        "battery_charge_estimate",
+        "battery_capacity_estimate",
         "energy_meters",
         "battery_meter",
         "pv_meter",
         "load_meter",
         "losses_meter",
         "losses_power_sensor",
-        "_losses_callback_interval_ts",
-        "_losses_callback_unsub",
+        "system_yield_sensor",
+        "battery_yield_sensor",
+        "conversion_yield_sensor",
+        "conversion_yield_actual_sensor",
         # entities
         "battery_charge_sensor",
     )
@@ -386,7 +552,7 @@ class Controller(controller.Controller[EntryConfig]):
                     ),
                 }
             case pmc.ConfigSubentryType.MANAGER_YIELD:
-                return hv.entity_schema(user_input, name=MANAGER_LOSSES_SENSOR_NAME) | {
+                return hv.entity_schema(user_input, name="Losses") | {
                     hv.required("cycle_modes", user_input): hv.select_selector(
                         options=list(EnergySensor.CycleMode), multiple=True
                     ),
@@ -394,18 +560,14 @@ class Controller(controller.Controller[EntryConfig]):
                         "sampling_interval_seconds", user_input, 10
                     ): hv.time_period_selector(),
                     hv.optional("system_yield", user_input, "System yield"): str,
-                    hv.optional(
-                        "system_yield_total", user_input, "System yield (total)"
-                    ): str,
-                    hv.optional("charging_yield", user_input, "Charging yield"): str,
-                    hv.optional(
-                        "charging_yield_total", user_input, "Charging yield (total)"
-                    ): str,
+                    hv.optional("battery_yield", user_input, "Battery yield"): str,
                     hv.optional(
                         "conversion_yield", user_input, "Conversion yield"
                     ): str,
                     hv.optional(
-                        "conversion_yield_total", user_input, "Conversion yield (total)"
+                        "conversion_yield_actual",
+                        user_input,
+                        "Conversion yield (actual)",
                     ): str,
                 }
 
@@ -416,51 +578,29 @@ class Controller(controller.Controller[EntryConfig]):
         self.battery_voltage_entity_id = self.config["battery_voltage_entity_id"]
         self.battery_current_entity_id = self.config["battery_current_entity_id"]
         self.battery_charge_entity_id = self.config.get("battery_charge_entity_id")
-        self.battery_capacity = self.config["battery_capacity"]
+        self.battery_capacity = self.config.get("battery_capacity", 0)
         self.pv_power_entity_id = self.config.get("pv_power_entity_id")
         self.load_power_entity_id = self.config.get("load_power_entity_id")
         self.maximum_latency_ts = self.config.get("maximum_latency_minutes", 0) * 60
+
+        self._store = ControllerStore(hass, config_entry.entry_id)
 
         self.battery_voltage: float = 0
         self.battery_current: float = 0
         self._battery_current_last_ts: float = 0
         self.battery_charge: float = 0
+        self.battery_charge_estimate: float = 0
+        self.battery_capacity_estimate: float = self.battery_capacity
 
-        self.energy_meters: typing.Final[dict[MeteringSource, BaseMeter]] = {}
-        self._losses_callback_unsub = None
+        self.energy_meters = {}
 
         self.battery_charge_sensor: BatteryChargeSensor | None = None
-
-        # TODO: setup according to some sort of configuration
-        BatteryChargeSensor(
-            self,
-            name=f"{self.config["name"]} charge",
-            parent_attr=Sensor.ParentAttr.DYNAMIC,
-        )
 
         time_ts = TIME_TS()
         self.battery_meter = BatteryPowerMeter(self, time_ts)
         self.pv_meter = PowerMeter(self, MeteringSource.PV, time_ts)
         self.load_meter = PowerMeter(self, MeteringSource.LOAD, time_ts)
-
-        self.track_state_update(
-            self.battery_voltage_entity_id, self._battery_voltage_callback
-        )
-        self.track_state_update(
-            self.battery_current_entity_id, self._battery_current_callback
-        )
-        if self.battery_charge_entity_id:
-            self.track_state_update(
-                self.battery_charge_entity_id, self._battery_charge_callback
-            )
-
-        if self.pv_power_entity_id:
-            self.track_state_update(self.pv_power_entity_id, self.pv_meter.track_state)
-
-        if self.load_power_entity_id:
-            self.track_state_update(
-                self.load_power_entity_id, self.load_meter.track_state
-            )
+        self.losses_meter = None  # type: ignore
 
         for subentry_id, config_subentry in config_entry.subentries.items():
             match config_subentry.subentry_type:
@@ -479,12 +619,8 @@ class Controller(controller.Controller[EntryConfig]):
                             )
                 case pmc.ConfigSubentryType.MANAGER_YIELD:
                     yield_config: ManagerYieldConfig = config_subentry.data  # type: ignore
-                    self.losses_meter = LossesEnergyMeter(self, time_ts)
-                    self._losses_callback_interval_ts = yield_config[
-                        "sampling_interval_seconds"
-                    ]
-                    self._losses_callback_unsub = self.schedule_callback(
-                        self._losses_callback_interval_ts, self._losses_callback
+                    self.losses_meter = LossesEnergyMeter(
+                        self, time_ts, yield_config["sampling_interval_seconds"]
                     )
                     name = yield_config["name"]
                     self.losses_power_sensor = PowerSensor(
@@ -498,15 +634,79 @@ class Controller(controller.Controller[EntryConfig]):
                         ManagerEnergySensor(
                             self.losses_meter, name, subentry_id, cycle_mode
                         )
+                    for yield_sensor_id in (
+                        "system_yield",
+                        "battery_yield",
+                        "conversion_yield",
+                        "conversion_yield_actual",
+                    ):
+                        name = yield_config.get(yield_sensor_id)
+                        setattr(self, f"{yield_sensor_id}_sensor", None)
+                        if name:
+                            Sensor(
+                                self,
+                                yield_sensor_id,
+                                config_subentry_id=subentry_id,
+                                name=name,
+                                native_unit_of_measurement="%",
+                                parent_attr=Sensor.ParentAttr.DYNAMIC,
+                            )
 
     async def async_init(self):
+
+        if store_data := await self._store.async_load():
+            for meter in self.energy_meters.values():
+                meter.load(store_data)
+            if "battery_charge_estimate" in store_data:
+                self.battery_charge_estimate = store_data["battery_charge_estimate"]
+            if "battery_capacity_estimate" in store_data:
+                self.battery_capacity_estimate = store_data["battery_capacity_estimate"]
+
+        # TODO: setup according to some sort of configuration
+        BatteryChargeSensor(
+            self,
+            name=f"Battery charge",
+            parent_attr=Sensor.ParentAttr.DYNAMIC,
+        )
+
+        self.track_state_update(
+            self.battery_voltage_entity_id, self._battery_voltage_callback
+        )
+        self.track_state_update(
+            self.battery_current_entity_id, self._battery_current_callback
+        )
+        if self.battery_charge_entity_id:
+            self.track_state_update(
+                self.battery_charge_entity_id, self._battery_charge_callback
+            )
+        if self.pv_power_entity_id:
+            self.track_state_update(self.pv_power_entity_id, self.pv_meter.track_state)
+        if self.load_power_entity_id:
+            self.track_state_update(
+                self.load_power_entity_id, self.load_meter.track_state
+            )
+        if self.losses_meter:
+            self.losses_meter.start()
+
         return await super().async_init()
 
     async def async_shutdown(self):
-        if self._losses_callback_unsub:
-            self._losses_callback_unsub.cancel()
-            self._losses_callback_unsub = None
+        if self.losses_meter:
+            self.losses_meter.stop()
+
+        now = dt_util.now()
+        store_data = ControllerStoreType({
+            "time": now.isoformat(),
+            "time_ts": now.timestamp(),
+            "battery_charge_estimate": self.battery_charge_estimate,
+            "battery_capacity_estimate": self.battery_capacity_estimate,
+        })
+        for meter in self.energy_meters.values():
+            meter.save(store_data)
+        await self._store.async_save(store_data)
+
         self.energy_meters.clear()
+        self.battery_meter = self.pv_meter = self.load_meter = self.losses_meter = None  # type: ignore
         await super().async_shutdown()
 
     # interface: self
@@ -524,7 +724,7 @@ class Controller(controller.Controller[EntryConfig]):
         except Exception as e:
             self.battery_voltage = 0
             self.battery_meter.add(0, TIME_TS())
-            if state and state.state != hac.STATE_UNKNOWN:
+            if state and state.state not in (hac.STATE_UNKNOWN, hac.STATE_UNAVAILABLE):
                 self.log_exception(
                     self.WARNING, e, "_battery_voltage_update(state:%s)", state
                 )
@@ -540,7 +740,7 @@ class Controller(controller.Controller[EntryConfig]):
         except Exception as e:
             time_ts = TIME_TS()
             battery_current = 0
-            if state and state.state != hac.STATE_UNKNOWN:
+            if state and state.state not in (hac.STATE_UNKNOWN, hac.STATE_UNAVAILABLE):
                 self.log_exception(
                     self.WARNING, e, "_battery_current_update(state:%s)", state
                 )
@@ -552,9 +752,15 @@ class Controller(controller.Controller[EntryConfig]):
             charge = (
                 self.battery_current * (self._battery_current_last_ts - time_ts) / 3600
             )
-            self.battery_charge += charge
+            self.battery_charge_estimate += charge
+            if self.battery_charge_estimate > self.battery_capacity_estimate:
+                self.battery_capacity_estimate = self.battery_charge_estimate
+            elif self.battery_charge_estimate < 0:
+                self.battery_capacity_estimate -= self.battery_charge_estimate
+                self.battery_charge_estimate = 0
+
             if self.battery_charge_sensor:
-                self.battery_charge_sensor.accumulate(charge)
+                self.battery_charge_sensor.update(self.battery_charge_estimate)
 
         self.battery_current = battery_current
         self._battery_current_last_ts = time_ts
@@ -563,16 +769,3 @@ class Controller(controller.Controller[EntryConfig]):
 
     def _battery_charge_callback(self, state: "State | None"):
         pass
-
-    @callback
-    def _losses_callback(self):
-        time_ts = TIME_TS()
-        self._losses_callback_unsub = self.schedule_callback(
-            self._losses_callback_interval_ts, self._losses_callback
-        )
-        pv = self.pv_meter.reset_partial(time_ts)
-        battery = self.battery_meter.reset_partial(time_ts)
-        load = self.load_meter.reset_partial(time_ts)
-        losses_power = self.losses_meter.add(pv + battery - load, time_ts)
-        if self.losses_power_sensor:
-            self.losses_power_sensor.update(losses_power)
