@@ -182,121 +182,112 @@ class Controller(controller.Controller[EntryConfig]):
         return await super().async_init()
 
     async def async_shutdown(self):
-        await super().async_shutdown()
         self._timer_callback_unsub.cancel()  # type: ignore
         self._timer_callback_unsub = None
+        await super().async_shutdown()
 
     @callback
     def _timer_callback(self):
         self._timer_callback_unsub = self.schedule_callback(5, self._timer_callback)
 
-        try:
-            sun_zenith, sun_azimuth = sun.zenith_and_azimuth(
-                self.astral_observer,
-                dt_util.now(),
+        sun_zenith, sun_azimuth = sun.zenith_and_azimuth(
+            self.astral_observer,
+            dt_util.now(),
+        )
+        elevation = 90 - sun_zenith
+        if elevation > -5:  # roughly dusk
+            # it is very hard to model the transition night/day since when the sun is low
+            # and starts to rise/set the sun energy is very low even if the elevation is relatively high
+            # with respect to the plant slope. Here we take a simple approach with
+            # slope almost horizontal
+            slope = 85
+            pv_power = self.peak_power * math.cos(
+                (slope - elevation) * math.pi / 180
             )
-            elevation = 90 - sun_zenith
-            if elevation > -5:  # roughly dusk
-                # it is very hard to model the transition night/day since when the sun is low
-                # and starts to rise/set the sun energy is very low even if the elevation is relatively high
-                # with respect to the plant slope. Here we take a simple approach with
-                # slope almost horizontal
-                slope = 85
-                pv_power = self.peak_power * math.cos(
-                    (slope - elevation) * math.pi / 180
-                )
-                if self._weather_state:
+            if self._weather_state:
 
-                    if self._weather_visibility is not None:
-                        # assume greater visibility gives less diffraction so better power output
-                        if self._weather_visibility > 1:
-                            visibility_gain = (
-                                self._weather_visibility - 0.5
-                            ) / self._weather_visibility
-                        else:
-                            # almost foggy?
-                            visibility_gain = self._weather_visibility * 0.5
+                if self._weather_visibility is not None:
+                    # assume greater visibility gives less diffraction so better power output
+                    if self._weather_visibility > 1:
+                        visibility_gain = (
+                            self._weather_visibility - 0.5
+                        ) / self._weather_visibility
                     else:
-                        visibility_gain = 1
-                    if self._weather_cloud_coverage is not None:
-                        # assume 100% cloud_coverage would reduce pv yield to 20%
-                        cloud_attenuation = (self._weather_cloud_coverage / 100) * 0.8
-                        cloud_coverage_gain = 1 - cloud_attenuation
-                    else:
-                        cloud_coverage_gain = 1
+                        # almost foggy?
+                        visibility_gain = self._weather_visibility * 0.5
+                else:
+                    visibility_gain = 1
+                if self._weather_cloud_coverage is not None:
+                    # assume 100% cloud_coverage would reduce pv yield to 20%
+                    cloud_attenuation = (self._weather_cloud_coverage / 100) * 0.8
+                    cloud_coverage_gain = 1 - cloud_attenuation
+                else:
+                    cloud_coverage_gain = 1
 
-                    match self._weather_state:
-                        case "partlycloudy":
-                            # when partlycloudy we have random shadowing from clouds
-                            cloud_coverage_gain *= random.randint(8, 13) * 0.1
-                        case "pouring":
-                            cloud_coverage_gain *= 0.5
-                        case "snowy":
-                            cloud_coverage_gain *= 0.5
-                    gain = visibility_gain * cloud_coverage_gain
-                    if gain < 0.10:
-                        pv_power *= 0.10
-                    elif gain < 1:
-                        pv_power *= gain
+                match self._weather_state:
+                    case "partlycloudy":
+                        # when partlycloudy we have random shadowing from clouds
+                        cloud_coverage_gain *= random.randint(8, 13) * 0.1
+                    case "pouring":
+                        cloud_coverage_gain *= 0.5
+                    case "snowy":
+                        cloud_coverage_gain *= 0.5
+                gain = visibility_gain * cloud_coverage_gain
+                if gain < 0.10:
+                    pv_power *= 0.10
+                elif gain < 1:
+                    pv_power *= gain
 
-                consumption_power = self.consumption_baseload_power_w
-                p1 = random.randint(1, 100) / 100
-                a = random.randint(1, 100) / 100
-                if a < (self.consumption_daily_fill_factor / p1):
-                    consumption_power += self.consumption_daily_extra_power_w * p1
-            else:  # night time
-                pv_power = 0
-                consumption_power = (
-                    self.consumption_baseload_power_w * random.randint(90, 110) / 100
-                )
-
-            self.pv_power_simulator_sensor.update_safe(round(pv_power, 2))
-            self.consumption_sensor.update_safe(round(consumption_power, 2))
-
-            total_consumption_power = (
-                consumption_power / self.inverter_efficiency
-                + self.inverter_zeroload_power
+            consumption_power = self.consumption_baseload_power_w
+            p1 = random.randint(1, 100) / 100
+            a = random.randint(1, 100) / 100
+            if a < (self.consumption_daily_fill_factor / p1):
+                consumption_power += self.consumption_daily_extra_power_w * p1
+        else:  # night time
+            pv_power = 0
+            consumption_power = (
+                self.consumption_baseload_power_w * random.randint(90, 110) / 100
             )
-            inverter_losses = total_consumption_power - consumption_power
-            self.inverter_losses_sensor.update_safe(round(inverter_losses, 2))
 
-            if self.battery_voltage:
-                battery_power = total_consumption_power - pv_power
-                battery_current = battery_power / self.battery_voltage
-                # assume a voltage drop of 5% of the battery voltage at 1C
-                battery_resistance = self.battery_voltage / (
-                    20 * (self.battery_capacity or 100)
-                )
-                battery_voltage = (
-                    self.battery_voltage - battery_resistance * battery_current
-                )
-                battery_current = battery_power / battery_voltage
-                self.battery_voltage_sensor.update_safe(round(battery_voltage, 2))
-                self.battery_current_sensor.update_safe(round(battery_current, 2))
-                now_ts = time.monotonic()
-                if self._power_last_update_ts:
-                    delta_t = now_ts - self._power_last_update_ts
-                    delta_battery_charge = battery_current * delta_t / 3600
-                    battery_charge: float = self.battery_charge_sensor.native_value or 0  # type: ignore
-                    battery_charge -= delta_battery_charge
-                    if battery_charge < 0:
-                        battery_charge = 0
-                    elif self.battery_capacity and (
-                        battery_charge > self.battery_capacity
-                    ):
-                        battery_charge = self.battery_capacity
-                    self.battery_charge_sensor.update_safe(round(battery_charge, 2))
-                    # we should now derate the pv output should the battery be full...
-                self._power_last_update_ts = now_ts
+        self.pv_power_simulator_sensor.update_safe(round(pv_power, 2))
+        self.consumption_sensor.update_safe(round(consumption_power, 2))
 
-        except (KeyError, AttributeError):
-            self._power_last_update_ts = None
-            self.pv_power_simulator_sensor.update_safe(None)
-            self.consumption_sensor.update_safe(None)
-            self.inverter_losses_sensor.update_safe(None)
-            if self.battery_voltage:
-                self.battery_voltage_sensor.update_safe(self.battery_voltage)
-                self.battery_current_sensor.update_safe(0)
+        total_consumption_power = (
+            consumption_power / self.inverter_efficiency
+            + self.inverter_zeroload_power
+        )
+        inverter_losses = total_consumption_power - consumption_power
+        self.inverter_losses_sensor.update_safe(round(inverter_losses, 2))
+
+        if self.battery_voltage:
+            battery_power = total_consumption_power - pv_power
+            battery_current = battery_power / self.battery_voltage
+            # assume a voltage drop of 5% of the battery voltage at 1C
+            battery_resistance = self.battery_voltage / (
+                20 * (self.battery_capacity or 100)
+            )
+            battery_voltage = (
+                self.battery_voltage - battery_resistance * battery_current
+            )
+            battery_current = battery_power / battery_voltage
+            self.battery_voltage_sensor.update_safe(round(battery_voltage, 2))
+            self.battery_current_sensor.update_safe(round(battery_current, 2))
+            now_ts = time.monotonic()
+            if self._power_last_update_ts:
+                delta_t = now_ts - self._power_last_update_ts
+                delta_battery_charge = battery_current * delta_t / 3600
+                battery_charge: float = self.battery_charge_sensor.native_value or 0  # type: ignore
+                battery_charge -= delta_battery_charge
+                if battery_charge < 0:
+                    battery_charge = 0
+                elif self.battery_capacity and (
+                    battery_charge > self.battery_capacity
+                ):
+                    battery_charge = self.battery_capacity
+                self.battery_charge_sensor.update_safe(round(battery_charge, 2))
+                # we should now derate the pv output should the battery be full...
+            self._power_last_update_ts = now_ts
+
 
     def _weather_update(self, state: "State | None"):
         if state:

@@ -1,10 +1,8 @@
-from datetime import datetime, timedelta
-import enum
 import time
 import typing
 
 from homeassistant import const as hac
-from homeassistant.core import HassJob, callback
+from homeassistant.core import callback
 from homeassistant.helpers import event
 from homeassistant.util import dt as dt_util
 from homeassistant.util.unit_conversion import PowerConverter
@@ -124,13 +122,13 @@ class Controller(controller.Controller[EntryConfig]):
             self._maximum_latency_callback_unsub = None
 
     async def async_shutdown(self):
-        await super().async_shutdown()
         if self._integration_callback_unsub:
             self._integration_callback_unsub.cancel()
             self._integration_callback_unsub = None
         if self._maximum_latency_callback_unsub:
             self._maximum_latency_callback_unsub.cancel()
             self._maximum_latency_callback_unsub = None
+        await super().async_shutdown()
 
     @callback
     def _power_tracking_callback(self, event: "Event[event.EventStateChangedData]"):
@@ -193,21 +191,25 @@ class Controller(controller.Controller[EntryConfig]):
         self._power = None
         self.maximum_latency_alarm_binary_sensor.update_safe(True)
 
-    def _get_power_from_state(self, power_state: "State | None"):
-        if power_state:
+    def _get_power_from_state(self, state: "State | None"):
+        if state:
             try:
                 return PowerConverter.convert(
-                    float(power_state.state),
-                    power_state.attributes["unit_of_measurement"],
+                    float(state.state),
+                    state.attributes["unit_of_measurement"],
                     self.hac.UnitOfPower.WATT,
                 )
             except Exception as e:
-                self.log_exception(
-                    self.WARNING,
-                    e,
-                    "Invalid state for entity %s: %s when converting to [W]",
-                    power_state.entity_id,
-                    power_state.state,
-                )
+                if state and state.state not in (
+                    hac.STATE_UNKNOWN,
+                    hac.STATE_UNAVAILABLE,
+                ):
+                    self.log_exception(
+                        self.WARNING,
+                        e,
+                        "Invalid state for entity %s: %s when converting to [W]",
+                        state.entity_id,
+                        state.state,
+                    )
 
         return None
