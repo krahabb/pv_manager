@@ -539,21 +539,21 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
         )
         self._process_observation(self.hass.states.get(self.observed_entity_id))
 
-    def _process_observation(self, tracked_state: "State | None"):
-        if tracked_state:
-            try:
-                self.estimator.add_observation(
-                    estimator.Observation(
-                        time.time(),
-                        self._state_convert_func(
-                            float(tracked_state.state),
-                            tracked_state.attributes["unit_of_measurement"],
-                            self._state_convert_unit,
-                        ),
-                    )
+    def _process_observation(self, state: "State | None"):
+        try:
+            self.estimator.add_observation(
+                estimator.Observation(
+                    time.time(),
+                    self._state_convert_func(
+                        float(state.state),  # type: ignore
+                        state.attributes["unit_of_measurement"],  # type: ignore
+                        self._state_convert_unit,
+                    ),
                 )
-            except Exception as e:
-                self.log_exception(self.DEBUG, e, "updating estimate")
+            )
+        except Exception as e:
+            if state and state.state not in (hac.STATE_UNKNOWN, hac.STATE_UNAVAILABLE):
+                self.log_exception(self.WARNING, e, "updating estimate")
 
     def _update_estimate(self, estimator: "estimator.Estimator"):
 
