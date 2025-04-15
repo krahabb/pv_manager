@@ -64,6 +64,7 @@ class ControllerStoreType(typing.TypedDict):
     losses: "NotRequired[MeterStoreType]"
     pv: "NotRequired[MeterStoreType]"
 
+
 class ControllerStore(storage.Store[ControllerStoreType]):
     VERSION = 1
 
@@ -113,24 +114,27 @@ class BaseMeter:
 
     def save(self, data: ControllerStoreType):
         # remember to 'reset_partial' so to save all of the energy accumulated so far
-        data[self.metering_source.value] = MeterStoreType({
-            "time_ts": self.time_ts,
-            "energy": self.energy,
-        })
+        data[self.metering_source.value] = MeterStoreType(
+            {
+                "time_ts": self.time_ts,
+                "energy": self.energy,
+            }
+        )
 
 
 class PowerMeter(BaseMeter):
 
     def add(self, value: float, time_ts: float):
         # left rectangle integration
-        if time_ts > self.time_ts:
+        d_time = time_ts - self.time_ts
+        if 0 < d_time < self.controller.maximum_latency_ts:
             if self.energy_sensors:
-                energy = self.value * (time_ts - self.time_ts) / 3600
+                energy = self.value * d_time / 3600
                 self.energy += energy
                 for sensor in self.energy_sensors:
                     sensor.accumulate(energy)
             else:
-                self.energy += self.value * (time_ts - self.time_ts) / 3600
+                self.energy += self.value * d_time / 3600
         self.value = value
         self.time_ts = time_ts
 
@@ -186,8 +190,9 @@ class BatteryPowerMeter(PowerMeter):
 
     def add(self, value: float, time_ts: float):
         # left rectangle integration
-        if time_ts > self.time_ts:
-            energy = self.value * (time_ts - self.time_ts) / 3600
+        d_time = time_ts - self.time_ts
+        if 0 < d_time < self.controller.maximum_latency_ts:
+            energy = self.value * d_time / 3600
             self.energy += energy
             for sensor in self.energy_sensors:
                 sensor.accumulate(energy)
@@ -236,54 +241,53 @@ class LossesEnergyMeter(EnergyMeter):
         self._callback_unsub = controller.schedule_callback(
             self._callback_interval_ts, self._losses_callback
         )
-        battery_energy_old = self.battery_energy
-        battery_in_energy_old = self.battery_in_energy
-        battery_out_energy_old = self.battery_out_energy
-        load_energy_old = self.load_energy
-        pv_energy_old = self.pv_energy
-        losses_energy_old = self.energy
+        battery_old = self.battery_energy
+        battery_in_old = self.battery_in_energy
+        battery_out_old = self.battery_out_energy
+        load_old = self.load_energy
+        pv_old = self.pv_energy
+        losses_old = self.energy
         # get the 'new' total
         controller.battery_meter.interpolate(time_ts)
         controller.load_meter.interpolate(time_ts)
         controller.pv_meter.interpolate(time_ts)
         self._losses_compute()
         # compute delta to get the average power in the sampling period
-        losses_energy_delta = self.energy - losses_energy_old
-        if time_ts > self.time_ts:
-            losses_power = losses_energy_delta * 3600 / (time_ts - self.time_ts)
-        else:
-            losses_power = None
-        if controller.losses_power_sensor:
-            controller.losses_power_sensor.update(losses_power)
+        # we don't check maximum_latency here since it has already been
+        # managed in pc, load and battery meters
+        d_losses = self.energy - losses_old
         for sensor in self.energy_sensors:
-            sensor.accumulate(losses_energy_delta)
-        self.value = losses_energy_delta
+            sensor.accumulate(d_losses)
+
+        if controller.losses_power_sensor:
+            d_time = time_ts - self.time_ts
+            if 0 < d_time < controller.maximum_latency_ts:
+                controller.losses_power_sensor.update(d_losses * 3600 / d_time)
+            else:
+                controller.losses_power_sensor.update(None)
+
+        self.value = d_losses
         self.time_ts = time_ts
 
         if controller.conversion_yield_actual_sensor:
             try:
-                load_energy_delta = self.load_energy - load_energy_old
-                conversion_yield = load_energy_delta / (
-                    load_energy_delta + losses_energy_delta
-                )
+                d_load = self.load_energy - load_old
                 controller.conversion_yield_actual_sensor.update(
-                    round(conversion_yield * 100)
+                    round(d_load * 100 / (d_load + d_losses))
                 )
             except:
                 controller.conversion_yield_actual_sensor.update(None)
 
     def _losses_compute(self):
         controller = self.controller
-        self.battery_energy = battery_energy = controller.battery_meter.energy
-        self.battery_in_energy = battery_in_energy = (
-            controller.battery_meter.in_meter.energy
-        )
-        self.battery_out_energy = battery_out_energy = (
+        self.battery_energy = battery = controller.battery_meter.energy
+        self.battery_in_energy = battery_in = controller.battery_meter.in_meter.energy
+        self.battery_out_energy = battery_out = (
             controller.battery_meter.out_meter.energy
         )
-        self.load_energy = load_energy = controller.load_meter.energy
-        self.pv_energy = pv_energy = controller.pv_meter.energy
-        self.energy = losses_energy = pv_energy + battery_energy - load_energy
+        self.load_energy = load = controller.load_meter.energy
+        self.pv_energy = pv = controller.pv_meter.energy
+        self.energy = losses = pv + battery - load
 
         # Estimate energy actually stored in the battery:
         # in the long term -> battery_in > battery_out with the difference being the energy 'eaten up'
@@ -291,13 +295,13 @@ class LossesEnergyMeter(EnergyMeter):
         # battery_stored_energy is hard to compute since it depends on the discharge current/voltage
         # we'll use a conservative approach with the following formula. It's contribution to
         # battery_yeild will nevertheless decay as far as battery_in, battery_out will increase
-        battery_stored_energy = (
+        battery_stored = (
             controller.battery_charge_estimate * controller.battery_voltage * 0.9
         )
 
         if controller.conversion_yield_sensor:
             try:
-                conversion_yield = load_energy / (load_energy + losses_energy)
+                conversion_yield = load / (load + losses)
                 controller.conversion_yield_sensor.update(round(conversion_yield * 100))
             except:
                 controller.conversion_yield_sensor.update(None)
@@ -305,10 +309,10 @@ class LossesEnergyMeter(EnergyMeter):
         if controller.battery_yield_sensor:
             try:
                 # battery_yield = battery_out_energy / (battery_in_energy - battery_stored_energy)
-                _temp = battery_in_energy - battery_stored_energy
-                if _temp > battery_out_energy:
+                _temp = battery_in - battery_stored
+                if _temp > battery_out:
                     controller.battery_yield_sensor.update(
-                        round(battery_out_energy * 100 / _temp)
+                        round(battery_out * 100 / _temp)
                     )
                 else:
                     controller.battery_yield_sensor.update(None)
@@ -318,11 +322,9 @@ class LossesEnergyMeter(EnergyMeter):
         if controller.system_yield_sensor:
             try:
                 # system_yield = load_energy / (pv_energy - battery_stored_energy)
-                _temp = pv_energy - battery_stored_energy
-                if _temp > load_energy:
-                    controller.system_yield_sensor.update(
-                        round(load_energy * 100 / _temp)
-                    )
+                _temp = pv - battery_stored
+                if _temp > load:
+                    controller.system_yield_sensor.update(round(load * 100 / _temp))
                 else:
                     controller.system_yield_sensor.update(None)
             except:
@@ -688,19 +690,21 @@ class Controller(controller.Controller[EntryConfig]):
         if self.losses_meter:
             self.losses_meter.start()
 
-        return await super().async_init()
+        await super().async_init()
 
     async def async_shutdown(self):
         if self.losses_meter:
             self.losses_meter.stop()
 
         now = dt_util.now()
-        store_data = ControllerStoreType({
-            "time": now.isoformat(),
-            "time_ts": now.timestamp(),
-            "battery_charge_estimate": self.battery_charge_estimate,
-            "battery_capacity_estimate": self.battery_capacity_estimate,
-        })
+        store_data = ControllerStoreType(
+            {
+                "time": now.isoformat(),
+                "time_ts": now.timestamp(),
+                "battery_charge_estimate": self.battery_charge_estimate,
+                "battery_capacity_estimate": self.battery_capacity_estimate,
+            }
+        )
         for meter in self.energy_meters.values():
             meter.save(store_data)
         await self._store.async_save(store_data)
@@ -748,17 +752,15 @@ class Controller(controller.Controller[EntryConfig]):
         # left rectangle integration
         # We assume 'generator convention' for current
         # i.e. positive current = discharging
-        if time_ts > self._battery_current_last_ts:
-            charge = (
-                self.battery_current * (self._battery_current_last_ts - time_ts) / 3600
-            )
-            self.battery_charge_estimate += charge
+        d_time = time_ts - self._battery_current_last_ts
+        if 0 < d_time < self.maximum_latency_ts:
+            charge_out = self.battery_current * d_time / 3600
+            self.battery_charge_estimate -= charge_out
             if self.battery_charge_estimate > self.battery_capacity_estimate:
                 self.battery_capacity_estimate = self.battery_charge_estimate
             elif self.battery_charge_estimate < 0:
                 self.battery_capacity_estimate -= self.battery_charge_estimate
                 self.battery_charge_estimate = 0
-
             if self.battery_charge_sensor:
                 self.battery_charge_sensor.update(self.battery_charge_estimate)
 
