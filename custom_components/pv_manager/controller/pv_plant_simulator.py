@@ -171,7 +171,7 @@ class Controller(controller.Controller[EntryConfig]):
         self.inverter_efficiency = self.config.get("inverter_efficiency", 0.9)
         self.inverter_losses_sensor = PowerSensor(
             self,
-            "inverter_losees",
+            "inverter_losses",
             name="Inverter losses",
         )
 
@@ -179,7 +179,7 @@ class Controller(controller.Controller[EntryConfig]):
         if self.weather_entity_id:
             self.track_state_update(self.weather_entity_id, self._weather_update)
         self._timer_callback()
-        return await super().async_init()
+        await super().async_init()
 
     async def async_shutdown(self):
         self._timer_callback_unsub.cancel()  # type: ignore
