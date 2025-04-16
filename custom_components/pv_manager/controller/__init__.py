@@ -6,8 +6,6 @@ from homeassistant import const as hac
 from homeassistant.components.recorder import get_instance as recorder_instance, history
 from homeassistant.core import callback
 from homeassistant.helpers import (
-    device_registry,
-    entity_registry,
     event,
     json,
 )
@@ -19,6 +17,7 @@ from homeassistant.util.unit_conversion import (
 
 from .. import const as pmc, helpers
 from ..helpers import validation as hv
+from ..manager import Manager
 from ..sensor import Sensor
 from .common import estimator
 
@@ -27,8 +26,8 @@ if typing.TYPE_CHECKING:
 
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import Event, HomeAssistant, State
+    from homeassistant.helpers.device_registry import DeviceInfo
     from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
-    import voluptuous as vol
 
     from ..helpers.entity import Entity, EntityArgs
 
@@ -44,7 +43,7 @@ class Controller[_ConfigT: pmc.EntryConfig](helpers.Loggable):
     This in turn allows us to later create and register entities since we'll register the add_entities callback in our platforms."""
 
     hass: "Final[HomeAssistant]"
-    device_info: "Final[device_registry.DeviceInfo]"
+    device_info: "Final[DeviceInfo]"
 
     config: _ConfigT
     options: pmc.EntryOptionsConfig
@@ -96,7 +95,7 @@ class Controller[_ConfigT: pmc.EntryConfig](helpers.Loggable):
         self.entities = {platform: {} for platform in self.PLATFORMS}
         self._callbacks_unsub = set()
         helpers.Loggable.__init__(self, config_entry.title)
-        self.get_device_registry().async_get_or_create(
+        Manager.device_registry.async_get_or_create(
             config_entry_id=config_entry.entry_id,
             name=config_entry.title,
             model=self.TYPE,
@@ -172,12 +171,6 @@ class Controller[_ConfigT: pmc.EntryConfig](helpers.Loggable):
                 await entity.async_shutdown()
             assert not entities_per_platform
         self.platforms.clear()
-
-    def get_device_registry(self):
-        return device_registry.async_get(self.hass)
-
-    def get_entity_registry(self):
-        return entity_registry.async_get(self.hass)
 
     def schedule_async_callback(
         self, delay: float, target: "Callable[..., Coroutine]", *args
@@ -276,7 +269,7 @@ class Controller[_ConfigT: pmc.EntryConfig](helpers.Loggable):
     async def _async_destroy_diagnostic_entities(self):
         """Cleanup diagnostic entities, when the entry is unloaded. If 'remove' is True
         it will be removed from the entity registry as well."""
-        ent_reg = self.get_entity_registry()
+        ent_reg = Manager.entity_registry
         for entities_per_platform in self.entities.values():
             for entity in list(entities_per_platform.values()):
                 if entity.is_diagnostic:
@@ -396,8 +389,7 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
         super().__init__(hass, config_entry)
 
         self.observed_entity_id = self.config["observed_entity_id"]
-        ent_reg = self.get_entity_registry()
-        reg_entry = ent_reg.async_get(self.observed_entity_id)
+        reg_entry = Manager.entity_registry.async_get(self.observed_entity_id)
         if not reg_entry:
             raise ValueError(
                 f"Observed entity {self.observed_entity_id} not found in entity registry"

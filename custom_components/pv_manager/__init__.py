@@ -4,10 +4,19 @@ from homeassistant.exceptions import ConfigEntryError
 
 from . import const as pmc
 from .controller import Controller
+from .manager import Manager
 
 if typing.TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
+
+
+async def async_setup(hass: "HomeAssistant", config):
+
+    # force initialize
+    Manager.get(hass)
+
+    return True
 
 
 async def async_setup_entry(

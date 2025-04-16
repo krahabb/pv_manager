@@ -61,7 +61,7 @@ class Controller(controller.Controller[EntryConfig]):
         "energy_sensors",
         "maximum_latency_alarm_binary_sensor",
         "_power",
-        "_power_epoch",
+        "_power_time_ts",
         "_integration_callback_unsub",
         "_maximum_latency_callback_unsub",
     )
@@ -73,7 +73,7 @@ class Controller(controller.Controller[EntryConfig]):
                 device_class=EnergySensor.DeviceClass.POWER
             ),
             hv.required(
-                "cycle_modes", user_input, [EnergySensor.CycleMode.NONE]
+                "cycle_modes", user_input, [EnergySensor.CycleMode.TOTAL]
             ): hv.select_selector(options=list(EnergySensor.CycleMode), multiple=True),
             hv.required(
                 "integration_period_seconds", user_input, 5
@@ -96,7 +96,7 @@ class Controller(controller.Controller[EntryConfig]):
         self._power = self._get_power_from_state(
             self.hass.states.get(self.config["power_entity_id"])
         )
-        self._power_epoch = time.monotonic()
+        self._power_time_ts = time.time()
 
         self.track_state(self.config["power_entity_id"], self._power_tracking_callback)
 
@@ -132,7 +132,7 @@ class Controller(controller.Controller[EntryConfig]):
 
     @callback
     def _power_tracking_callback(self, event: "Event[event.EventStateChangedData]"):
-        now = time.monotonic()
+        time_ts = time.time()
         power = self._get_power_from_state(event.data.get("new_state"))
 
         try:
@@ -142,16 +142,16 @@ class Controller(controller.Controller[EntryConfig]):
             # internal 'integration_period' sampling might totally invalidate the
             # trapezoidal algorithm and just work as a 'left' rectangle integration.
             energy_wh = (
-                (self._power + power) * (now - self._power_epoch) / 7200  # type: ignore
+                (self._power + power) * (time_ts - self._power_time_ts) / 7200  # type: ignore
             )
             for sensor in self.energy_sensors:
-                sensor.accumulate(energy_wh)
+                sensor.accumulate(energy_wh, time_ts)
 
         except:  # in case any power is None i.e. not valid...
             pass
 
         self._power = power
-        self._power_epoch = now
+        self._power_time_ts = time_ts
 
         if self._maximum_latency_callback_unsub:
             # retrigger maximum_latency
@@ -171,14 +171,14 @@ class Controller(controller.Controller[EntryConfig]):
         )
         if self._power is None:
             return
-        now = time.monotonic()
+        time_ts = time.time()
         try:
-            energy_wh = self._power * (now - self._power_epoch) / 3600
+            energy_wh = self._power * (time_ts - self._power_time_ts) / 3600
             for sensor in self.energy_sensors:
-                sensor.accumulate(energy_wh)
+                sensor.accumulate(energy_wh, time_ts)
         except:
             pass
-        self._power_epoch = now
+        self._power_time_ts = time_ts
 
     @callback
     def _maximum_latency_callback(self):

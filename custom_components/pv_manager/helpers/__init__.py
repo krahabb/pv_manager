@@ -64,13 +64,10 @@ def datetime_from_epoch(epoch, tz: "tzinfo | None" = UTC):
     If tz is None it'll return a naive datetime in UTC coordinates
     """
     y, m, d, hh, mm, ss, weekday, jday, dst = gmtime(epoch)
-    utcdt = datetime(y, m, d, hh, mm, min(ss, 59), 0, UTC)
-    if tz is UTC:
-        return utcdt
-    elif tz is None:
-        return utcdt.replace(tzinfo=None)
+    if tz is UTC or tz is None:
+        return datetime(y, m, d, hh, mm, min(ss, 59), 0, tz)
     else:
-        return utcdt.astimezone(tz)
+        return datetime(y, m, d, hh, mm, min(ss, 59), 0, UTC).astimezone(tz)
 
 
 _import_module_lock = asyncio.Lock()

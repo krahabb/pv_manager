@@ -132,7 +132,7 @@ class PowerMeter(BaseMeter):
                 energy = self.value * d_time / 3600
                 self.energy += energy
                 for sensor in self.energy_sensors:
-                    sensor.accumulate(energy)
+                    sensor.accumulate(energy, time_ts)
             else:
                 self.energy += self.value * d_time / 3600
         self.value = value
@@ -168,7 +168,7 @@ class EnergyMeter(BaseMeter):
     def _add_internal(self, value: float, time_ts: float):
         self.energy += value
         for sensor in self.energy_sensors:
-            sensor.accumulate(value)
+            sensor.accumulate(value, time_ts)
         self.value = value
         self.time_ts = time_ts
 
@@ -195,7 +195,7 @@ class BatteryPowerMeter(PowerMeter):
             energy = self.value * d_time / 3600
             self.energy += energy
             for sensor in self.energy_sensors:
-                sensor.accumulate(energy)
+                sensor.accumulate(energy, time_ts)
             if energy > 0:
                 self.out_meter._add_internal(energy, time_ts)
             else:
@@ -257,7 +257,7 @@ class LossesEnergyMeter(EnergyMeter):
         # managed in pc, load and battery meters
         d_losses = self.energy - losses_old
         for sensor in self.energy_sensors:
-            sensor.accumulate(d_losses)
+            sensor.accumulate(d_losses, time_ts)
 
         if controller.losses_power_sensor:
             d_time = time_ts - self.time_ts
