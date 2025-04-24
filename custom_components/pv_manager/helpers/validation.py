@@ -9,55 +9,57 @@ from .. import const as pmc
 
 if typing.TYPE_CHECKING:
     from enum import StrEnum
+    from typing import Any, Unpack
 
 
-def optional(key: str, user_input, default=None):
-    return vol.Optional(
-        key, description={"suggested_value": user_input.get(key, default)}
-    )
+def optional(key: str, config, default=None):
+    return vol.Optional(key, description={"suggested_value": config.get(key, default)})
 
 
-def required(key: str, user_input, default=None):
-    return vol.Required(
-        key, description={"suggested_value": user_input.get(key, default)}
-    )
+def opt_default(key: str, default):
+    return vol.Optional(key, description={"suggested_value": default})
 
-def exclusive(key: str, group: str, user_input, default=None):
+
+def opt_config(key: str, config: pmc.ConfigMapping):
+    return vol.Optional(key, description={"suggested_value": config.get(key)})
+
+
+def required(key: str, config, default=None):
+    return vol.Required(key, description={"suggested_value": config.get(key, default)})
+
+
+def req_default(key: str, default):
+    return vol.Required(key, description={"suggested_value": default})
+
+
+def req_config(key: str, config: pmc.ConfigMapping):
+    return vol.Required(key, description={"suggested_value": config.get(key)})
+
+
+def exclusive(key: str, group: str, config, default=None):
     return vol.Exclusive(
-        key, group, description={"suggested_value": user_input.get(key, default)}
+        key, group, description={"suggested_value": config.get(key, default)}
     )
+
 
 def entity_schema(
-    user_input: pmc.EntityConfig | dict = {},
-    **defaults: typing.Unpack[pmc.EntityConfig],
-) -> dict:
-    return {required("name", user_input, defaults.get("name")): str}
+    config: pmc.EntityConfig | pmc.ConfigMapping = {},
+) -> pmc.ConfigSchema:
+    return {req_config("name", config): str}
 
 
 def sensor_schema(
-    user_input: pmc.SensorConfig | dict = {},
-    **defaults: typing.Unpack[pmc.SensorConfig],
-) -> dict:
-    schema = entity_schema(user_input, **defaults)
-    default_unit:StrEnum = defaults.get("native_unit_of_measurement") # type: ignore
-    schema[required("native_unit_of_measurement", user_input, default_unit)] = (
-        select_selector(options=list(type(default_unit)))
+    config: pmc.SensorConfig | pmc.ConfigMapping,
+    units: "type[StrEnum]",
+) -> pmc.ConfigSchema:
+    schema = entity_schema(config)
+    schema[req_config("native_unit_of_measurement", config)] = select_selector(
+        options=list(units)
     )
     return schema
 
 
-def sensor_section(
-    user_input: dict = {},
-    collapsed: bool = True,
-    **defaults: typing.Unpack[pmc.SensorConfig],
-):
-    return section(
-        vol.Schema(sensor_schema(user_input, **defaults)),
-        {"collapsed": collapsed},
-    )
-
-
-def select_selector(**kwargs: "typing.Unpack[selector.SelectSelectorConfig]"):
+def select_selector(**kwargs: "Unpack[selector.SelectSelectorConfig]"):
     return selector.SelectSelector(selector.SelectSelectorConfig(**kwargs))
 
 
@@ -67,7 +69,7 @@ if typing.TYPE_CHECKING:
         device_class: typing.NotRequired[str | list[str]]
 
 
-def sensor_selector(**kwargs: "typing.Unpack[_sensor_selector_args]"):
+def sensor_selector(**kwargs: "Unpack[_sensor_selector_args]"):
     return selector.EntitySelector(
         {
             "filter": {
@@ -81,9 +83,8 @@ def sensor_selector(**kwargs: "typing.Unpack[_sensor_selector_args]"):
 def weather_selector():
     return selector.EntitySelector({"filter": {"domain": "weather"}})
 
-def positive_number_selector(
-    **kwargs: "typing.Unpack[selector.NumberSelectorConfig]"
-):
+
+def positive_number_selector(**kwargs: "Unpack[selector.NumberSelectorConfig]"):
     return selector.NumberSelector(
         selector.NumberSelectorConfig(
             min=kwargs.pop("min", 0),
@@ -92,7 +93,8 @@ def positive_number_selector(
         )
     )
 
-def time_period_selector(**kwargs: "typing.Unpack[selector.NumberSelectorConfig]"):
+
+def time_period_selector(**kwargs: "Unpack[selector.NumberSelectorConfig]"):
     return selector.NumberSelector(
         selector.NumberSelectorConfig(
             min=kwargs.pop("min", 0),

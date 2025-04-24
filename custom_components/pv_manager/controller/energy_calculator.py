@@ -67,20 +67,26 @@ class Controller(controller.Controller[EntryConfig]):
     )
 
     @staticmethod
-    def get_config_entry_schema(user_input: dict) -> dict:
-        return hv.entity_schema(user_input, name="Energy") | {
-            hv.required("power_entity_id", user_input): hv.sensor_selector(
+    def get_config_entry_schema(config: EntryConfig | None) -> pmc.ConfigSchema:
+        if not config:
+            config = {
+                "name": "Energy",
+                "power_entity_id": "",
+                "cycle_modes": [EnergySensor.CycleMode.TOTAL],
+                "integration_period_seconds": 5,
+                "maximum_latency_seconds": 300,
+            }
+        return hv.entity_schema(config) | {
+            hv.req_config("power_entity_id", config): hv.sensor_selector(
                 device_class=EnergySensor.DeviceClass.POWER
             ),
-            hv.required(
-                "cycle_modes", user_input, [EnergySensor.CycleMode.TOTAL]
-            ): hv.select_selector(options=list(EnergySensor.CycleMode), multiple=True),
-            hv.required(
-                "integration_period_seconds", user_input, 5
+            hv.req_config("cycle_modes", config): hv.select_selector(
+                options=list(EnergySensor.CycleMode), multiple=True
+            ),
+            hv.req_config(
+                "integration_period_seconds", config
             ): hv.time_period_selector(),
-            hv.optional(
-                "maximum_latency_seconds", user_input, 300
-            ): hv.time_period_selector(),
+            hv.opt_config("maximum_latency_seconds", config): hv.time_period_selector(),
         }
 
     def __init__(self, hass: "HomeAssistant", config_entry: "ConfigEntry"):

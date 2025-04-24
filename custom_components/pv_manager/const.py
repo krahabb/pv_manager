@@ -1,8 +1,10 @@
 import enum
 import logging
+import types
 import typing
 
 import homeassistant.const as hac
+import voluptuous as vol
 
 if typing.TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -36,6 +38,13 @@ try:
 
 except Exception:
     DEBUG = None  # type: ignore
+
+
+# setup some shared type-hint definitions
+ConfigDict = dict[str, typing.Any]
+ConfigMapping = typing.Mapping[str, typing.Any]
+ConfigProxy = types.MappingProxyType[str, typing.Any]
+ConfigSchema = dict[vol.Marker, typing.Any]
 
 
 class ConfigEntryType(enum.StrEnum):

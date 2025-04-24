@@ -82,7 +82,9 @@
                 }
             },
             "error": {},
-            "abort": {}
+            "abort": {
+                "reconfigure_successful": "Reconfigure successful"
+            }
         },
         "manager_energy_sensor": {
             "initiate_flow": {
@@ -98,7 +100,10 @@
                 }
             },
             "error": {},
-            "abort": {}
+            "abort": {
+                "already_configured": "Subentry type already configured",
+                "reconfigure_successful": "Reconfigure successful"
+            }
         },
         "manager_yield": {
             "initiate_flow": {
@@ -114,7 +119,10 @@
                 }
             },
             "error": {},
-            "abort": {}
+            "abort": {
+                "already_configured": "Subentry type already configured",
+                "reconfigure_successful": "Reconfigure successful"
+            }
         }
     },
     "options": {

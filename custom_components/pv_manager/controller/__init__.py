@@ -22,12 +22,14 @@ from ..sensor import Sensor
 from .common import estimator
 
 if typing.TYPE_CHECKING:
+    from types import MappingProxyType
     from typing import Any, Callable, ClassVar, Coroutine, Final, Unpack
 
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import Event, HomeAssistant, State
     from homeassistant.helpers.device_registry import DeviceInfo
     from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+    import voluptuous as vol
 
     from ..helpers.entity import Entity, EntityArgs
 
@@ -76,14 +78,23 @@ class Controller[_ConfigT: pmc.EntryConfig](helpers.Loggable):
         return controller_module.Controller
 
     @staticmethod
-    def get_config_entry_schema(user_input) -> dict:
+    def get_config_entry_schema(config: pmc.ConfigMapping | None) -> pmc.ConfigSchema:
         # to be overriden
         return {}
 
     @staticmethod
-    def get_config_subentry_schema(subentry_type: str, user_input) -> dict:
+    def get_config_subentry_schema(
+        subentry_type: str, config: pmc.ConfigMapping | None
+    ) -> pmc.ConfigSchema:
         # to be overriden
         return {}
+
+    @staticmethod
+    def get_config_subentry_unique_id(
+        subentry_type: str, user_input: pmc.ConfigMapping
+    ) -> str | None:
+        # to be overriden
+        return None
 
     def __init__(self, hass: "HomeAssistant", config_entry: "ConfigEntry"):
         self.config_entry = config_entry
@@ -339,39 +350,56 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
     )
 
     @staticmethod
-    def get_config_entry_schema(user_input: dict):
-
+    def get_config_entry_schema(
+        config: EnergyEstimatorControllerConfig | None,
+    ) -> pmc.ConfigSchema:
+        if not config:
+            config = {
+                "observed_entity_id": "",
+                "sampling_interval_minutes": 10,
+                "maximum_latency_minutes": 1,
+                "observation_duration_minutes": 20,
+                "history_duration_days": 7,
+                "refresh_period_minutes": 5,
+            }
         return {
-            hv.required("observed_entity_id", user_input): hv.sensor_selector(
+            hv.req_config("observed_entity_id", config): hv.sensor_selector(
                 device_class=[Sensor.DeviceClass.POWER, Sensor.DeviceClass.ENERGY]
             ),
-            hv.required(
-                "sampling_interval_minutes", user_input, 10
+            hv.req_config(
+                "sampling_interval_minutes",
+                config,
             ): hv.time_period_selector(unit_of_measurement=hac.UnitOfTime.MINUTES),
-            hv.required(
-                "maximum_latency_minutes", user_input, 1
+            hv.req_config("maximum_latency_minutes", config): hv.time_period_selector(
+                unit_of_measurement=hac.UnitOfTime.MINUTES
+            ),
+            hv.req_config(
+                "observation_duration_minutes", config
             ): hv.time_period_selector(unit_of_measurement=hac.UnitOfTime.MINUTES),
-            hv.required(
-                "observation_duration_minutes", user_input, 20
-            ): hv.time_period_selector(unit_of_measurement=hac.UnitOfTime.MINUTES),
-            hv.required(
-                "history_duration_days", user_input, 14
-            ): hv.time_period_selector(unit_of_measurement=hac.UnitOfTime.DAYS, max=30),
-            hv.required(
-                "refresh_period_minutes", user_input, 5
-            ): hv.time_period_selector(unit_of_measurement=hac.UnitOfTime.MINUTES),
+            hv.req_config("history_duration_days", config): hv.time_period_selector(
+                unit_of_measurement=hac.UnitOfTime.DAYS, max=30
+            ),
+            hv.req_config("refresh_period_minutes", config): hv.time_period_selector(
+                unit_of_measurement=hac.UnitOfTime.MINUTES
+            ),
         }
 
     @staticmethod
-    def get_config_subentry_schema(subentry_type: str, user_input):
+    def get_config_subentry_schema(
+        subentry_type: str, config: pmc.ConfigMapping | None
+    ) -> pmc.ConfigSchema:
         match subentry_type:
             case pmc.ConfigSubentryType.ENERGY_ESTIMATOR_SENSOR:
+                if not config:
+                    config = {
+                        "name": "Energy estimation",
+                        "forecast_duration_hours": 1,
+                    }
                 return hv.entity_schema(
-                    user_input,
-                    name="Energy estimation",
+                    config,
                 ) | {
-                    hv.required(
-                        "forecast_duration_hours", user_input, 1
+                    hv.req_config(
+                        "forecast_duration_hours", config
                     ): hv.time_period_selector(
                         min=1, unit_of_measurement=hac.UnitOfTime.HOURS
                     ),

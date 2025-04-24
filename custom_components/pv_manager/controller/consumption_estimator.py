@@ -1,11 +1,10 @@
 import typing
 
+from .. import const as pmc, controller
+from ..helpers import validation as hv
 from .common.estimator_consumption_heuristic import (
     Estimator_Consumption_Heuristic,
 )
-from .. import const as pmc, controller
-from ..helpers import validation as hv
-
 
 if typing.TYPE_CHECKING:
 
@@ -30,15 +29,12 @@ class Controller(controller.EnergyEstimatorController[EntryConfig]):
 
     # interface: EnergyEstimatorController
     @staticmethod
-    def get_config_entry_schema(user_input: dict):
-
+    def get_config_entry_schema(config: EntryConfig | None) -> pmc.ConfigSchema:
         return hv.entity_schema(
-            user_input,
-            name="Consumption estimation",
-        ) | controller.EnergyEstimatorController.get_config_entry_schema(user_input)
+            config or {"name": "Consumption estimation"},
+        ) | controller.EnergyEstimatorController.get_config_entry_schema(config)
 
     def __init__(self, hass: "HomeAssistant", config_entry: "ConfigEntry"):
-
         super().__init__(
             hass,
             config_entry,

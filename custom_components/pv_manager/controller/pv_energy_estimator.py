@@ -65,17 +65,16 @@ class Controller(controller.EnergyEstimatorController[EntryConfig]):
 
     # interface: EnergyEstimatorController
     @staticmethod
-    def get_config_entry_schema(user_input: dict):
-
+    def get_config_entry_schema(config: EntryConfig | None) -> pmc.ConfigSchema:
+        _config = config or {
+            "name": "PV energy estimation",
+        }
         return (
-            hv.entity_schema(
-                user_input,
-                name="PV energy estimation",
-            )
+            hv.entity_schema(_config)
             | {
-                hv.optional("weather_entity_id", user_input): hv.weather_selector(),
+                hv.opt_config("weather_entity_id", _config): hv.weather_selector(),
             }
-            | controller.EnergyEstimatorController.get_config_entry_schema(user_input)
+            | controller.EnergyEstimatorController.get_config_entry_schema(config)
         )
 
     def __init__(self, hass: "HomeAssistant", config_entry: "ConfigEntry"):

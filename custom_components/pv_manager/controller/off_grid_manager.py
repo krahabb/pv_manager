@@ -20,10 +20,11 @@ from ..helpers import entity as he, validation as hv
 from ..sensor import EnergySensor, PowerSensor, Sensor
 
 if typing.TYPE_CHECKING:
-    from typing import Final, NotRequired, Unpack
+    from typing import Any, Final, NotRequired, Unpack
 
     from homeassistant.config_entries import ConfigEntry, ConfigSubentry
     from homeassistant.core import Event, HomeAssistant, State
+    import voluptuous as vol
 
     from ..helpers.entity import EntityArgs
 
@@ -519,61 +520,96 @@ class Controller(controller.Controller[EntryConfig]):
     )
 
     @staticmethod
-    def get_config_entry_schema(user_input: dict) -> dict:
-        return hv.entity_schema(user_input, name="Battery") | {
-            hv.required("battery_voltage_entity_id", user_input): hv.sensor_selector(
+    def get_config_entry_schema(config: EntryConfig | None) -> pmc.ConfigSchema:
+        if not config:
+            config = {
+                "name": "Off grid Manager",
+                "battery_voltage_entity_id": "",
+                "battery_current_entity_id": "",
+                "battery_capacity": 100,
+                "maximum_latency_minutes": 1,
+            }
+        return hv.entity_schema(config) | {
+            hv.req_config("battery_voltage_entity_id", config): hv.sensor_selector(
                 device_class=Sensor.DeviceClass.VOLTAGE
             ),
-            hv.required("battery_current_entity_id", user_input): hv.sensor_selector(
+            hv.req_config("battery_current_entity_id", config): hv.sensor_selector(
                 device_class=Sensor.DeviceClass.CURRENT
             ),
-            hv.required(
-                "battery_capacity", user_input, 100
-            ): hv.positive_number_selector(unit_of_measurement="Ah"),
-            hv.optional("pv_power_entity_id", user_input): hv.sensor_selector(
+            hv.req_config("battery_capacity", config): hv.positive_number_selector(
+                unit_of_measurement="Ah"
+            ),
+            hv.opt_config("pv_power_entity_id", config): hv.sensor_selector(
                 device_class=Sensor.DeviceClass.POWER
             ),
-            hv.optional("load_power_entity_id", user_input): hv.sensor_selector(
+            hv.opt_config("load_power_entity_id", config): hv.sensor_selector(
                 device_class=Sensor.DeviceClass.POWER
             ),
-            hv.required(
-                "maximum_latency_minutes", user_input, 1
-            ): hv.time_period_selector(unit_of_measurement=hac.UnitOfTime.MINUTES),
+            hv.req_config("maximum_latency_minutes", config): hv.time_period_selector(
+                unit_of_measurement=hac.UnitOfTime.MINUTES
+            ),
         }
 
     @staticmethod
-    def get_config_subentry_schema(subentry_type: str, user_input):
+    def get_config_subentry_schema(
+        subentry_type: str, config: pmc.ConfigMapping | None
+    ) -> pmc.ConfigSchema:
         match subentry_type:
             case pmc.ConfigSubentryType.MANAGER_ENERGY_SENSOR:
-                return hv.entity_schema(user_input, name=MANAGER_ENERGY_SENSOR_NAME) | {
-                    hv.required("metering_source", user_input): hv.select_selector(
-                        options=list(MeteringSource)
-                    ),
-                    hv.required("cycle_modes", user_input): hv.select_selector(
-                        options=list(EnergySensor.CycleMode), multiple=True
-                    ),
-                }
+                if not config:
+                    config = {
+                        "name": MANAGER_ENERGY_SENSOR_NAME,
+                    }
+                    return hv.entity_schema(config) | {
+                        vol.Required("metering_source"): hv.select_selector(
+                            options=list(MeteringSource)
+                        ),
+                        vol.Required("cycle_modes"): hv.select_selector(
+                            options=list(EnergySensor.CycleMode), multiple=True
+                        ),
+                    }
+                else:
+                    return hv.entity_schema(config) | {
+                        hv.req_config("cycle_modes", config): hv.select_selector(
+                            options=list(EnergySensor.CycleMode), multiple=True
+                        ),
+                    }
+
             case pmc.ConfigSubentryType.MANAGER_YIELD:
-                return hv.entity_schema(user_input, name="Losses") | {
-                    hv.required("cycle_modes", user_input): hv.select_selector(
+                if not config:
+                    config = {
+                        "name": "Losses",
+                        "sampling_interval_seconds": 10,
+                        "system_yield": "System yield",
+                        "battery_yield": "Battery yield",
+                        "conversion_yield": "Conversion yield",
+                        "conversion_yield_actual": "Conversion yield (actual)",
+                    }
+                return hv.entity_schema(config) | {
+                    hv.req_config("cycle_modes", config): hv.select_selector(
                         options=list(EnergySensor.CycleMode), multiple=True
                     ),
-                    hv.required(
-                        "sampling_interval_seconds", user_input, 10
+                    hv.req_config(
+                        "sampling_interval_seconds", config
                     ): hv.time_period_selector(),
-                    hv.optional("system_yield", user_input, "System yield"): str,
-                    hv.optional("battery_yield", user_input, "Battery yield"): str,
-                    hv.optional(
-                        "conversion_yield", user_input, "Conversion yield"
-                    ): str,
-                    hv.optional(
-                        "conversion_yield_actual",
-                        user_input,
-                        "Conversion yield (actual)",
-                    ): str,
+                    hv.opt_config("system_yield", config): str,
+                    hv.opt_config("battery_yield", config): str,
+                    hv.opt_config("conversion_yield", config): str,
+                    hv.opt_config("conversion_yield_actual", config): str,
                 }
 
         return {}
+
+    @staticmethod
+    def get_config_subentry_unique_id(
+        subentry_type: str, user_input: pmc.ConfigMapping
+    ) -> str | None:
+        match subentry_type:
+            case pmc.ConfigSubentryType.MANAGER_ENERGY_SENSOR:
+                return f"{pmc.ConfigSubentryType.MANAGER_ENERGY_SENSOR}.{user_input["metering_source"]}"
+            case pmc.ConfigSubentryType.MANAGER_YIELD:
+                return pmc.ConfigSubentryType.MANAGER_YIELD
+        return None
 
     def __init__(self, hass, config_entry):
         super().__init__(hass, config_entry)

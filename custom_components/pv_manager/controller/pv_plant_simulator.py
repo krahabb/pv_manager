@@ -76,31 +76,40 @@ class Controller(controller.Controller[EntryConfig]):
     )
 
     @staticmethod
-    def get_config_entry_schema(user_input: dict):
-        return hv.sensor_schema(
-            user_input,
-            name="PV simulator",
-            native_unit_of_measurement=hac.UnitOfPower.WATT,
-        ) | {
-            hv.required("peak_power", user_input, 1000): int,
-            hv.optional("weather_entity_id", user_input): hv.weather_selector(),
-            hv.optional("battery_voltage", user_input, 48): cv.positive_int,
-            hv.optional("battery_capacity", user_input, 100): cv.positive_int,
-            hv.optional(
-                "consumption_baseload_power_w", user_input, 100
+    def get_config_entry_schema(config: EntryConfig | None) -> pmc.ConfigSchema:
+        if not config:
+            config = {
+                "name": "PV simulator",
+                "native_unit_of_measurement": hac.UnitOfPower.WATT,
+                "peak_power": 1000,
+                "battery_voltage": 48,
+                "battery_capacity": 100,
+                "consumption_baseload_power_w": 100,
+                "consumption_daily_extra_power_w": 500,
+                "consumption_daily_fill_factor": 0.2,
+                "inverter_zeroload_power_w": 20,
+                "inverter_efficiency": 0.9,
+            }
+        return hv.sensor_schema(config, hac.UnitOfPower) | {
+            hv.req_config("peak_power", config): int,
+            hv.opt_config("weather_entity_id", config): hv.weather_selector(),
+            hv.opt_config("battery_voltage", config): cv.positive_int,
+            hv.opt_config("battery_capacity", config): cv.positive_int,
+            hv.opt_config(
+                "consumption_baseload_power_w", config
             ): hv.positive_number_selector(unit_of_measurement=hac.UnitOfPower.WATT),
-            hv.optional(
-                "consumption_daily_extra_power_w", user_input, 500
+            hv.opt_config(
+                "consumption_daily_extra_power_w", config
             ): hv.positive_number_selector(unit_of_measurement=hac.UnitOfPower.WATT),
-            hv.optional(
-                "consumption_daily_fill_factor", user_input, 0.2
+            hv.opt_config(
+                "consumption_daily_fill_factor", config
             ): hv.positive_number_selector(max=1, step=0.1),
-            hv.optional(
-                "inverter_zeroload_power_w", user_input, 20
+            hv.opt_config(
+                "inverter_zeroload_power_w", config
             ): hv.positive_number_selector(unit_of_measurement=hac.UnitOfPower.WATT),
-            hv.optional(
-                "inverter_efficiency", user_input, 0.9
-            ): hv.positive_number_selector(max=1, step=0.01),
+            hv.opt_config("inverter_efficiency", config): hv.positive_number_selector(
+                max=1, step=0.01
+            ),
         }
 
     def __init__(self, hass: "HomeAssistant", config_entry: "ConfigEntry"):
@@ -201,9 +210,7 @@ class Controller(controller.Controller[EntryConfig]):
             # with respect to the plant slope. Here we take a simple approach with
             # slope almost horizontal
             slope = 85
-            pv_power = self.peak_power * math.cos(
-                (slope - elevation) * math.pi / 180
-            )
+            pv_power = self.peak_power * math.cos((slope - elevation) * math.pi / 180)
             if self._weather_state:
 
                 if self._weather_visibility is not None:
@@ -253,8 +260,7 @@ class Controller(controller.Controller[EntryConfig]):
         self.consumption_sensor.update_safe(round(consumption_power, 2))
 
         total_consumption_power = (
-            consumption_power / self.inverter_efficiency
-            + self.inverter_zeroload_power
+            consumption_power / self.inverter_efficiency + self.inverter_zeroload_power
         )
         inverter_losses = total_consumption_power - consumption_power
         self.inverter_losses_sensor.update_safe(round(inverter_losses, 2))
@@ -280,14 +286,11 @@ class Controller(controller.Controller[EntryConfig]):
                 battery_charge -= delta_battery_charge
                 if battery_charge < 0:
                     battery_charge = 0
-                elif self.battery_capacity and (
-                    battery_charge > self.battery_capacity
-                ):
+                elif self.battery_capacity and (battery_charge > self.battery_capacity):
                     battery_charge = self.battery_capacity
                 self.battery_charge_sensor.update_safe(round(battery_charge, 2))
                 # we should now derate the pv output should the battery be full...
             self._power_last_update_ts = now_ts
-
 
     def _weather_update(self, state: "State | None"):
         if state:
