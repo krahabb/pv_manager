@@ -227,3 +227,83 @@ class EnergySensor(MeteringEntity, Sensor, he.RestoreEntity):
         self._integral_value -= self.native_value
         self.native_value = int(self._integral_value)
         self._async_write_ha_state()
+
+
+class BatteryChargeSensor(Sensor, he.RestoreEntity):
+
+    controller: "Controller"
+
+    native_value: float
+    charge: float
+
+    _attr_icon = "mdi:battery"
+    _attr_native_unit_of_measurement = "Ah"
+    _attr_suggested_display_precision = 1
+
+    __slots__ = (
+        "capacity",
+        "charge",
+        "_current",
+        "_current_ts",
+    )
+
+    def __init__(
+        self,
+        controller: "Controller",
+        id: str,
+        *,
+        capacity: float,
+        native_value: float = 0,
+        **kwargs: "Unpack[EntityArgs]",
+    ):
+        self.capacity = capacity
+        self.charge = native_value
+        self._current = 0
+        self._current_ts = None
+        super().__init__(
+            controller,
+            id,
+            native_value=native_value,
+            **kwargs,
+        )
+
+    async def async_added_to_hass(self):
+        restored_data = self._async_get_restored_data()
+        try:
+            extra_data = restored_data.extra_data.as_dict()  # type: ignore
+            self.charge = extra_data["native_value"]
+            self.native_value = round(self.charge, 1)
+            self._current = 0
+            self._current_ts = None
+        except:
+            pass
+        await super().async_added_to_hass()
+
+    @property
+    def extra_restore_state_data(self):
+        return he.ExtraStoredDataDict({"native_value": self.charge})
+
+    def update(self, value: float):
+        self.charge = value
+        _rounded = round(self.charge, 1)
+        if self.native_value != _rounded:
+            self.native_value = _rounded
+            self._async_write_ha_state()
+
+    def accumulate(self, value: float):
+        self.update(self.charge + value)
+
+    def update_current(self, current: float):
+        now_ts = time.monotonic()
+        if self._current_ts:
+            charge = self.charge - (self._current * (now_ts - self._current_ts) / 3600)
+            if charge < 0:
+                charge = 0
+                current = 0
+            elif charge > self.capacity:
+                charge = self.capacity
+                current = 0
+            self.update(charge)
+        self._current = current
+        self._current_ts = now_ts
+        return self.charge

@@ -16,7 +16,7 @@ from homeassistant.util.unit_conversion import DistanceConverter, TemperatureCon
 
 from .. import const as pmc, controller, helpers
 from ..helpers import validation as hv
-from ..sensor import PowerSensor, Sensor
+from ..sensor import BatteryChargeSensor, PowerSensor, Sensor
 
 if typing.TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -67,7 +67,7 @@ class Controller(controller.Controller[EntryConfig]):
         "battery_charge_sensor",
         "consumption_sensor",
         "inverter_losses_sensor",
-        "_power_last_update_ts",
+        "_inverter_on",
         "_weather_state",
         "_weather_cloud_coverage",
         "_weather_temperature",
@@ -123,8 +123,8 @@ class Controller(controller.Controller[EntryConfig]):
         self.peak_power = self.config["peak_power"]
         self.weather_entity_id = self.config.get("weather_entity_id")
 
-        self._power_last_update_ts = None
         self._weather_state = None
+        self._inverter_on = True
 
         self.pv_power_simulator_sensor = Sensor(
             self,
@@ -136,30 +136,36 @@ class Controller(controller.Controller[EntryConfig]):
 
         self.battery_voltage = self.config.get("battery_voltage", 0)
         self.battery_capacity = self.config.get("battery_capacity", 0)
+        self.battery_voltage_sensor: Sensor | None = None
+        self.battery_current_sensor: Sensor | None = None
+        self.battery_charge_sensor: BatteryChargeSensor | None = None
         if self.battery_voltage:
-            self.battery_voltage_sensor = Sensor(
+            Sensor(
                 self,
                 "battery_voltage",
                 device_class=Sensor.DeviceClass.VOLTAGE,
                 name="Battery voltage",
                 native_unit_of_measurement=hac.UnitOfElectricPotential.VOLT,
                 native_value=self.battery_voltage,
+                parent_attr=Sensor.ParentAttr.DYNAMIC,
             )
-            self.battery_current_sensor = Sensor(
+            Sensor(
                 self,
                 "battery_current",
                 device_class=Sensor.DeviceClass.CURRENT,
                 name="Battery current",
                 native_unit_of_measurement=hac.UnitOfElectricCurrent.AMPERE,
+                parent_attr=Sensor.ParentAttr.DYNAMIC,
             )
-            self.battery_charge_sensor = Sensor(
-                self,
-                "battery_charge",
-                state_class=Sensor.StateClass.MEASUREMENT,
-                name="Battery charge",
-                native_unit_of_measurement="Ah",
-                native_value=self.battery_capacity / 2,
-            )
+            if self.battery_capacity:
+                BatteryChargeSensor(
+                    self,
+                    "battery_charge",
+                    name="Battery charge",
+                    capacity=self.battery_capacity,
+                    native_value=self.battery_capacity / 2,
+                    parent_attr=Sensor.ParentAttr.DYNAMIC,
+                )
 
         self.consumption_baseload_power_w = self.config.get(
             "consumption_baseload_power_w", 0
@@ -168,7 +174,7 @@ class Controller(controller.Controller[EntryConfig]):
             "consumption_daily_extra_power_w", 0
         )
         self.consumption_daily_fill_factor = self.config.get(
-            "consumption_daily_fill_factor", 0.2
+            "consumption_daily_fill_factor", 0
         )
         self.consumption_sensor = PowerSensor(
             self,
@@ -176,8 +182,8 @@ class Controller(controller.Controller[EntryConfig]):
             name="Consumption",
         )
 
-        self.inverter_zeroload_power = self.config.get("inverter_zeroload_power_w", 20)
-        self.inverter_efficiency = self.config.get("inverter_efficiency", 0.9)
+        self.inverter_zeroload_power = self.config.get("inverter_zeroload_power_w", 0)
+        self.inverter_efficiency = self.config.get("inverter_efficiency", 1)
         self.inverter_losses_sensor = PowerSensor(
             self,
             "inverter_losses",
@@ -245,52 +251,58 @@ class Controller(controller.Controller[EntryConfig]):
                 elif gain < 1:
                     pv_power *= gain
 
-            consumption_power = self.consumption_baseload_power_w
-            p1 = random.randint(1, 100) / 100
-            a = random.randint(1, 100) / 100
-            if a < (self.consumption_daily_fill_factor / p1):
-                consumption_power += self.consumption_daily_extra_power_w * p1
+            if self._inverter_on:
+                consumption_power = self.consumption_baseload_power_w
+                p1 = random.randint(1, 100) / 100
+                a = random.randint(1, 100) / 100
+                if a < (self.consumption_daily_fill_factor / p1):
+                    consumption_power += self.consumption_daily_extra_power_w * p1
+            else:
+                consumption_power = 0
         else:  # night time
             pv_power = 0
-            consumption_power = (
-                self.consumption_baseload_power_w * random.randint(90, 110) / 100
-            )
-
-        self.pv_power_simulator_sensor.update_safe(round(pv_power, 2))
-        self.consumption_sensor.update_safe(round(consumption_power, 2))
+            if self._inverter_on:
+                consumption_power = (
+                    self.consumption_baseload_power_w * random.randint(90, 110) / 100
+                )
+            else:
+                consumption_power = 0
 
         total_consumption_power = (
             consumption_power / self.inverter_efficiency + self.inverter_zeroload_power
         )
-        inverter_losses = total_consumption_power - consumption_power
-        self.inverter_losses_sensor.update_safe(round(inverter_losses, 2))
 
         if self.battery_voltage:
-            battery_power = total_consumption_power - pv_power
-            battery_current = battery_power / self.battery_voltage
             # assume a voltage drop of 5% of the battery voltage at 1C
             battery_resistance = self.battery_voltage / (
                 20 * (self.battery_capacity or 100)
             )
+            battery_power = total_consumption_power - pv_power
+            battery_current = battery_power / self.battery_voltage
             battery_voltage = (
                 self.battery_voltage - battery_resistance * battery_current
             )
             battery_current = battery_power / battery_voltage
-            self.battery_voltage_sensor.update_safe(round(battery_voltage, 2))
-            self.battery_current_sensor.update_safe(round(battery_current, 2))
-            now_ts = time.monotonic()
-            if self._power_last_update_ts:
-                delta_t = now_ts - self._power_last_update_ts
-                delta_battery_charge = battery_current * delta_t / 3600
-                battery_charge: float = self.battery_charge_sensor.native_value or 0  # type: ignore
-                battery_charge -= delta_battery_charge
-                if battery_charge < 0:
-                    battery_charge = 0
-                elif self.battery_capacity and (battery_charge > self.battery_capacity):
-                    battery_charge = self.battery_capacity
-                self.battery_charge_sensor.update_safe(round(battery_charge, 2))
-                # we should now derate the pv output should the battery be full...
-            self._power_last_update_ts = now_ts
+            if self.battery_charge_sensor:
+                battery_charge = self.battery_charge_sensor.update_current(battery_current)
+                if battery_charge == 0:
+                    self._inverter_on = False
+                elif battery_charge == self.battery_capacity:
+                    pv_power = total_consumption_power
+                    battery_current = 0
+                elif not self._inverter_on:
+                    if battery_charge > (self.battery_capacity * 0.1):
+                        self._inverter_on = True
+            else:
+                self._inverter_on = True
+            if self.battery_voltage_sensor:
+                self.battery_voltage_sensor.update(round(battery_voltage, 2))
+            if self.battery_current_sensor:
+                self.battery_current_sensor.update(round(battery_current, 2))
+
+        self.pv_power_simulator_sensor.update_safe(round(pv_power, 2))
+        self.consumption_sensor.update_safe(round(consumption_power, 2))
+        self.inverter_losses_sensor.update_safe(round(total_consumption_power - consumption_power, 2))
 
     def _weather_update(self, state: "State | None"):
         if state:
