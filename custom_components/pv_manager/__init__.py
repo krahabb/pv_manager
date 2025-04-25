@@ -28,7 +28,7 @@ async def async_setup_entry(
             hass, pmc.ConfigEntryType.get_from_entry(config_entry)
         )
     except Exception as e:
-        raise ConfigEntryError("Invalid Controller class lookup") from e
+        raise ConfigEntryError("Error loading Controller class") from e
 
     try:
         cntrl = controller_class(hass, config_entry)
