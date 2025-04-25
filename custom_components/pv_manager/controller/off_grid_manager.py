@@ -17,7 +17,7 @@ from homeassistant.util.unit_conversion import (
 from .. import const as pmc, controller
 from ..binary_sensor import BinarySensor
 from ..helpers import entity as he, validation as hv
-from ..sensor import EnergySensor, PowerSensor, Sensor
+from ..sensor import BatteryChargeSensor, EnergySensor, PowerSensor, Sensor
 
 if typing.TYPE_CHECKING:
     from typing import Any, Final, NotRequired, Unpack
@@ -332,52 +332,6 @@ class LossesEnergyMeter(EnergyMeter):
                 controller.system_yield_sensor.update(None)
 
 
-class BatteryChargeSensor(Sensor, he.RestoreEntity):
-
-    controller: "Controller"
-
-    native_value: float
-    _integral_value: float
-
-    _attr_icon = "mdi:battery"
-    _attr_native_value = 0
-    _attr_native_unit_of_measurement = "Ah"
-
-    __slots__ = ("_integral_value",)
-
-    def __init__(self, controller: "Controller", **kwargs: "Unpack[EntityArgs]"):
-        self._integral_value = 0
-        super().__init__(
-            controller,
-            "battery_charge",
-            **kwargs,
-        )
-
-    async def async_added_to_hass(self):
-        restored_data = self._async_get_restored_data()
-        try:
-            extra_data = restored_data.extra_data.as_dict()  # type: ignore
-            self._integral_value = extra_data["native_value"]
-            self.native_value = round(self._integral_value)
-        except:
-            pass
-        await super().async_added_to_hass()
-
-    @property
-    def extra_restore_state_data(self):
-        return he.ExtraStoredDataDict({"native_value": self._integral_value})
-
-    def update(self, value: float):
-        self._integral_value = value
-        _rounded = round(self._integral_value)
-        if self.native_value != _rounded:
-            self.native_value = _rounded
-            self._async_write_ha_state()
-
-    def accumulate(self, value: float):
-        self.update(self._integral_value + value)
-
-
 MANAGER_ENERGY_SENSOR_NAME = "Energy"  # default name for ManagerEnergySensor
 
 
@@ -476,6 +430,8 @@ class Controller(controller.Controller[EntryConfig]):
     TYPE = pmc.ConfigEntryType.OFF_GRID_MANAGER
     PLATFORMS = {Sensor.PLATFORM}
 
+    STORE_SAVE_PERIOD = 3600
+
     energy_meters: "Final[dict[MeteringSource, BaseMeter]]"
     battery_meter: BatteryPowerMeter
     pv_meter: PowerMeter
@@ -517,6 +473,9 @@ class Controller(controller.Controller[EntryConfig]):
         "conversion_yield_actual_sensor",
         # entities
         "battery_charge_sensor",
+        # callbacks
+        "_store_save_callback_unsub",
+        "_final_write_unsub",
     )
 
     @staticmethod
@@ -640,6 +599,9 @@ class Controller(controller.Controller[EntryConfig]):
         self.load_meter = PowerMeter(self, MeteringSource.LOAD, time_ts)
         self.losses_meter = None  # type: ignore
 
+        self._store_save_callback_unsub = None
+        self._final_write_unsub = None
+
         for subentry_id, config_subentry in config_entry.subentries.items():
             match config_subentry.subentry_type:
                 case pmc.ConfigSubentryType.MANAGER_ENERGY_SENSOR:
@@ -700,10 +662,21 @@ class Controller(controller.Controller[EntryConfig]):
             if "battery_capacity_estimate" in store_data:
                 self.battery_capacity_estimate = store_data["battery_capacity_estimate"]
 
+        self._store_save_callback_unsub = self.schedule_async_callback(
+            self.STORE_SAVE_PERIOD, self._async_store_save
+        )
+        self._final_write_unsub = self.hass.bus.async_listen_once(
+            hac.EVENT_HOMEASSISTANT_FINAL_WRITE,
+            self._async_store_save,
+        )
+
+
         # TODO: setup according to some sort of configuration
         BatteryChargeSensor(
             self,
-            name=f"Battery charge",
+            "battery_charge",
+            capacity=self.battery_capacity,
+            name="Battery charge",
             parent_attr=Sensor.ParentAttr.DYNAMIC,
         )
 
@@ -729,21 +702,16 @@ class Controller(controller.Controller[EntryConfig]):
         await super().async_init()
 
     async def async_shutdown(self):
+        if self._final_write_unsub:
+            self._final_write_unsub()
+            self._final_write_unsub = None
+        if self._store_save_callback_unsub:
+            self._store_save_callback_unsub.cancel()
+            self._store_save_callback_unsub = None
         if self.losses_meter:
             self.losses_meter.stop()
 
-        now = dt_util.now()
-        store_data = ControllerStoreType(
-            {
-                "time": now.isoformat(),
-                "time_ts": now.timestamp(),
-                "battery_charge_estimate": self.battery_charge_estimate,
-                "battery_capacity_estimate": self.battery_capacity_estimate,
-            }
-        )
-        for meter in self.energy_meters.values():
-            meter.save(store_data)
-        await self._store.async_save(store_data)
+        await self._async_store_save(0)
 
         self.energy_meters.clear()
         self.battery_meter = self.pv_meter = self.load_meter = self.losses_meter = None  # type: ignore
@@ -807,3 +775,28 @@ class Controller(controller.Controller[EntryConfig]):
 
     def _battery_charge_callback(self, state: "State | None"):
         pass
+
+    async def _async_store_save(self, *args):
+        # args depends on the source of this call:
+        # no args means we're being called by the loop scheduler i.e. periodic save
+        # args[0] == event means we're in the final write stage of HA shutting down
+        # args[0] == 0 means we're unloading the controller
+        if not args:
+            self._store_save_callback_unsub = self.schedule_async_callback(
+                self.STORE_SAVE_PERIOD, self._async_store_save
+            )
+        elif args[0]:
+            self._final_write_unsub = None
+
+        now = dt_util.now()
+        data = ControllerStoreType(
+            {
+                "time": now.isoformat(),
+                "time_ts": now.timestamp(),
+                "battery_charge_estimate": self.battery_charge_estimate,
+                "battery_capacity_estimate": self.battery_capacity_estimate,
+            }
+        )
+        for meter in self.energy_meters.values():
+            meter.save(data)
+        await self._store.async_save(data)
