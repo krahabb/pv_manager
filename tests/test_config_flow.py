@@ -19,7 +19,7 @@ async def _cleanup_config_entry(hass: "HomeAssistant", result: "ConfigFlowResult
     assert await hass.config_entries.async_unload(config_entry.entry_id)
 
 #@pytest.mark.usefixtures("recorder_mock")
-async def test_controller_config_flow(hass: "HomeAssistant"):
+async def test_config_flow(hass: "HomeAssistant"):
 
     config_flow = hass.config_entries.flow
 
@@ -36,7 +36,7 @@ async def test_controller_config_flow(hass: "HomeAssistant"):
             )
             user_input = {}
             for _key, _value in ce["data"].items():
-                if not isinstance(_value, tc.NotRequiredEnum):
+                if not isinstance(_value, tc.Optional):
                     user_input[_key] = _value
 
             result = await config_flow.async_configure(
@@ -50,6 +50,45 @@ async def test_controller_config_flow(hass: "HomeAssistant"):
 
             # now cleanup the entry
             await _cleanup_config_entry(hass, result)
+
+        except Exception as e:
+            raise Exception(f"Testing config entry :{str(ce)}") from e
+
+
+async def test_options_flow(hass: "HomeAssistant"):
+
+    options_flow = hass.config_entries.options
+
+    for ce in tc.CONFIG_ENTRIES:
+
+        controller_type = ce["type"]
+
+        try:
+            async with helpers.ConfigEntryMocker(hass, ce) as ce_mock:
+
+                # try a debug config with diagnostic entities
+                result = await options_flow.async_init(ce_mock.config_entry_id)
+                user_input = pmc.EntryOptionsConfig({
+                    "logging_level": "debug",
+                    "create_diagnostic_entities": False,
+                })
+                result = await options_flow.async_configure(
+                    result["flow_id"],
+                    user_input=dict(user_input),
+                )
+                assert result.get("type") == FlowResultType.CREATE_ENTRY
+
+                # try revert it to default behaviour/config
+                result = await options_flow.async_init(ce_mock.config_entry_id)
+                user_input = pmc.EntryOptionsConfig({
+                    "logging_level": "default",
+                    "create_diagnostic_entities": False,
+                })
+                result = await options_flow.async_configure(
+                    result["flow_id"],
+                    user_input=dict(user_input),
+                )
+                assert result.get("type") == FlowResultType.CREATE_ENTRY
 
         except Exception as e:
             raise Exception(f"Testing config entry :{str(ce)}") from e

@@ -7,6 +7,7 @@ import hashlib
 import re
 import time
 import typing
+import uuid
 
 from unittest.mock import ANY, MagicMock, patch
 
@@ -223,9 +224,8 @@ class ConfigEntryMocker(contextlib.AbstractAsyncContextManager):
     def __init__(
         self,
         hass: "HomeAssistant",
-        unique_id: str,
+        data: tc.ConfigEntriesItem,
         *,
-        data: "Any | None" = None,
         auto_add: bool = True,
         auto_setup: bool = True,
     ) -> None:
@@ -233,10 +233,12 @@ class ConfigEntryMocker(contextlib.AbstractAsyncContextManager):
         self.hass: "Final" = hass
         self.config_entry: "Final" = MockConfigEntry(
             domain=pmc.DOMAIN,
-            data=data,
+            data=data["data"],
+            options=data.get("options"),
+            subentries_data=data.get("subentries_data"),
             version=ConfigFlow.VERSION,
             minor_version=ConfigFlow.MINOR_VERSION,
-            unique_id=unique_id,
+            unique_id=f"{data["type"]}.{uuid.uuid4().hex}",
         )
         self.config_entry_id: Final = self.config_entry.entry_id
         self.auto_setup = auto_setup

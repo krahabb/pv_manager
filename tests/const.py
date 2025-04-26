@@ -7,14 +7,30 @@ import typing
 from custom_components.pv_manager import const as pmc
 from custom_components.pv_manager.helpers import metering
 
+if typing.TYPE_CHECKING:
+    from typing import Iterable, NotRequired
 
-class NotRequiredEnum(enum.Enum):
-    STRING = enum.auto()
-    INT = enum.auto()
-    FLOAT = enum.auto()
+    from homeassistant.config_entries import ConfigSubentryDataWithId
+
+
+class Optional:
+    pass
+
+
+class OptionalString(Optional, str):
+    pass
+
+
+class OptionalInt(Optional, int):
+    pass
+
+
+class OptionalFloat(Optional, float):
+    pass
 
 
 class EntityIdEnum(enum.StrEnum):
+    WEATHER = "weather.home"
     BATTERY_VOLTAGE = "sensor.battery_voltage"
     BATTERY_CURRENT = "sensor.battery_current"
     BATTERY_CHARGE = "sensor.battery_charge"
@@ -25,7 +41,9 @@ class EntityIdEnum(enum.StrEnum):
 
 class ConfigEntriesItem(typing.TypedDict):
     type: pmc.ConfigEntryType
-    data: dict[str, typing.Any]
+    data: pmc.ConfigMapping
+    options: "NotRequired[pmc.EntryOptionsConfig]"
+    subentries_data: "NotRequired[Iterable[ConfigSubentryDataWithId]]"
 
 
 CE_PV_PLANT_SIMULATOR = ConfigEntriesItem(
@@ -35,7 +53,7 @@ CE_PV_PLANT_SIMULATOR = ConfigEntriesItem(
             "name": "PV plant simulator",
             "native_unit_of_measurement": "kW",
             "peak_power": 1000,
-            "weather_entity_id": NotRequiredEnum.STRING,
+            "weather_entity_id": OptionalString(EntityIdEnum.WEATHER),
             "battery_voltage": 48,
             "battery_capacity": 100,
             "consumption_baseload_power_w": 100,
@@ -53,23 +71,11 @@ CE_OFF_GRID_MANAGER = ConfigEntriesItem(
             "name": "Off grid manager",
             "battery_voltage_entity_id": EntityIdEnum.BATTERY_VOLTAGE,
             "battery_current_entity_id": EntityIdEnum.BATTERY_CURRENT,
-            "battery_charge_entity_id": NotRequiredEnum.STRING,
+            "battery_charge_entity_id": OptionalString(""),
             "battery_capacity": 100,
-            "pv_power_entity_id": NotRequiredEnum.STRING,
-            "load_power_entity_id": NotRequiredEnum.STRING,
+            "pv_power_entity_id": OptionalString(""),
+            "load_power_entity_id": OptionalString(""),
             "maximum_latency_minutes": 5,
-        },
-    }
-)
-CE_ENERGY_CALCULATOR = ConfigEntriesItem(
-    {
-        "type": pmc.ConfigEntryType.ENERGY_CALCULATOR,
-        "data": {
-            "name": "Energy calculator",
-            "power_entity_id": EntityIdEnum.LOAD_POWER,
-            "cycle_modes": list(metering.CycleMode),
-            "integration_period_seconds": 5,
-            "maximum_latency_seconds": 60,
         },
     }
 )
