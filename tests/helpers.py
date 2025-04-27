@@ -7,9 +7,8 @@ import hashlib
 import re
 import time
 import typing
-import uuid
-
 from unittest.mock import ANY, MagicMock, patch
+import uuid
 
 import aiohttp
 from freezegun.api import (
@@ -19,9 +18,8 @@ from freezegun.api import (
     freeze_time,
 )
 from homeassistant import config_entries, const as hac
-
 from homeassistant.data_entry_flow import FlowResultType
-from homeassistant.helpers import entity_registry
+from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry  # type: ignore
 from pytest_homeassistant_custom_component.common import async_fire_time_changed_exact
 
@@ -31,16 +29,15 @@ from custom_components.pv_manager.helpers import Loggable
 
 from . import const as tc
 
-
 if typing.TYPE_CHECKING:
     from typing import Any, Callable, Coroutine, Final
 
-    from homeassistant.core import HomeAssistant
     from homeassistant.config_entries import (
         ConfigEntriesFlowManager,
         ConfigFlowResult,
         OptionsFlowManager,
     )
+    from homeassistant.core import HomeAssistant
 
     from custom_components.pv_manager.controller import Controller
     from custom_components.pv_manager.manager import ManagerClass
@@ -69,6 +66,14 @@ async def async_assert_flow_menu_to_step(
     if next_step_type == FlowResultType.FORM:
         assert result["step_id"] == next_step_id  # type: ignore
     return result
+
+def ensure_registry_entries(hass: "HomeAssistant"):
+    """Preloads the entity registry with some default entities needed to configure/run our controllers."""
+    ent_reg = er.async_get(hass)
+
+    for entity_id_enum, kwargs in tc.ENTITY_REGISTRY_PRELOAD.items():
+        platform, entity_id = entity_id_enum.split(".")
+        ent_reg.async_get_or_create(platform, platform, entity_id_enum, suggested_object_id=entity_id, **kwargs)
 
 
 class DictMatcher(dict):

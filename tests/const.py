@@ -3,7 +3,6 @@
 import enum
 import typing
 
-
 from custom_components.pv_manager import const as pmc
 from custom_components.pv_manager.helpers import metering
 
@@ -36,8 +35,15 @@ class EntityIdEnum(enum.StrEnum):
     BATTERY_CHARGE = "sensor.battery_charge"
     PV_POWER = "sensor.pv_power"
     LOAD_POWER = "sensor.load_power"
-    CONSUMPTION_POWER = "sensor.consumption"
+    CONSUMPTION_POWER = "sensor.consumption_power"
 
+ENTITY_REGISTRY_PRELOAD: dict[EntityIdEnum, dict[str, typing.Any]] = {
+    EntityIdEnum.CONSUMPTION_POWER: {
+        "original_device_class": "power",
+        "original_name": "Consumption",
+        "unit_of_measurement": "W",
+    }
+}
 
 class ConfigEntriesItem(typing.TypedDict):
     type: pmc.ConfigEntryType
@@ -107,8 +113,12 @@ CE_CONSUMPTION_ESTIMATOR = ConfigEntriesItem(
 )
 
 CONFIG_ENTRIES: list[ConfigEntriesItem] = [
-    CE_PV_PLANT_SIMULATOR,
     CE_OFF_GRID_MANAGER,
     CE_ENERGY_CALCULATOR,
     CE_CONSUMPTION_ESTIMATOR,
 ]
+
+if pmc.DEBUG:
+    CONFIG_ENTRIES.extend([
+        CE_PV_PLANT_SIMULATOR,
+    ])

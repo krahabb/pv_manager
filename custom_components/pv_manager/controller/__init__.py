@@ -702,6 +702,10 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
             no_attributes=False,
         )
 
+        if not observed_entity_states:
+            self.log(self.WARNING, "Loading history for entity '%s' did not return any data. Is the entity correct?", self.observed_entity_id)
+            return
+        
         for state in observed_entity_states[self.observed_entity_id]:
             if self._restore_history_exit:
                 return

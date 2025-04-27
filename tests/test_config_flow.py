@@ -1,9 +1,9 @@
 import typing
 
-import pytest
 from homeassistant import config_entries, const as hac
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.data_entry_flow import FlowResultType
+import pytest
 
 from custom_components.pv_manager import const as pmc
 
@@ -20,6 +20,8 @@ async def _cleanup_config_entry(hass: "HomeAssistant", result: "ConfigFlowResult
 
 #@pytest.mark.usefixtures("recorder_mock")
 async def test_config_flow(hass: "HomeAssistant"):
+
+    helpers.ensure_registry_entries(hass)
 
     config_flow = hass.config_entries.flow
 
@@ -57,6 +59,8 @@ async def test_config_flow(hass: "HomeAssistant"):
 
 async def test_options_flow(hass: "HomeAssistant"):
 
+    helpers.ensure_registry_entries(hass)
+    
     options_flow = hass.config_entries.options
 
     for ce in tc.CONFIG_ENTRIES:
