@@ -23,15 +23,48 @@ from .common import estimator
 
 if typing.TYPE_CHECKING:
     from types import MappingProxyType
-    from typing import Any, Callable, ClassVar, Coroutine, Final, Unpack
+    from typing import Any, Callable, ClassVar, Coroutine, Final, Mapping, Unpack
 
-    from homeassistant.config_entries import ConfigEntry
+    from homeassistant.config_entries import ConfigEntry, ConfigSubentry
     from homeassistant.core import Event, HomeAssistant, State
     from homeassistant.helpers.device_registry import DeviceInfo
     from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
     import voluptuous as vol
 
-    from ..helpers.entity import Entity, EntityArgs
+    from ..helpers.entity import DiagnosticEntity, Entity, EntityArgs
+
+
+class EntryData[_ConfigT: pmc.EntryConfig | pmc.SubentryConfig]:
+
+    subentry_id: "Final[str | None]"
+    subentry_type: "Final[str | None]"
+    config: _ConfigT | pmc.ConfigMapping
+    entities: "Final[dict[str, Entity]]"
+
+    __slots__ = (
+        "subentry_id",
+        "subentry_type",
+        "config",
+        "entities",
+    )
+
+    @staticmethod
+    def Entry(config_entry: "ConfigEntry"):
+        entry = EntryData()
+        entry.subentry_id = None
+        entry.subentry_type = None
+        entry.config = config_entry.data
+        entry.entities = {}
+        return entry
+
+    @staticmethod
+    def SubEntry(subentry: "ConfigSubentry"):
+        entry = EntryData()
+        entry.subentry_id = subentry.subentry_id
+        entry.subentry_type = subentry.subentry_type
+        entry.config = subentry.data
+        entry.entities = {}
+        return entry
 
 
 class Controller[_ConfigT: pmc.EntryConfig](helpers.Loggable):
@@ -49,11 +82,11 @@ class Controller[_ConfigT: pmc.EntryConfig](helpers.Loggable):
 
     config: _ConfigT
     options: pmc.EntryOptionsConfig
-    platforms: "Final[dict[str, AddConfigEntryEntitiesCallback]]"
+    platforms: "Final[dict[str, AddConfigEntryEntitiesCallback | None]]"
     """Dict of add_entities callbacks."""
-    entities: "Final[dict[str, dict[str, Entity]]]"
-    """Dict of registered entities for this controller/entry. This will be scanned in order to forward entry setup during
-    initialization."""
+    entries: "Final[dict[str | None, EntryData]]"
+    """Cached copy of subentries used to manage subentry add/remove/update."""
+    diagnostic_entities: "Final[dict[str, DiagnosticEntity]]"
     _callbacks_unsub: "Final[set[Callable[[], None]]]"
     """Dict of callbacks to be unsubscribed when the entry is unloaded."""
 
@@ -64,7 +97,8 @@ class Controller[_ConfigT: pmc.EntryConfig](helpers.Loggable):
         "config",
         "options",
         "platforms",
-        "entities",
+        "entries",
+        "diagnostic_entities",
         "_callbacks_unsub",
     )
 
@@ -102,8 +136,9 @@ class Controller[_ConfigT: pmc.EntryConfig](helpers.Loggable):
         self.device_info = {"identifiers": {(pmc.DOMAIN, config_entry.entry_id)}}
         self.config = config_entry.data  # type: ignore
         self.options = config_entry.options  # type: ignore
-        self.platforms = {}
-        self.entities = {platform: {} for platform in self.PLATFORMS}
+        self.platforms = {platform: None for platform in self.PLATFORMS}
+        entries = self.entries = {None: EntryData.Entry(config_entry)}
+        self.diagnostic_entities = {}
         self._callbacks_unsub = set()
         helpers.Loggable.__init__(self, config_entry.title)
         Manager.device_registry.async_get_or_create(
@@ -112,8 +147,14 @@ class Controller[_ConfigT: pmc.EntryConfig](helpers.Loggable):
             model=self.TYPE,
             **self.device_info,  # type: ignore
         )
+
+        for subentry_id, subentry in config_entry.subentries.items():
+            entries[subentry_id] = entry_data = EntryData.SubEntry(subentry)
+            self._subentry_add(subentry_id, entry_data)
+
         if self.options.get("create_diagnostic_entities"):
             self._create_diagnostic_entities()
+
         config_entry.runtime_data = self
 
     # interface: Loggable
@@ -146,7 +187,7 @@ class Controller[_ConfigT: pmc.EntryConfig](helpers.Loggable):
         # in the (derived) contructor since async_init will be called at loading time right after
         # class instance initialization.
         await self.hass.config_entries.async_forward_entry_setups(
-            self.config_entry, self.entities.keys()
+            self.config_entry, self.platforms
         )
 
     async def async_setup_entry_platform(
@@ -159,14 +200,14 @@ class Controller[_ConfigT: pmc.EntryConfig](helpers.Loggable):
         # cache the add_entities callback so we can dinamically add later
         self.platforms[platform] = add_entities
         # manage config_subentry forwarding...
-        entities_per_config_subentry: dict[str | None, list] = {}
-        for entity in self.entities[platform].values():
-            if entity.config_subentry_id in entities_per_config_subentry:
-                entities_per_config_subentry[entity.config_subentry_id].append(entity)
-            else:
-                entities_per_config_subentry[entity.config_subentry_id] = [entity]
-        for config_subentry_id, entities in entities_per_config_subentry.items():
-            add_entities(entities, config_subentry_id=config_subentry_id)
+        for subentry_id, entry_data in self.entries.items():
+            entities = [
+                entity
+                for entity in entry_data.entities.values()
+                if entity.PLATFORM is platform
+            ]
+            if entities:
+                add_entities(entities, config_subentry_id=subentry_id)
 
     async def async_shutdown(self):
         if not await self.hass.config_entries.async_unload_platforms(
@@ -176,11 +217,13 @@ class Controller[_ConfigT: pmc.EntryConfig](helpers.Loggable):
 
         for unsub in self._callbacks_unsub:
             unsub()
+
         # removing circular refs here
-        for entities_per_platform in self.entities.values():
-            for entity in list(entities_per_platform.values()):
-                await entity.async_shutdown()
-            assert not entities_per_platform
+        for subentry_id, entry_data in self.entries.items():
+            for entity in list(entry_data.entities.values()):
+                await entity.async_shutdown(False)
+            assert not entry_data.entities
+        assert not self.diagnostic_entities
         self.platforms.clear()
 
     def schedule_async_callback(
@@ -260,7 +303,40 @@ class Controller[_ConfigT: pmc.EntryConfig](helpers.Loggable):
     async def _entry_update_listener(
         self, hass: "HomeAssistant", config_entry: "ConfigEntry"
     ):
-        self.config = config_entry.data  # type: ignore
+        entries = self.entries
+        if self.config != config_entry.data:
+            self.config = config_entry.data  # type: ignore
+            entry_data = entries[None]
+            entry_data.config = config_entry.data
+            # eventually we can 'kick' a subentry_update
+            # self._subentry_update(None, entry_data)
+
+        # dispatch detailed subentry updates so that inheriteds don't have to bother
+        # every time scanning and matching variations
+        removed_entries = set()
+        for subentry_id in entries:
+            if subentry_id and (subentry_id not in config_entry.subentries):
+                removed_entries.add(subentry_id)
+        for subentry_id in removed_entries:
+            entry_data = entries[subentry_id]
+            await self._async_subentry_remove(subentry_id, entry_data)
+            # removed leftover entities (eventually)
+            for entity in list(entry_data.entities.values()):
+                await entity.async_shutdown(True)
+            assert not entry_data.entities
+            entries.pop(subentry_id)
+
+        for subentry_id, subentry in config_entry.subentries.items():
+            try:
+                entry_data = entries[subentry_id]
+                if entry_data.config is not subentry.data:
+                    entry_data.config = subentry.data
+                    await self._async_subentry_update(subentry_id, entry_data)
+            except KeyError:
+                # new subentry
+                entries[subentry_id] = entry_data = EntryData.SubEntry(subentry)
+                self._subentry_add(subentry_id, entry_data)
+
         if self.options != config_entry.options:
             self.options = config_entry.options  # type: ignore
             self.logger.setLevel(
@@ -278,16 +354,19 @@ class Controller[_ConfigT: pmc.EntryConfig](helpers.Loggable):
         pass
 
     async def _async_destroy_diagnostic_entities(self):
-        """Cleanup diagnostic entities, when the entry is unloaded. If 'remove' is True
-        it will be removed from the entity registry as well."""
-        ent_reg = Manager.entity_registry
-        for entities_per_platform in self.entities.values():
-            for entity in list(entities_per_platform.values()):
-                if entity.is_diagnostic:
-                    if entity.added_to_hass:
-                        await entity.async_remove(force_remove=True)
-                    await entity.async_shutdown()
-                    ent_reg.async_remove(entity.entity_id)
+        """Cleanup diagnostic entities when configuration option changes."""
+        for entity in list(self.diagnostic_entities.values()):
+            await entity.async_shutdown(True)
+        assert not self.diagnostic_entities
+
+    def _subentry_add(self, subentry_id: str, entry_data: EntryData):
+        pass
+
+    async def _async_subentry_update(self, subentry_id: str, entry_data: EntryData):
+        pass
+
+    async def _async_subentry_remove(self, subentry_id: str, entry_data: EntryData):
+        pass
 
 
 class EnergyEstimatorSensorConfig(pmc.EntityConfig, pmc.SubentryConfig):
@@ -297,6 +376,13 @@ class EnergyEstimatorSensorConfig(pmc.EntityConfig, pmc.SubentryConfig):
 
 
 class EnergyEstimatorSensor(Sensor):
+
+    controller: "EnergyEstimatorController"
+
+    _attr_parent_attr = None
+
+    _attr_device_class = Sensor.DeviceClass.ENERGY
+    _attr_native_unit_of_measurement = hac.UnitOfEnergy.WATT_HOUR
 
     __slots__ = ("forecast_duration_ts",)
 
@@ -312,11 +398,54 @@ class EnergyEstimatorSensor(Sensor):
         super().__init__(
             controller,
             id,
-            device_class=Sensor.DeviceClass.ENERGY,
             state_class=None,
-            native_unit_of_measurement=hac.UnitOfEnergy.WATT_HOUR,
             **kwargs,
         )
+
+    async def async_added_to_hass(self):
+        self.update_estimate(self.controller.estimator, False)
+        await super().async_added_to_hass()
+        self.controller.estimator_sensors.add(self)
+
+    async def async_will_remove_from_hass(self):
+        self.controller.estimator_sensors.remove(self)
+        await super().async_will_remove_from_hass()
+
+    def update_estimate(self, estimator: estimator.Estimator, flush: bool):
+        self.native_value = round(
+            estimator.get_estimated_energy(
+                estimator.observed_time_ts,
+                estimator.observed_time_ts + self.forecast_duration_ts,
+            )
+        )
+        if flush:
+            self._async_write_ha_state()
+
+
+class TodayEnergyEstimatorSensor(EnergyEstimatorSensor):
+
+    def update_estimate(self, estimator: estimator.Estimator, flush: bool):
+        self.extra_state_attributes = estimator.get_state_dict()
+        self.native_value = round(
+            estimator.today_energy
+            + estimator.get_estimated_energy(
+                estimator.observed_time_ts, estimator.tomorrow_ts
+            )
+        )
+        if flush:
+            self._async_write_ha_state()
+
+
+class TomorrowEnergyEstimatorSensor(EnergyEstimatorSensor):
+
+    def update_estimate(self, estimator: estimator.Estimator, flush: bool):
+        self.native_value = round(
+            estimator.get_estimated_energy(
+                estimator.tomorrow_ts, estimator.tomorrow_ts + 86400
+            )
+        )
+        if flush:
+            self._async_write_ha_state()
 
 
 class EnergyEstimatorControllerConfig(pmc.EntryConfig, estimator.EstimatorConfig):
@@ -333,14 +462,14 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
 
     PLATFORMS = {Sensor.PLATFORM}
 
+    estimator_sensors: set[EnergyEstimatorSensor]
+
     __slots__ = (
         # configuration
         "observed_entity_id",
         "refresh_period_ts",
         # state
         "estimator",
-        "today_energy_estimate_sensor",
-        "tomorrow_energy_estimate_sensor",
         "estimator_sensors",
         "_state_convert_func",
         "_state_convert_unit",
@@ -414,9 +543,8 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
         estimator_class: "type[estimator.Estimator]",
         **estimator_kwargs,
     ):
-        super().__init__(hass, config_entry)
-
-        self.observed_entity_id = self.config["observed_entity_id"]
+        config = config_entry.data
+        self.observed_entity_id = config["observed_entity_id"]
         reg_entry = Manager.entity_registry.async_get(self.observed_entity_id)
         if not reg_entry:
             raise ValueError(
@@ -443,41 +571,29 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
                 f"Unsupported unit of measurement {reg_entry.unit_of_measurement} for observed entity: {self.observed_entity_id}"
             )
 
-        self.refresh_period_ts = self.config.get("refresh_period_minutes", 5) * 60
+        self.refresh_period_ts = config.get("refresh_period_minutes", 5) * 60
         self.estimator = estimator_class(
             tzinfo=dt_util.get_default_time_zone(),
-            **(estimator_kwargs | self.config),  # type: ignore
-        )
-        self.today_energy_estimate_sensor = EnergyEstimatorSensor(
-            self,
-            "today_energy_estimate",
-            name=f"{self.config.get("name", "Estimated energy")} (today)",
-        )
-        self.tomorrow_energy_estimate_sensor = EnergyEstimatorSensor(
-            self,
-            "tomorrow_energy_estimate",
-            name=f"{self.config.get("name", "Estimated energy")} (tomorrow)",
+            **(estimator_kwargs | config),  # type: ignore
         )
 
-        self.estimator_sensors: dict[str, EnergyEstimatorSensor] = {}
-        for subentry_id, config_subentry in config_entry.subentries.items():
-            match config_subentry.subentry_type:
-                case pmc.ConfigSubentryType.ENERGY_ESTIMATOR_SENSOR:
-                    self.estimator_sensors[subentry_id] = EnergyEstimatorSensor(
-                        self,
-                        f"{pmc.ConfigSubentryType.ENERGY_ESTIMATOR_SENSOR}_{subentry_id}",
-                        name=config_subentry.data.get("name"),
-                        config_subentry_id=subentry_id,
-                        forecast_duration_ts=config_subentry.data.get(
-                            "forecast_duration_hours", 0
-                        )
-                        * 3600,
-                        parent_attr=None,
-                    )
-
+        self.estimator_sensors = set()
         self._refresh_callback_unsub = None
         self._restore_history_task = None
         self._restore_history_exit = False
+
+        super().__init__(hass, config_entry)
+
+        TodayEnergyEstimatorSensor(
+            self,
+            "today_energy_estimate",
+            name=f"{config.get("name", "Estimated energy")} (today)",
+        )
+        TomorrowEnergyEstimatorSensor(
+            self,
+            "tomorrow_energy_estimate",
+            name=f"{config.get("name", "Estimated energy")} (tomorrow)",
+        )
 
     # interface: Controller
     async def async_init(self):
@@ -511,46 +627,40 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
             self._refresh_callback_unsub = None
         self.estimator.on_update_estimate = None
         self.estimator: "estimator.Estimator" = None  # type: ignore
-        self.estimator_sensors.clear()
         await super().async_shutdown()
+        assert not self.estimator_sensors
 
-    async def _entry_update_listener(
-        self, hass: "HomeAssistant", config_entry: "ConfigEntry"
+    def _subentry_add(
+        self, subentry_id: str, entry_data: EntryData[EnergyEstimatorSensorConfig]
     ):
-        # check if config subentries changed
-        estimator_sensors = dict(self.estimator_sensors)
-        for subentry_id, config_subentry in config_entry.subentries.items():
-            match config_subentry.subentry_type:
-                case pmc.ConfigSubentryType.ENERGY_ESTIMATOR_SENSOR:
-                    subentry_config = config_subentry.data
-                    if subentry_id in estimator_sensors:
-                        # entry already present: just update it
-                        estimator_sensor = estimator_sensors.pop(subentry_id)
-                        estimator_sensor.name = config_subentry.data.get(
-                            "name", estimator_sensor.id
-                        )
-                        estimator_sensor.forecast_duration_ts = (
-                            subentry_config.get("forecast_duration_hours", 1) * 3600
-                        )
-                    else:
-                        self.estimator_sensors[subentry_id] = EnergyEstimatorSensor(
-                            self,
-                            f"{pmc.ConfigSubentryType.ENERGY_ESTIMATOR_SENSOR}_{subentry_id}",
-                            name=subentry_config.get("name"),
-                            config_subentry_id=subentry_id,
-                            forecast_duration_ts=subentry_config.get(
-                                "forecast_duration_hours", 0
-                            )
-                            * 3600,
-                            parent_attr=None,
-                        )
+        match entry_data.subentry_type:
+            case pmc.ConfigSubentryType.ENERGY_ESTIMATOR_SENSOR:
+                EnergyEstimatorSensor(
+                    self,
+                    f"{pmc.ConfigSubentryType.ENERGY_ESTIMATOR_SENSOR}_{subentry_id}",
+                    name=entry_data.config.get(
+                        "name", pmc.ConfigSubentryType.ENERGY_ESTIMATOR_SENSOR
+                    ),
+                    config_subentry_id=subentry_id,
+                    forecast_duration_ts=entry_data.config.get(
+                        "forecast_duration_hours", 1
+                    )
+                    * 3600,
+                )
 
-        for subentry_id in estimator_sensors.keys():
-            # these were removed subentries
-            estimator_sensor = self.estimator_sensors.pop(subentry_id)
-            await estimator_sensor.async_shutdown()
-
-        await super()._entry_update_listener(hass, config_entry)
+    async def _async_subentry_update(self, subentry_id: str, entry_data: EntryData):
+        match entry_data.subentry_type:
+            case pmc.ConfigSubentryType.ENERGY_ESTIMATOR_SENSOR:
+                entity: EnergyEstimatorSensor
+                for entity in entry_data.entities.values():  # type: ignore
+                    entity.name = entry_data.config.get(
+                        "name", pmc.ConfigSubentryType.ENERGY_ESTIMATOR_SENSOR
+                    )
+                    entity.forecast_duration_ts = (
+                        entry_data.config.get("forecast_duration_hours", 1) * 3600
+                    )
+                    if entity.added_to_hass:
+                        entity.update_estimate(self.estimator, True)
 
     # interface: self
     def _refresh_callback(self):
@@ -577,28 +687,8 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
 
     def _update_estimate(self, estimator: "estimator.Estimator"):
 
-        self.today_energy_estimate_sensor.extra_state_attributes = (
-            estimator.get_state_dict()
-        )
-        self.today_energy_estimate_sensor.update_safe(
-            estimator.today_energy
-            + estimator.get_estimated_energy(
-                estimator.observed_time_ts, estimator.tomorrow_ts
-            )
-        )
-        self.tomorrow_energy_estimate_sensor.update_safe(
-            estimator.get_estimated_energy(
-                estimator.tomorrow_ts, estimator.tomorrow_ts + 86400
-            )
-        )
-
-        for sensor in self.estimator_sensors.values():
-            sensor.update_safe(
-                self.estimator.get_estimated_energy(
-                    estimator.observed_time_ts,
-                    estimator.observed_time_ts + sensor.forecast_duration_ts,
-                )
-            )
+        for sensor in self.estimator_sensors:
+            sensor.update_estimate(estimator, True)
 
     def _restore_history(self, history_start_time: dt.datetime):
         if self._restore_history_exit:

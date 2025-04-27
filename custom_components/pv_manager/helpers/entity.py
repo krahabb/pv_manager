@@ -4,8 +4,10 @@ import typing
 from homeassistant.helpers import entity, restore_state
 
 from . import Loggable
+from ..manager import Manager
 
 if typing.TYPE_CHECKING:
+    from typing import ClassVar, Final
 
     from .. import const as pmc
     from ..controller import Controller
@@ -34,14 +36,14 @@ class ParentAttr(enum.Enum):
 
 class Entity(Loggable, entity.Entity if typing.TYPE_CHECKING else object):
 
-    PLATFORM: typing.ClassVar[str]
+    PLATFORM: "ClassVar[str]"
 
     EntityCategory = entity.EntityCategory
     ParentAttr = ParentAttr
 
-    is_diagnostic: bool = False
+    is_diagnostic: "ClassVar[bool]" = False
 
-    controller: "Controller"
+    controller: "Final[Controller]"
 
     _attr_parent_attr: ParentAttr | None = ParentAttr.REMOVE
     """By default our entities will automatically remove their reference from the controller
@@ -76,24 +78,28 @@ class Entity(Loggable, entity.Entity if typing.TYPE_CHECKING else object):
         for _attr_name, _attr_value in kwargs.items():
             setattr(self, _attr_name, _attr_value)
         Loggable.__init__(self, id, logger=controller)
-        if self.PLATFORM in controller.entities:
-            controller.entities[self.PLATFORM][id] = self
-            if self.PLATFORM in controller.platforms:
-                controller.platforms[self.PLATFORM](
-                    [self], config_subentry_id=self.config_subentry_id
-                )
-        else:
-            controller.entities[self.PLATFORM] = {id: self}
 
+        entities = controller.entries[self.config_subentry_id].entities
+        assert id not in entities
+        entities[id] = self
         if self._parent_attr is ParentAttr.STATIC:
             setattr(controller, f"{id}_{self.PLATFORM}", self)
         elif self._parent_attr is ParentAttr.DYNAMIC:
             setattr(controller, f"{id}_{self.PLATFORM}", None)
+        try:
+            if add_entities := controller.platforms[self.PLATFORM]:
+                add_entities((self,), config_subentry_id=self.config_subentry_id)
+        except KeyError:
+            controller.platforms[self.PLATFORM] = None
 
-    async def async_shutdown(self):
+    async def async_shutdown(self, remove: bool):
         if self._parent_attr:
             delattr(self.controller, f"{self.id}_{self.PLATFORM}")
-        self.controller.entities[self.PLATFORM].pop(self.id)
+        self.controller.entries[self.config_subentry_id].entities.pop(self.id)
+        if remove:
+            if self.added_to_hass:
+                await self.async_remove(force_remove=True)
+            Manager.entity_registry.async_remove(self.entity_id)
         self.controller = None  # type: ignore
 
     async def async_added_to_hass(self):
@@ -117,6 +123,13 @@ class Entity(Loggable, entity.Entity if typing.TYPE_CHECKING else object):
     def update_safe(self, value):
         """Update and flush with safety check: only flush if added to HA"""
         pass
+
+    def update_name(self, name: str):
+        """Updates entity name and flush to HA state. Useful when updating ConfigEntries/Subentries
+        as a shortcut update."""
+        self.name = name
+        if self.added_to_hass:
+            self._async_write_ha_state()
 
 class ExtraStoredDataDict(dict, restore_state.ExtraStoredData):
     """Object to hold extra stored data as a plain dict"""
@@ -142,3 +155,11 @@ class DiagnosticEntity(Entity if typing.TYPE_CHECKING else object):
 
     # HA core entity attributes:
     _attr_entity_category = entity.EntityCategory.DIAGNOSTIC
+
+    def __init__(self, controller: "Controller", id: str, *args, **kwargs):
+        super().__init__(controller, id, *args, **kwargs)
+        controller.diagnostic_entities[id] = self
+
+    async def async_shutdown(self, remove: bool):
+        self.controller.diagnostic_entities.pop(self.id)
+        return await super().async_shutdown(remove)

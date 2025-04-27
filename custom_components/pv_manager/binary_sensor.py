@@ -24,7 +24,7 @@ async def async_setup_entry(
     add_entities: "AddConfigEntryEntitiesCallback",
 ):
     await config_entry.runtime_data.async_setup_entry_platform(
-        binary_sensor.DOMAIN, add_entities
+        BinarySensor.PLATFORM, add_entities
     )
 
 

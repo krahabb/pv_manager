@@ -37,7 +37,7 @@ async def async_setup_entry(
     add_entities: "AddConfigEntryEntitiesCallback",
 ):
     await config_entry.runtime_data.async_setup_entry_platform(
-        sensor.DOMAIN, add_entities
+        Sensor.PLATFORM, add_entities
     )
 
 
@@ -159,8 +159,8 @@ class EnergySensor(MeteringEntity, Sensor, he.RestoreEntity):
         if cycle_mode == CycleMode.TOTAL:
             self.accumulate = self._accumulate_total
         else:
-            name = kwargs.pop("name", id)
-            kwargs["name"] = f"{name} ({cycle_mode})"
+            name = kwargs.pop("name") or id
+            kwargs["name"] = self.formatted_name(name)
 
         Sensor.__init__(
             self,
@@ -198,6 +198,10 @@ class EnergySensor(MeteringEntity, Sensor, he.RestoreEntity):
     @property
     def extra_restore_state_data(self):
         return he.ExtraStoredDataDict({"native_value": self._integral_value})
+
+    # interface: self
+    def formatted_name(self, name: str):
+        return f"{name} ({self.cycle_mode})"
 
     def accumulate(self, energy_wh: float, time_ts: float):
         # assert self.added_to_hass

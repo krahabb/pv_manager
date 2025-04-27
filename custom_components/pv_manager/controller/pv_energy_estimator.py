@@ -29,6 +29,8 @@ from .common.estimator_pvenergy_heuristic import (
 )
 
 if typing.TYPE_CHECKING:
+    from typing import Callable, Final
+
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import Event, HomeAssistant, State
 
@@ -44,9 +46,44 @@ class EntryConfig(ControllerConfig, pmc.EntityConfig):
     """TypedDict for ConfigEntry data"""
 
 
-class DiagnosticSensorsEnum(enum.StrEnum):
-    observed_ratio = enum.auto()
-    weather_cloud_constant = enum.auto()
+class DiagnosticDescr:
+    id: "Final[str]"
+    init: "Final[Callable[[Controller], DiagnosticSensor]]"
+    value: "Final[Callable[[Controller], float]]"
+
+    __slots__ = (
+        "id",
+        "init",
+        "value",
+    )
+
+    def __init__(
+        self,
+        id: str,
+        init_func: "Callable[[Controller], DiagnosticSensor]",
+        value_func: "Callable[[Controller], float]",
+    ):
+        self.id = id
+        self.init = init_func
+        self.value = value_func
+
+    @staticmethod
+    def Sensor(id: str, value_func: "Callable[[Controller], float]"):
+        return DiagnosticDescr(
+            id,
+            lambda c: DiagnosticSensor(c, id, native_value=value_func(c)),
+            value_func,
+        )
+
+
+DIAGNOSTIC_DESCR = {
+    "observed_ratio": DiagnosticDescr.Sensor(
+        "observed_ratio", lambda c: c.estimator.observed_ratio
+    ),
+    "weather_cloud_constant": DiagnosticDescr.Sensor(
+        "weather_cloud_constant", lambda c: TimeSpanEnergyModel.Wc
+    ),
+}
 
 
 class Controller(controller.EnergyEstimatorController[EntryConfig]):
@@ -78,9 +115,7 @@ class Controller(controller.EnergyEstimatorController[EntryConfig]):
         )
 
     def __init__(self, hass: "HomeAssistant", config_entry: "ConfigEntry"):
-
         location, elevation = sun_helpers.get_astral_location(hass)
-
         super().__init__(
             hass,
             config_entry,
@@ -89,7 +124,6 @@ class Controller(controller.EnergyEstimatorController[EntryConfig]):
                 location.latitude, location.longitude, elevation
             ),
         )
-
         self.weather_entity_id = self.config.get("weather_entity_id")
         self.weather_state = None
 
@@ -101,23 +135,17 @@ class Controller(controller.EnergyEstimatorController[EntryConfig]):
             )
 
     def _create_diagnostic_entities(self):
-        sensors = self.entities[Sensor.PLATFORM]
-        for diagnostic_sensor_enum in DiagnosticSensorsEnum:
-            if diagnostic_sensor_enum not in sensors:
-                DiagnosticSensor(self, diagnostic_sensor_enum)
+        diagnostic_entities = self.diagnostic_entities
+        for d_e_d in DIAGNOSTIC_DESCR.values():
+            if d_e_d.id not in diagnostic_entities:
+                d_e_d.init(self)
 
     # interface: EnergyEstimatorController
     def _update_estimate(self, estimator: Estimator_PVEnergy_Heuristic):
 
-        sensors = self.entities[Sensor.PLATFORM]
-
-        if DiagnosticSensorsEnum.observed_ratio in sensors:
-            sensors[DiagnosticSensorsEnum.observed_ratio].update_safe(
-                estimator.observed_ratio
-            )
-        if DiagnosticSensorsEnum.weather_cloud_constant in sensors:
-            sensors[DiagnosticSensorsEnum.weather_cloud_constant].update_safe(
-                TimeSpanEnergyModel.Wc
+        for diagnostic_entity in self.diagnostic_entities.values():
+            diagnostic_entity.update_safe(
+                DIAGNOSTIC_DESCR[diagnostic_entity.id].value(self)
             )
 
         super()._update_estimate(estimator)
