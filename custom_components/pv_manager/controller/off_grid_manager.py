@@ -364,7 +364,7 @@ class ManagerEnergySensor(EnergySensor):
         # TODO: rename sensor id using energy_meter instead of subentry_id
         super().__init__(
             energy_meter.controller,
-            f"{pmc.ConfigSubentryType.MANAGER_ENERGY_SENSOR}_{config_subentry_id}",
+            f"{pmc.ConfigSubentryType.MANAGER_ENERGY_SENSOR}_{energy_meter.metering_source}",
             cycle_mode,
             name=name,
             config_subentry_id=config_subentry_id,
