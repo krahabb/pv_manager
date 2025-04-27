@@ -25,14 +25,14 @@ async def test_config_flow(hass: "HomeAssistant"):
 
     for ce in tc.CONFIG_ENTRIES:
 
-        controller_type = ce["type"]
+        entry_type = ce["type"]
 
         try:
             result = await config_flow.async_init(
                 pmc.DOMAIN, context={"source": config_entries.SOURCE_USER}
             )
             result = await helpers.async_assert_flow_menu_to_step(
-                config_flow, result, "user", str(controller_type)
+                config_flow, result, "user", entry_type.value
             )
             user_input = {}
             for _key, _value in ce["data"].items():
@@ -46,7 +46,7 @@ async def test_config_flow(hass: "HomeAssistant"):
             assert result.get("type") == FlowResultType.CREATE_ENTRY
 
             config_entry: "ConfigEntry" = result["result"]  # type: ignore
-            assert config_entry.unique_id.split(".")[0] == controller_type # type: ignore
+            assert config_entry.unique_id.split(".")[0] == entry_type # type: ignore
 
             # now cleanup the entry
             await _cleanup_config_entry(hass, result)
@@ -60,8 +60,6 @@ async def test_options_flow(hass: "HomeAssistant"):
     options_flow = hass.config_entries.options
 
     for ce in tc.CONFIG_ENTRIES:
-
-        controller_type = ce["type"]
 
         try:
             async with helpers.ConfigEntryMocker(hass, ce) as ce_mock:

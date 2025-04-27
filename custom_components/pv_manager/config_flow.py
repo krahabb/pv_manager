@@ -154,7 +154,7 @@ class ConfigFlow(CommonFlow, config_entries.ConfigFlow, domain=pmc.DOMAIN):  # t
             menu_options = []
             for entry_type in pmc.ConfigEntryType:
                 if entry_type not in DEBUG_ENTRY_TYPES:
-                    menu_options.append(entry_type)
+                    menu_options.append(entry_type.value)
         return self.async_show_menu(menu_options=menu_options)
 
     async def async_step_reconfigure(self, user_input):

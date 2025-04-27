@@ -1,6 +1,7 @@
 import typing
 
 from homeassistant.exceptions import ConfigEntryError
+from homeassistant.helpers import config_validation as cv
 
 from . import const as pmc
 from .controller import Controller
@@ -9,6 +10,9 @@ from .manager import Manager
 if typing.TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
+
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(pmc.DOMAIN)
 
 
 async def async_setup(hass: "HomeAssistant", config):
