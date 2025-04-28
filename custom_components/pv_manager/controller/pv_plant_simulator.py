@@ -210,7 +210,8 @@ class Controller(controller.Controller[EntryConfig]):
             dt_util.now(),
         )
         elevation = 90 - sun_zenith
-        if elevation > -5:  # roughly dusk
+        daytime = elevation > -5 # roughly dusk
+        if daytime:
             # it is very hard to model the transition night/day since when the sun is low
             # and starts to rise/set the sun energy is very low even if the elevation is relatively high
             # with respect to the plant slope. Here we take a simple approach with
@@ -251,26 +252,24 @@ class Controller(controller.Controller[EntryConfig]):
                 elif gain < 1:
                     pv_power *= gain
 
-            if self._inverter_on:
-                consumption_power = self.consumption_baseload_power_w
+        else:  # night time
+            pv_power = 0
+
+        if self._inverter_on:
+            consumption_power = (
+                self.consumption_baseload_power_w * random.randint(90, 110) / 100
+            )
+            if daytime:
                 p1 = random.randint(1, 100) / 100
                 a = random.randint(1, 100) / 100
                 if a < (self.consumption_daily_fill_factor / p1):
                     consumption_power += self.consumption_daily_extra_power_w * p1
-            else:
-                consumption_power = 0
-        else:  # night time
-            pv_power = 0
-            if self._inverter_on:
-                consumption_power = (
-                    self.consumption_baseload_power_w * random.randint(90, 110) / 100
-                )
-            else:
-                consumption_power = 0
-
-        total_consumption_power = (
-            consumption_power / self.inverter_efficiency + self.inverter_zeroload_power
-        )
+            total_consumption_power = (
+                consumption_power / self.inverter_efficiency + self.inverter_zeroload_power
+            )
+        else:
+            consumption_power = 0
+            total_consumption_power = 0
 
         if self.battery_voltage:
             # assume a voltage drop of 5% of the battery voltage at 1C
