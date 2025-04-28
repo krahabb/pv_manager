@@ -148,6 +148,7 @@ class Estimator_PVEnergy_Heuristic(Estimator_PVEnergy):
         """Returns a synthetic state string for the estimator.
         Used for debugging purposes."""
         return super().get_state_dict() | {
+            "history_samples": len(self.history_samples),
             "model_energy_max": self._model_energy_max,
             "observed_ratio": self.observed_ratio,
         }

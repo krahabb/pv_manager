@@ -71,6 +71,7 @@ class Estimator(abc.ABC):
     tzinfo: dt.tzinfo
     on_update_estimate: typing.Callable[["Estimator"], None] | None
 
+    observed_samples: typing.Final[deque[ObservedEnergy]]
     observed_time_ts: int
     today_ts: int
     tomorrow_ts: int
@@ -103,7 +104,7 @@ class Estimator(abc.ABC):
         tzinfo: dt.tzinfo,
         **kwargs: typing.Unpack[EstimatorConfig],
     ):
-        sampling_interval_ts = kwargs.get("sampling_interval_minutes", 5) * 60
+        sampling_interval_ts = kwargs.get("sampling_interval_minutes", 10) * 60
         assert (
             sampling_interval_ts % 300
         ) == 0, "sampling_interval must be a multiple of 5 minutes"
@@ -119,7 +120,7 @@ class Estimator(abc.ABC):
         )
         self.tzinfo = tzinfo
         self.on_update_estimate = None
-        self.observed_samples: typing.Final[deque[ObservedEnergy]] = deque()
+        self.observed_samples = deque()
         self.observed_time_ts = 0
         self.observations_per_sample_avg = 0
         self.today_ts = 0
@@ -166,70 +167,68 @@ class Estimator(abc.ABC):
         Estimation is based both on local observations and on the 'long term' history model.
         """
         try:
-            if observation.time_ts < self._observed_sample_curr.time_next_ts:
-                delta_time_ts = observation.time_ts - self._observation_prev.time_ts
+            observed_sample_curr = self._observed_sample_curr
+            observation_prev = self._observation_prev
+            if observation.time_ts < observed_sample_curr.time_next_ts:
+                delta_time_ts = observation.time_ts - observation_prev.time_ts
                 if delta_time_ts < self.maximum_latency_ts:
                     if observation.is_energy:
-                        delta_energy = observation.value - self._observation_prev.value
+                        delta_energy = observation.value - observation_prev.value
                         if delta_energy > 0:
-                            self._observed_sample_curr.energy += delta_energy
+                            observed_sample_curr.energy += delta_energy
                         # else: < 0 -> assume an energy reset
                     else:
                         # power left rect integration
-                        self._observed_sample_curr.energy += (
-                            self._observation_prev.value * delta_time_ts / 3600
+                        observed_sample_curr.energy += (
+                            observation_prev.value * delta_time_ts / 3600
                         )
-                    self._observed_sample_curr.samples += 1
+                    observed_sample_curr.samples += 1
                 self._observation_prev = observation
                 return False
             else:
-                observed_sample_prev = self._observed_sample_curr
-                self._observed_sample_curr = self._observed_energy_new(observation)
-                if (
-                    self._observed_sample_curr.time_ts
-                    == observed_sample_prev.time_next_ts
-                ):
+                observed_sample_prev = observed_sample_curr
+                self._observed_sample_curr = observed_sample_curr = (
+                    self._observed_energy_new(observation)
+                )
+                if observed_sample_curr.time_ts == observed_sample_prev.time_next_ts:
                     # previous and next samples in history are contiguous in time so we try
                     # to interpolate energy accumulation in between
-                    delta_time_ts = observation.time_ts - self._observation_prev.time_ts
+                    delta_time_ts = observation.time_ts - observation_prev.time_ts
                     if delta_time_ts < self.maximum_latency_ts:
                         if observation.is_energy:
-                            delta_energy = (
-                                observation.value - self._observation_prev.value
-                            )
+                            delta_energy = observation.value - observation_prev.value
                             if delta_energy > 0:
                                 # The next sample starts with more energy than previous so we interpolate both
                                 power_avg = delta_energy / delta_time_ts
                                 observed_sample_prev.energy += power_avg * (
                                     observed_sample_prev.time_next_ts
-                                    - self._observation_prev.time_ts
+                                    - observation_prev.time_ts
                                 )
-                                self._observed_sample_curr.energy += power_avg * (
-                                    observation.time_ts
-                                    - self._observed_sample_curr.time_ts
+                                observed_sample_curr.energy += power_avg * (
+                                    observation.time_ts - observed_sample_curr.time_ts
                                 )
                         else:
                             prev_delta_time_ts = (
                                 observed_sample_prev.time_next_ts
-                                - self._observation_prev.time_ts
+                                - observation_prev.time_ts
                             )
                             prev_power_next = (
-                                self._observation_prev.value
+                                observation_prev.value
                                 + (
-                                    (observation.value - self._observation_prev.value)
+                                    (observation.value - observation_prev.value)
                                     * prev_delta_time_ts
                                 )
                                 / delta_time_ts
                             )
                             observed_sample_prev.energy += (
-                                (self._observation_prev.value + prev_power_next)
+                                (observation_prev.value + prev_power_next)
                                 * prev_delta_time_ts
                                 / 7200
                             )
                             next_delta_time_ts = (
-                                observation.time_ts - self._observed_sample_curr.time_ts
+                                observation.time_ts - observed_sample_curr.time_ts
                             )
-                            self._observed_sample_curr.energy += (
+                            observed_sample_curr.energy += (
                                 (prev_power_next + observation.value)
                                 * next_delta_time_ts
                                 / 7200
@@ -237,7 +236,7 @@ class Estimator(abc.ABC):
 
                         # for simplicity we consider interpolation as adding a full 1 sample
                         observed_sample_prev.samples += 1
-                        self._observed_sample_curr.samples += 1
+                        observed_sample_curr.samples += 1
 
                 self.observations_per_sample_avg = (
                     self.observations_per_sample_avg * Estimator.OPS_DECAY
