@@ -5,15 +5,15 @@ PV energy estimator based on hourly energy measurement
 from collections import deque
 import typing
 
-import astral
-import astral.sun
+from astral import sun
 
 from ...helpers import datetime_from_epoch
-from .estimator_pvenergy import Estimator_PVEnergy, ObservedPVEnergy, WeatherSample
+from .estimator_pvenergy import Estimator_PVEnergy, ObservedPVEnergy, WeatherModel
 
 if typing.TYPE_CHECKING:
     import datetime as dt
-    from .estimator import EstimatorConfig
+
+    from .estimator_pvenergy import Estimator_PVEnergyConfig
 
 
 class TimeSpanEnergyModel:
@@ -32,25 +32,22 @@ class TimeSpanEnergyModel:
     - Wc is global for the whole model (of EnergyModels)
     """
 
+    weather_model: typing.Final[WeatherModel]
     samples: list[ObservedPVEnergy]
 
     sample_max: ObservedPVEnergy
 
     energy_max: float
 
-    # initial value means 100% cloud_coverage would reduce output by 60%
-    Wc: typing.ClassVar = 0.006
-    Wc_max: typing.ClassVar = 0.008 # maximum 80% pv power derate when 100% clouds
-    Wc_min: typing.ClassVar = 0.004 # minimum 40% pv power derate when 100% clouds
-    Wc_lr: typing.ClassVar = 0.00000005  # 'learning rate'
-
     __slots__ = (
+        "weather_model",
         "samples",
         "sample_max",
         "energy_max",
     )
 
-    def __init__(self, sample: ObservedPVEnergy):
+    def __init__(self, weather_model: WeatherModel, sample: ObservedPVEnergy):
+        self.weather_model = weather_model
         self.samples = [sample]
         self.sample_max = sample
         self.energy_max = sample.energy
@@ -68,26 +65,11 @@ class TimeSpanEnergyModel:
             self.sample_max = sample
         if sample.energy > self.energy_max:
             self.energy_max = sample.energy
-
         # only estimate params if weather data are available
         if sample.weather:
-            energy_estimate = self.get_energy_estimate(sample.weather)
-            error = energy_estimate - sample.energy
-            cloud_coverage = sample.cloud_coverage
-            if cloud_coverage:
-                TimeSpanEnergyModel.Wc += (
-                    error * cloud_coverage * TimeSpanEnergyModel.Wc_lr
-                )
-                if TimeSpanEnergyModel.Wc > TimeSpanEnergyModel.Wc_max:
-                    TimeSpanEnergyModel.Wc = TimeSpanEnergyModel.Wc_max
-                elif TimeSpanEnergyModel.Wc < TimeSpanEnergyModel.Wc_min:
-                    TimeSpanEnergyModel.Wc = TimeSpanEnergyModel.Wc_min
-
-    def get_energy_estimate(self, weather: WeatherSample):
-        cloud_coverage = weather.cloud_coverage
-        if cloud_coverage is not None:
-            return self.energy_max * (1 - TimeSpanEnergyModel.Wc * cloud_coverage)
-        return self.energy_max
+            self.weather_model.update_estimate(
+                self.energy_max, sample.weather, sample.energy
+            )
 
     def pop_sample(self, sample: ObservedPVEnergy):
         self.samples.remove(sample)
@@ -123,12 +105,12 @@ class Estimator_PVEnergy_Heuristic(Estimator_PVEnergy):
     the forecasts for the time ahead.
     """
 
-    history_samples: deque[ObservedPVEnergy]
-    model: dict[int, TimeSpanEnergyModel]
+    history_samples: typing.Final[deque[ObservedPVEnergy]]
+    energy_model: typing.Final[dict[int, TimeSpanEnergyModel]]
 
     __slots__ = (
         "history_samples",
-        "model",
+        "energy_model",
         "observed_ratio",
         "_model_energy_max",
     )
@@ -136,30 +118,31 @@ class Estimator_PVEnergy_Heuristic(Estimator_PVEnergy):
     def __init__(
         self,
         *,
-        astral_observer: "astral.sun.Observer",
+        astral_observer: sun.Observer,
         tzinfo: "dt.tzinfo",
-        **kwargs: "typing.Unpack[EstimatorConfig]",
+        **kwargs: "typing.Unpack[Estimator_PVEnergyConfig]",
     ):
-        Estimator_PVEnergy.__init__(
-            self,
-            astral_observer=astral_observer,
-            tzinfo=tzinfo,
-            **kwargs,
-        )
-        self.history_samples: typing.Final = deque()
-        self.model: typing.Final = {}
+        self.history_samples = deque()
+        self.energy_model = {}
         self.observed_ratio: float = 1
-
         self._model_energy_max: float = 0
         """
         _model_energy_max contains the maximum energy produced in a sampling_interval_ts during the day
         so it represents the 'peak' of the discrete function represented by 'model' and, depending
         on plant orientation it should more or less happen at noon in the model
         """
+        Estimator_PVEnergy.__init__(
+            self,
+            astral_observer=astral_observer,
+            tzinfo=tzinfo,
+            **kwargs,
+        )
 
     # interface: Estimator_PVEnergy
     def as_dict(self):
-        return super().as_dict() | {"model": self.model}
+        return super().as_dict() | {
+            "energy_model": self.energy_model,
+        }
 
     def get_state_dict(self):
         """Returns a synthetic state string for the estimator.
@@ -167,7 +150,6 @@ class Estimator_PVEnergy_Heuristic(Estimator_PVEnergy):
         return super().get_state_dict() | {
             "model_energy_max": self._model_energy_max,
             "observed_ratio": self.observed_ratio,
-            "cloud_weight": TimeSpanEnergyModel.Wc,
         }
 
     def update_estimate(self):
@@ -199,7 +181,7 @@ class Estimator_PVEnergy_Heuristic(Estimator_PVEnergy):
         sum_observed_weighted = 0
         try:
             for observed_energy in self.observed_samples:
-                model = self.model[observed_energy.time_ts % 86400]
+                model = self.energy_model[observed_energy.time_ts % 86400]
                 sum_energy_max += model.energy_max
                 sum_observed_weighted += (observed_energy.energy - model.energy_max) * (
                     model.energy_max / self._model_energy_max
@@ -248,11 +230,13 @@ class Estimator_PVEnergy_Heuristic(Estimator_PVEnergy):
             while time_begin_ts < time_end_ts:
                 model_time_next_ts = model_time_ts + self.sampling_interval_ts
                 try:
-                    model = self.model[model_time_ts % 86400]
+                    model = self.energy_model[model_time_ts % 86400]
                     if weight_or:
                         model_energy = (
                             model.energy_max * observed_ratio * weight_or
-                            + model.get_energy_estimate(weather_forecast)
+                            + self.weather_model.get_energy_estimate(
+                                model.energy_max, weather_forecast
+                            )
                             * (1 - weight_or)
                         )
                         if weight_or > weight_or_decay:
@@ -260,7 +244,9 @@ class Estimator_PVEnergy_Heuristic(Estimator_PVEnergy):
                         else:
                             weight_or = 0
                     else:  # save some calc when not blending anymore
-                        model_energy = model.get_energy_estimate(weather_forecast)
+                        model_energy = self.weather_model.get_energy_estimate(
+                            model.energy_max, weather_forecast
+                        )
                     if time_end_ts < model_time_next_ts:
                         energy += model_energy * (time_end_ts - time_begin_ts)
                         break
@@ -302,7 +288,7 @@ class Estimator_PVEnergy_Heuristic(Estimator_PVEnergy):
         while time_begin_ts < time_end_ts:
             model_time_next_ts = model_time_ts + self.sampling_interval_ts
             try:
-                model = self.model[model_time_ts % 86400]
+                model = self.energy_model[model_time_ts % 86400]
                 if time_end_ts < model_time_next_ts:
                     energy += model.energy_max * (time_end_ts - time_begin_ts)
                     break
@@ -329,7 +315,7 @@ class Estimator_PVEnergy_Heuristic(Estimator_PVEnergy):
             self.history_samples.append(history_sample)
 
             history_sample.sun_zenith, history_sample.sun_azimuth = (
-                astral.sun.zenith_and_azimuth(
+                sun.zenith_and_azimuth(
                     self.astral_observer,
                     datetime_from_epoch(
                         (history_sample.time_ts + history_sample.time_next_ts) / 2
@@ -338,11 +324,11 @@ class Estimator_PVEnergy_Heuristic(Estimator_PVEnergy):
             )
 
             try:
-                model = self.model[history_sample.time_ts % 86400]
+                model = self.energy_model[history_sample.time_ts % 86400]
                 model.add_sample(history_sample)
             except KeyError as e:
-                self.model[history_sample.time_ts % 86400] = model = (
-                    TimeSpanEnergyModel(history_sample)
+                self.energy_model[history_sample.time_ts % 86400] = model = (
+                    TimeSpanEnergyModel(self.weather_model, history_sample)
                 )
             if self._model_energy_max < model.energy_max:
                 self._model_energy_max = model.energy_max
@@ -354,17 +340,17 @@ class Estimator_PVEnergy_Heuristic(Estimator_PVEnergy):
             while self.history_samples[0].time_ts < history_min_ts:
                 discarded_sample = self.history_samples.popleft()
                 sample_time_of_day_ts = discarded_sample.time_ts % 86400
-                model = self.model[sample_time_of_day_ts]
+                model = self.energy_model[sample_time_of_day_ts]
                 if model.energy_max == self._model_energy_max:
                     recalc_energy_max = True
                 if model.pop_sample(discarded_sample):
-                    self.model.pop(sample_time_of_day_ts)
+                    self.energy_model.pop(sample_time_of_day_ts)
         except IndexError:
             # history empty
             pass
 
         if recalc_energy_max:
             self._model_energy_max = 0
-            for model in self.model.values():
+            for model in self.energy_model.values():
                 if self._model_energy_max < model.energy_max:
                     self._model_energy_max = model.energy_max

@@ -59,16 +59,14 @@ class Estimator_Consumption_Heuristic(Estimator):
 
     """
 
-    history_samples: deque[ObservedEnergy]
-    model: dict[int, EnergyModel]
+    history_samples: typing.Final[deque[ObservedEnergy]]
+    model: typing.Final[dict[int, EnergyModel]]
 
     __slots__ = (
         "history_samples",
         "model",
         "observed_ratio",
     )
-
-    __slots__ = ()
 
     def __init__(
         self,
@@ -81,8 +79,8 @@ class Estimator_Consumption_Heuristic(Estimator):
             tzinfo=tzinfo,
             **kwargs,
         )
-        self.history_samples: typing.Final = deque()
-        self.model: typing.Final = {}
+        self.history_samples = deque()
+        self.model = {}
         self.observed_ratio: float = 1
 
     # interface: Estimator

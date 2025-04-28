@@ -471,6 +471,7 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
         # state
         "estimator",
         "estimator_sensors",
+        "_state_is_energy",
         "_state_convert_func",
         "_state_convert_unit",
         "_refresh_callback_unsub",
@@ -551,21 +552,13 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
                 f"Observed entity {self.observed_entity_id} not found in entity registry"
             )
         if reg_entry.unit_of_measurement in hac.UnitOfPower:
+            self._state_is_energy = False
             self._state_convert_func = PowerConverter.convert
             self._state_convert_unit = hac.UnitOfPower.WATT
-            estimator_class = type(
-                "PowerObserverEstimator",
-                (estimator.PowerObserver, estimator_class),
-                {},
-            )
         elif reg_entry.unit_of_measurement in hac.UnitOfEnergy:
+            self._state_is_energy = True
             self._state_convert_func = EnergyConverter.convert
             self._state_convert_unit = hac.UnitOfEnergy.WATT_HOUR
-            estimator_class = type(
-                "EnergyObserverEstimator",
-                (estimator.EnergyObserver, estimator_class),
-                {},
-            )
         else:
             raise ValueError(
                 f"Unsupported unit of measurement {reg_entry.unit_of_measurement} for observed entity: {self.observed_entity_id}"
@@ -679,6 +672,7 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
                         state.attributes["unit_of_measurement"],  # type: ignore
                         self._state_convert_unit,
                     ),
+                    self._state_is_energy,
                 )
             )
         except Exception as e:
@@ -703,9 +697,13 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
         )
 
         if not observed_entity_states:
-            self.log(self.WARNING, "Loading history for entity '%s' did not return any data. Is the entity correct?", self.observed_entity_id)
+            self.log(
+                self.WARNING,
+                "Loading history for entity '%s' did not return any data. Is the entity correct?",
+                self.observed_entity_id,
+            )
             return
-        
+
         for state in observed_entity_states[self.observed_entity_id]:
             if self._restore_history_exit:
                 return
@@ -718,6 +716,7 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
                             state.attributes["unit_of_measurement"],
                             self._state_convert_unit,
                         ),
+                        self._state_is_energy,
                     )
                 )
             except:

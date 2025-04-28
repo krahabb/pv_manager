@@ -554,15 +554,11 @@ class Controller(controller.Controller[EntryConfig]):
                         hv.req_config("metering_source", config): hv.select_selector(
                             options=list(MeteringSource)
                         ),
-                        hv.req_config("cycle_modes", config): hv.select_selector(
-                            options=list(EnergySensor.CycleMode), multiple=True
-                        ),
+                        hv.req_config("cycle_modes", config): hv.cycle_modes_selector(),
                     }
                 else:
                     return hv.entity_schema(config) | {
-                        hv.req_config("cycle_modes", config): hv.select_selector(
-                            options=list(EnergySensor.CycleMode), multiple=True
-                        ),
+                        hv.req_config("cycle_modes", config): hv.cycle_modes_selector(),
                     }
 
             case pmc.ConfigSubentryType.MANAGER_YIELD:
@@ -578,9 +574,7 @@ class Controller(controller.Controller[EntryConfig]):
                 return (
                     hv.entity_schema(config)
                     | {
-                        hv.req_config("cycle_modes", config): hv.select_selector(
-                            options=list(EnergySensor.CycleMode), multiple=True
-                        ),
+                        hv.req_config("cycle_modes", config): hv.cycle_modes_selector(),
                         hv.req_config(
                             "sampling_interval_seconds", config
                         ): hv.time_period_selector(),
@@ -756,7 +750,9 @@ class Controller(controller.Controller[EntryConfig]):
                         try:
                             cycle_modes_new.remove(energy_sensor.cycle_mode)
                             # cycle_mode still present: update
-                            energy_sensor.update_name(energy_sensor.formatted_name(name))
+                            energy_sensor.update_name(
+                                energy_sensor.formatted_name(name)
+                            )
                         except KeyError:
                             # cycle_mode removed from updated config
                             await energy_sensor.async_shutdown(True)
@@ -810,7 +806,7 @@ class Controller(controller.Controller[EntryConfig]):
                     try:
                         yield_sensors_id_new.remove(yield_sensor_id)
                         # yield_sensor still present: update
-                        yield_sensor.update_name(yield_config.get(yield_sensor_id)) # type: ignore
+                        yield_sensor.update_name(yield_config.get(yield_sensor_id))  # type: ignore
                     except KeyError:
                         # yield_sensor removed from updated config
                         await yield_sensor.async_shutdown(True)

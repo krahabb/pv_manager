@@ -6,6 +6,7 @@ from homeassistant.helpers import selector
 import voluptuous as vol
 
 from .. import const as pmc
+from .metering import CycleMode
 
 if typing.TYPE_CHECKING:
     from enum import StrEnum
@@ -60,7 +61,18 @@ def sensor_schema(
 
 
 def select_selector(**kwargs: "Unpack[selector.SelectSelectorConfig]"):
-    return selector.SelectSelector(selector.SelectSelectorConfig(**kwargs))
+    kwargs["mode"] = kwargs.get("mode", selector.SelectSelectorMode.DROPDOWN)
+    return selector.SelectSelector(kwargs)
+
+
+def cycle_modes_selector():
+    return selector.SelectSelector(
+        {
+            "options": list(CycleMode),
+            "multiple": True,
+            "mode": selector.SelectSelectorMode.DROPDOWN,
+        }
+    )
 
 
 if typing.TYPE_CHECKING:
@@ -85,23 +97,15 @@ def weather_selector():
 
 
 def positive_number_selector(**kwargs: "Unpack[selector.NumberSelectorConfig]"):
-    return selector.NumberSelector(
-        selector.NumberSelectorConfig(
-            min=kwargs.pop("min", 0),
-            mode=kwargs.pop("mode", selector.NumberSelectorMode.BOX),
-            **kwargs,  # type:ignore
-        )
-    )
+    kwargs["min"] = kwargs.get("min", 0)
+    kwargs["mode"] = kwargs.get("mode", selector.NumberSelectorMode.BOX)
+    return selector.NumberSelector(kwargs)
 
 
 def time_period_selector(**kwargs: "Unpack[selector.NumberSelectorConfig]"):
-    return selector.NumberSelector(
-        selector.NumberSelectorConfig(
-            min=kwargs.pop("min", 0),
-            unit_of_measurement=kwargs.pop(
-                "unit_of_measurement", hac.UnitOfTime.SECONDS
-            ),
-            mode=kwargs.pop("mode", selector.NumberSelectorMode.BOX),
-            **kwargs,  # type:ignore
-        )
+    kwargs["min"] = kwargs.get("min", 0)
+    kwargs["mode"] = kwargs.get("mode", selector.NumberSelectorMode.BOX)
+    kwargs["unit_of_measurement"] = kwargs.get(
+        "unit_of_measurement", hac.UnitOfTime.SECONDS
     )
+    return selector.NumberSelector(kwargs)

@@ -80,9 +80,7 @@ class Controller(controller.Controller[EntryConfig]):
             hv.req_config("power_entity_id", config): hv.sensor_selector(
                 device_class=EnergySensor.DeviceClass.POWER
             ),
-            hv.req_config("cycle_modes", config): hv.select_selector(
-                options=list(EnergySensor.CycleMode), multiple=True
-            ),
+            hv.req_config("cycle_modes", config): hv.cycle_modes_selector(),
             hv.req_config(
                 "integration_period_seconds", config
             ): hv.time_period_selector(),

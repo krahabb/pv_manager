@@ -1,38 +1,33 @@
 from collections import deque
-import dataclasses
+from dataclasses import dataclass
 import datetime as dt
 import typing
 
 from astral import sun
 
-from .. import helpers
-from .estimator import Estimator, Observation, ObservedEnergy
+from .estimator import Estimator, EstimatorConfig, Observation, ObservedEnergy
 
 if typing.TYPE_CHECKING:
-    from .estimator import EstimatorConfig
+    pass
 
 
-@dataclasses.dataclass(slots=True)
+@dataclass(slots=True)
 class WeatherSample:
     time: dt.datetime
     time_ts: float
     condition: str | None
-    temperature: float | None  # °C
-    cloud_coverage: float | None  # %
-    visibility: float | None  # km
+    cloud_coverage: float | None  #  0 -> 1 (100% cloud coverage)
     next: "WeatherSample | None" = None
 
     def as_dict(self):
         return {
             "time": self.time.isoformat(),
             "condition": self.condition,
-            "temperature": self.temperature,
             "cloud_coverage": self.cloud_coverage,
-            "visibility": self.visibility,
         }
 
 
-@dataclasses.dataclass(slots=True)
+@dataclass(slots=True)
 class ObservedPVEnergy(ObservedEnergy):
     """PV energy/power history data extraction. This sample is used to build energy production
     in a time window (1 hour by design) by querying either a PV power sensor or a PV energy sensor.
@@ -58,9 +53,155 @@ class ObservedPVEnergy(ObservedEnergy):
         self.weather = weather
         self.sun_azimuth = self.sun_zenith = self.SUN_NOT_SET
 
-    @property
-    def cloud_coverage(self):
-        return self.weather.cloud_coverage if self.weather else None
+
+class WeatherModel:
+    """Base (abstract) class modeling the influence of weather on PV production."""
+
+    __slots__ = ()
+
+    @staticmethod
+    def build(model: str | None):
+        try:
+            return WEATHER_MODELS[model]()
+        except KeyError:
+            return WeatherModel()
+
+    def as_dict(self):
+        return {}
+
+    def get_param(self, *args):
+        """Generic inspector for model parameters (state)"""
+        return None
+
+    def get_energy_estimate(self, energy: float, weather: WeatherSample):
+        return energy
+
+    def update_estimate(self, energy: float, weather: WeatherSample, expected: float):
+        pass
+
+
+class SimpleWeatherModel(WeatherModel):
+    """Basic 1st order based on clouds with naive gradient descent."""
+
+    Wc: float
+    Wc_max: typing.Final = 0.8  # maximum 80% pv power derate when 100% clouds
+    Wc_min: typing.Final = 0.4  # minimum 40% pv power derate when 100% clouds
+    Wc_lr: typing.Final = 0.00000005  # 'learning rate'
+
+    __slots__ = ("Wc",)
+
+    def __init__(self):
+        self.Wc = (self.Wc_max + self.Wc_min) / 2
+
+    def as_dict(self):
+        return {
+            "cloud_weight": self.Wc,
+        }
+
+    def get_param(self, *args):
+        return self.Wc
+
+    def get_energy_estimate(self, energy_max: float, weather: WeatherSample):
+        cloud_coverage = weather.cloud_coverage
+        if cloud_coverage:
+            return energy_max * (1 - self.Wc * cloud_coverage)
+        return energy_max
+
+    def update_estimate(
+        self, energy_max: float, weather: WeatherSample, expected: float
+    ):
+        cloud_coverage = weather.cloud_coverage
+        if cloud_coverage:
+            error = expected - self.get_energy_estimate(energy_max, weather)
+            self.Wc -= error * cloud_coverage * self.Wc_lr
+            if self.Wc > self.Wc_max:
+                self.Wc = self.Wc_max
+            elif self.Wc < self.Wc_min:
+                self.Wc = self.Wc_min
+
+
+class CubicWeatherModel(WeatherModel):
+    """Basic 3rd order estimator based on clouds with naive gradient descent."""
+
+    """
+    The reason for an higher order model is that the liner one keeps oscillating and
+    that's likely because there's really no linear (enough) relationship between
+    sun irradiance and cloud coverage
+
+    2nd order is not convex enough in my opinion so we're testing right 3rd order
+    """
+    Wc1: float
+    Wc3: float
+    Wc_max: typing.Final = 0.8  # maximum 80% pv power derate when 100% clouds
+    Wc_min: typing.Final = 0.4  # minimum 40% pv power derate when 100% clouds
+    Wc_lr: typing.Final = 0.0000000005  # 'learning rate'
+
+    __slots__ = (
+        "Wc1",
+        "Wc3",
+    )
+
+    def __init__(self):
+        self.Wc1 = 0
+        self.Wc3 = (self.Wc_max + self.Wc_min) / 2
+
+    def as_dict(self):
+        return {
+            "cloud_weight_1": self.Wc1,
+            "cloud_weight_3": self.Wc3,
+        }
+
+    def get_param(self, n, *args):
+        return self.Wc3 if n else self.Wc1
+
+    def get_energy_estimate(self, energy_max: float, weather: WeatherSample):
+        cloud_coverage = weather.cloud_coverage
+        if cloud_coverage:
+            return energy_max * (
+                1
+                - self.Wc1 * cloud_coverage
+                - self.Wc3 * cloud_coverage * cloud_coverage * cloud_coverage
+            )
+        return energy_max
+
+    def update_estimate(
+        self, energy_max: float, weather: WeatherSample, expected: float
+    ):
+        cloud_coverage = weather.cloud_coverage
+        if cloud_coverage:
+            cloud_coverage_2 = cloud_coverage * cloud_coverage
+            cloud_coverage_3 = cloud_coverage_2 * cloud_coverage
+            estimated = energy_max * (
+                1 - self.Wc1 * cloud_coverage - self.Wc3 * cloud_coverage_3
+            )
+            error = expected - estimated
+            dWc1 = error * cloud_coverage * self.Wc_lr
+            self.Wc1 -= dWc1
+            self.Wc3 -= dWc1 * cloud_coverage_2
+            # constraining the Wc vector is rather complex...
+            # We'll take a 'convenient' approach by actually limiting the highest order
+            # and eventually cap the lower ones in a simpler way
+            if self.Wc3 > self.Wc_max:
+                self.Wc3 = self.Wc_max
+            elif self.Wc3 < self.Wc_min:
+                self.Wc3 = self.Wc_min
+            if self.Wc1 < 0:
+                self.Wc1 = 0
+            else:
+                wc_max = self.Wc_max - self.Wc3
+                if self.Wc1 > wc_max:
+                    self.Wc1 = wc_max
+
+
+WEATHER_MODELS: dict[str | None, type[WeatherModel]] = {
+    None: WeatherModel,
+    "simple": SimpleWeatherModel,
+    "cubic": CubicWeatherModel,
+}
+
+
+class Estimator_PVEnergyConfig(EstimatorConfig):
+    weather_model: typing.NotRequired[str]
 
 
 class Estimator_PVEnergy(Estimator):
@@ -70,8 +211,13 @@ class Estimator_PVEnergy(Estimator):
     At the time, lacking any real specialization, the generalization of this class is pretty basic and likely unstable.
     """
 
+    weather_model: typing.Final[WeatherModel]
+    weather_history: typing.Final[deque[WeatherSample]]
+    weather_forecasts: list[WeatherSample]
+
     __slots__ = (
         "astral_observer",
+        "weather_model",
         "weather_history",
         "weather_forecasts",
         "_noon_ts",
@@ -84,23 +230,25 @@ class Estimator_PVEnergy(Estimator):
         *,
         astral_observer: "sun.Observer",
         tzinfo: dt.tzinfo,
-        **kwargs: "typing.Unpack[EstimatorConfig]",
+        **kwargs: "typing.Unpack[Estimator_PVEnergyConfig]",
     ):
+        self.astral_observer = astral_observer
+        self.weather_model = WeatherModel.build(kwargs.pop("weather_model", None))
+        self.weather_history = deque()
+        self.weather_forecasts = []
+        self._noon_ts: int = 0
+        self._sunrise_ts: int = 0
+        self._sunset_ts: int = 0
         Estimator.__init__(
             self,
             tzinfo=tzinfo,
             **kwargs,
         )
-        self.astral_observer = astral_observer
-        self.weather_history: typing.Final[deque[WeatherSample]] = deque()
-        self.weather_forecasts: list[WeatherSample] = []
-        self._noon_ts: int = 0
-        self._sunrise_ts: int = 0
-        self._sunset_ts: int = 0
 
     # interface: Estimator
     def as_dict(self):
         return super().as_dict() | {
+            "weather_model": self.weather_model.as_dict(),
             "weather_history": list(self.weather_history),
             "weather_forecasts": self.weather_forecasts,
         }
@@ -109,6 +257,7 @@ class Estimator_PVEnergy(Estimator):
         """Returns a synthetic state string for the estimator.
         Used for debugging purposes."""
         return super().get_state_dict() | {
+            "weather_model": self.weather_model.as_dict(),
             "weather": self.get_weather_at(self.observed_time_ts),
         }
 

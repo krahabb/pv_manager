@@ -14,22 +14,15 @@ from homeassistant.components.recorder import history
 from homeassistant.core import callback
 from homeassistant.helpers import sun as sun_helpers
 from homeassistant.util import dt as dt_util
-from homeassistant.util.unit_conversion import (
-    DistanceConverter,
-    TemperatureConverter,
-)
 
 from .. import const as pmc, controller, helpers
 from ..helpers import validation as hv
 from ..sensor import DiagnosticSensor, Sensor
-from .common.estimator_pvenergy_heuristic import (
-    Estimator_PVEnergy_Heuristic,
-    TimeSpanEnergyModel,
-    WeatherSample,
-)
+from .common.estimator_pvenergy import WEATHER_MODELS, WeatherSample
+from .common.estimator_pvenergy_heuristic import Estimator_PVEnergy_Heuristic
 
 if typing.TYPE_CHECKING:
-    from typing import Callable, Final
+    from typing import Any, Callable, Final
 
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import Event, HomeAssistant, State
@@ -40,6 +33,7 @@ if typing.TYPE_CHECKING:
 class ControllerConfig(controller.EnergyEstimatorControllerConfig):
     weather_entity_id: typing.NotRequired[str]
     """The entity used for weather forecast in the system"""
+    weather_model: typing.NotRequired[str]
 
 
 class EntryConfig(ControllerConfig, pmc.EntityConfig):
@@ -47,9 +41,10 @@ class EntryConfig(ControllerConfig, pmc.EntityConfig):
 
 
 class DiagnosticDescr:
+
     id: "Final[str]"
     init: "Final[Callable[[Controller], DiagnosticSensor]]"
-    value: "Final[Callable[[Controller], float]]"
+    value: "Final[Callable[[Controller], Any]]"
 
     __slots__ = (
         "id",
@@ -61,14 +56,14 @@ class DiagnosticDescr:
         self,
         id: str,
         init_func: "Callable[[Controller], DiagnosticSensor]",
-        value_func: "Callable[[Controller], float]",
+        value_func: "Callable[[Controller], Any]",
     ):
         self.id = id
         self.init = init_func
         self.value = value_func
 
     @staticmethod
-    def Sensor(id: str, value_func: "Callable[[Controller], float]"):
+    def Sensor(id: str, value_func: "Callable[[Controller], Any]"):
         return DiagnosticDescr(
             id,
             lambda c: DiagnosticSensor(c, id, native_value=value_func(c)),
@@ -80,8 +75,11 @@ DIAGNOSTIC_DESCR = {
     "observed_ratio": DiagnosticDescr.Sensor(
         "observed_ratio", lambda c: c.estimator.observed_ratio
     ),
-    "weather_cloud_constant": DiagnosticDescr.Sensor(
-        "weather_cloud_constant", lambda c: TimeSpanEnergyModel.Wc
+    "weather_cloud_constant_0": DiagnosticDescr.Sensor(
+        "weather_cloud_constant_0", lambda c: c.estimator.weather_model.get_param(0)
+    ),
+    "weather_cloud_constant_1": DiagnosticDescr.Sensor(
+        "weather_cloud_constant_1", lambda c: c.estimator.weather_model.get_param(1)
     ),
 }
 
@@ -105,11 +103,17 @@ class Controller(controller.EnergyEstimatorController[EntryConfig]):
     def get_config_entry_schema(config: EntryConfig | None) -> pmc.ConfigSchema:
         _config = config or {
             "name": "PV energy estimation",
+            "weather_model": "simple",
         }
         return (
             hv.entity_schema(_config)
             | {
                 hv.opt_config("weather_entity_id", _config): hv.weather_selector(),
+                hv.opt_config("weather_model", _config): hv.select_selector(
+                    options=[
+                        model_name for model_name in WEATHER_MODELS.keys() if model_name
+                    ],
+                ),
             }
             | controller.EnergyEstimatorController.get_config_entry_schema(config)
         )
@@ -277,17 +281,17 @@ class Controller(controller.EnergyEstimatorController[EntryConfig]):
     _WEATHER_CONDITION_TO_CLOUD: typing.Final[dict[str | None, float | None]] = {
         None: None,
         weather.ATTR_CONDITION_CLEAR_NIGHT: 0,
-        weather.ATTR_CONDITION_CLOUDY: 100,
-        weather.ATTR_CONDITION_EXCEPTIONAL: 80,
-        weather.ATTR_CONDITION_FOG: 80,
-        weather.ATTR_CONDITION_HAIL: 80,
-        weather.ATTR_CONDITION_LIGHTNING: 70,
-        weather.ATTR_CONDITION_LIGHTNING_RAINY: 70,
-        weather.ATTR_CONDITION_PARTLYCLOUDY: 50,
-        weather.ATTR_CONDITION_POURING: 80,
-        weather.ATTR_CONDITION_RAINY: 60,
-        weather.ATTR_CONDITION_SNOWY: 100,
-        weather.ATTR_CONDITION_SNOWY_RAINY: 100,
+        weather.ATTR_CONDITION_CLOUDY: 1,
+        weather.ATTR_CONDITION_EXCEPTIONAL: 0.8,
+        weather.ATTR_CONDITION_FOG: 0.8,
+        weather.ATTR_CONDITION_HAIL: 0.8,
+        weather.ATTR_CONDITION_LIGHTNING: 0.7,
+        weather.ATTR_CONDITION_LIGHTNING_RAINY: 0.7,
+        weather.ATTR_CONDITION_PARTLYCLOUDY: 0.5,
+        weather.ATTR_CONDITION_POURING: 0.8,
+        weather.ATTR_CONDITION_RAINY: 0.6,
+        weather.ATTR_CONDITION_SNOWY: 1,
+        weather.ATTR_CONDITION_SNOWY_RAINY: 1,
         weather.ATTR_CONDITION_SUNNY: 0,
         weather.ATTR_CONDITION_WINDY: 0,
         weather.ATTR_CONDITION_WINDY_VARIANT: 0,
@@ -299,60 +303,30 @@ class Controller(controller.EnergyEstimatorController[EntryConfig]):
 
         condition = weather_state.state
         if "cloud_coverage" in attributes:
-            cloud_coverage = attributes["cloud_coverage"]
+            cloud_coverage = attributes["cloud_coverage"] / 100
         else:
             cloud_coverage = Controller._WEATHER_CONDITION_TO_CLOUD.get(condition)
-
-        if "visibility" in attributes:
-            visibility = DistanceConverter.convert(
-                attributes["visibility"],
-                attributes["visibility_unit"],
-                hac.UnitOfLength.KILOMETERS,
-            )
-        else:
-            visibility = None
 
         return WeatherSample(
             time=weather_state.last_updated,
             time_ts=weather_state.last_updated_timestamp,
             condition=condition,
-            temperature=TemperatureConverter.convert(
-                float(attributes["temperature"]),
-                attributes["temperature_unit"],
-                hac.UnitOfTemperature.CELSIUS,
-            ),
             cloud_coverage=cloud_coverage,
-            visibility=visibility,
         )
 
     def _weather_from_forecast(self, forecast: dict):
-        assert self.weather_state
-
         time = dt_util.as_utc(dt_util.parse_datetime(forecast["datetime"]))  # type: ignore
         time_ts = time.timestamp()
 
-        weather_attributes = self.weather_state.attributes
-
-        if "temperature" in forecast:
-            temperature = TemperatureConverter.convert(
-                float(forecast["temperature"]),
-                weather_attributes["temperature_unit"],
-                hac.UnitOfTemperature.CELSIUS,
-            )
-        else:
-            temperature = None
-
         condition = forecast.get("condition")
         if "cloud_coverage" in forecast:
-            cloud_coverage = forecast["cloud_coverage"]
+            cloud_coverage = forecast["cloud_coverage"] / 100
         else:
-            cloud_coverage = self._WEATHER_CONDITION_TO_CLOUD.get(condition)
+            cloud_coverage = Controller._WEATHER_CONDITION_TO_CLOUD.get(condition)
 
         return WeatherSample(
             time=time,
             time_ts=time_ts,
             condition=condition,
-            temperature=temperature,
             cloud_coverage=cloud_coverage,
-            visibility=None,
         )

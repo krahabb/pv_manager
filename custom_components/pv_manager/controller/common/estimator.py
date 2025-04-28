@@ -18,6 +18,7 @@ if typing.TYPE_CHECKING:
 class Observation:
     time_ts: float
     value: float
+    is_energy: bool
 
 
 @dataclasses.dataclass(slots=True)
@@ -168,52 +169,93 @@ class Estimator(abc.ABC):
             if observation.time_ts < self._observed_sample_curr.time_next_ts:
                 delta_time_ts = observation.time_ts - self._observation_prev.time_ts
                 if delta_time_ts < self.maximum_latency_ts:
-                    self._observed_sample_curr.energy += self._observer_energy_compute(
-                        observation, delta_time_ts
-                    )
+                    if observation.is_energy:
+                        delta_energy = observation.value - self._observation_prev.value
+                        if delta_energy > 0:
+                            self._observed_sample_curr.energy += delta_energy
+                        # else: < 0 -> assume an energy reset
+                    else:
+                        # power left rect integration
+                        self._observed_sample_curr.energy += (
+                            self._observation_prev.value * delta_time_ts / 3600
+                        )
                     self._observed_sample_curr.samples += 1
-
                 self._observation_prev = observation
                 return False
             else:
-                history_sample_prev = self._observed_sample_curr
+                observed_sample_prev = self._observed_sample_curr
                 self._observed_sample_curr = self._observed_energy_new(observation)
                 if (
                     self._observed_sample_curr.time_ts
-                    == history_sample_prev.time_next_ts
+                    == observed_sample_prev.time_next_ts
                 ):
                     # previous and next samples in history are contiguous in time so we try
                     # to interpolate energy accumulation in between
                     delta_time_ts = observation.time_ts - self._observation_prev.time_ts
                     if delta_time_ts < self.maximum_latency_ts:
-                        self._observer_energy_interpolate(
-                            observation,
-                            self._observation_prev,
-                            delta_time_ts,
-                            self._observed_sample_curr,
-                            history_sample_prev,
-                        )
+                        if observation.is_energy:
+                            delta_energy = (
+                                observation.value - self._observation_prev.value
+                            )
+                            if delta_energy > 0:
+                                # The next sample starts with more energy than previous so we interpolate both
+                                power_avg = delta_energy / delta_time_ts
+                                observed_sample_prev.energy += power_avg * (
+                                    observed_sample_prev.time_next_ts
+                                    - self._observation_prev.time_ts
+                                )
+                                self._observed_sample_curr.energy += power_avg * (
+                                    observation.time_ts
+                                    - self._observed_sample_curr.time_ts
+                                )
+                        else:
+                            prev_delta_time_ts = (
+                                observed_sample_prev.time_next_ts
+                                - self._observation_prev.time_ts
+                            )
+                            prev_power_next = (
+                                self._observation_prev.value
+                                + (
+                                    (observation.value - self._observation_prev.value)
+                                    * prev_delta_time_ts
+                                )
+                                / delta_time_ts
+                            )
+                            observed_sample_prev.energy += (
+                                (self._observation_prev.value + prev_power_next)
+                                * prev_delta_time_ts
+                                / 7200
+                            )
+                            next_delta_time_ts = (
+                                observation.time_ts - self._observed_sample_curr.time_ts
+                            )
+                            self._observed_sample_curr.energy += (
+                                (prev_power_next + observation.value)
+                                * next_delta_time_ts
+                                / 7200
+                            )
+
                         # for simplicity we consider interpolation as adding a full 1 sample
-                        history_sample_prev.samples += 1
+                        observed_sample_prev.samples += 1
                         self._observed_sample_curr.samples += 1
 
                 self.observations_per_sample_avg = (
                     self.observations_per_sample_avg * Estimator.OPS_DECAY
-                    + history_sample_prev.samples * (1 - Estimator.OPS_DECAY)
+                    + observed_sample_prev.samples * (1 - Estimator.OPS_DECAY)
                 )
                 self._observation_prev = observation
-                self.observed_samples.append(history_sample_prev)
-                self.observed_time_ts = history_sample_prev.time_next_ts
+                self.observed_samples.append(observed_sample_prev)
+                self.observed_time_ts = observed_sample_prev.time_next_ts
 
-                if history_sample_prev.time_ts >= self.tomorrow_ts:
+                if observed_sample_prev.time_ts >= self.tomorrow_ts:
                     # new day
-                    self._observed_energy_daystart(history_sample_prev.time_ts)
+                    self._observed_energy_daystart(observed_sample_prev.time_ts)
 
-                self.today_energy += history_sample_prev.energy
+                self.today_energy += observed_sample_prev.energy
 
                 try:
                     observation_min_ts = (
-                        history_sample_prev.time_next_ts - self.observation_duration_ts
+                        observed_sample_prev.time_next_ts - self.observation_duration_ts
                     )
                     # check if we can discard it since the next is old enough
                     while self.observed_samples[1].time_ts < observation_min_ts:
@@ -321,101 +363,3 @@ class Estimator(abc.ABC):
     def _observed_energy_history_add(self, history_sample: ObservedEnergy):
         """Called when an ObservedEnergy sample exits the observation window and enters history."""
         pass
-
-    @abc.abstractmethod
-    def _observer_energy_compute(self, observation: Observation, delta_time_ts: float):
-        """To be implemented in the Observer mixin."""
-        return 0
-
-    @abc.abstractmethod
-    def _observer_energy_interpolate(
-        self,
-        observation_curr: Observation,
-        observation_prev: Observation,
-        delta_time_ts: float,
-        sample_curr: ObservedEnergy,
-        sample_prev: ObservedEnergy,
-    ):
-        """
-        observation_curr: new (current) observation
-        observation_prev: previous observation
-        delta_time_ts: time between current and previous observation
-        sample_prev: history sample ending (to be integrated with energy across history samples boundary)
-        sample_curr: new (current) history sample (to be integrated with energy at the boundary)
-
-        To be implemented in the Observer mixin.
-        """
-        return
-
-
-class EnergyObserver(Estimator if typing.TYPE_CHECKING else object):
-    """Mixin class to add to the actual Estimator in order to process energy input observations."""
-
-    def _observer_energy_compute(self, observation: Observation, delta_time_ts: float):
-        if observation.value >= self._observation_prev.value:
-            return observation.value - self._observation_prev.value
-        else:
-            # assume an energy reset
-            return 0
-
-    def _observer_energy_interpolate(
-        self,
-        observation_curr: Observation,
-        observation_prev: Observation,
-        delta_time_ts: float,
-        sample_curr: ObservedEnergy,
-        sample_prev: ObservedEnergy,
-    ):
-        """
-        observation_curr: new (current) observation
-        observation_prev: previous observation
-        delta_time_ts: time between current and previous observation
-        sample_prev: history sample ending (to be integrated with energy across history samples boundary)
-        sample_curr: new (current) history sample (to be integrated with energy at the boundary)
-        """
-        delta_energy = observation_curr.value - observation_prev.value
-        if delta_energy > 0:
-            # The next sample starts with more energy than previous so we interpolate both
-            power_avg = delta_energy / delta_time_ts
-            sample_prev.energy += power_avg * (
-                sample_prev.time_next_ts - observation_prev.time_ts
-            )
-            sample_curr.energy += power_avg * (
-                observation_curr.time_ts - sample_curr.time_ts
-            )
-
-
-class PowerObserver(Estimator if typing.TYPE_CHECKING else object):
-    """Mixin class to add to the actual Estimator in order to process power input observations."""
-
-    def _observer_energy_compute(self, observation: Observation, delta_time_ts: float):
-        return (self._observation_prev.value + observation.value) * delta_time_ts / 7200
-
-    def _observer_energy_interpolate(
-        self,
-        observation_curr: Observation,
-        observation_prev: Observation,
-        delta_time_ts: float,
-        sample_curr: ObservedEnergy,
-        sample_prev: ObservedEnergy,
-    ):
-        """
-        observation_curr: new (current) observation
-        observation_prev: previous observation
-        delta_time_ts: time between current and previous observation
-        sample_prev: history sample ending (to be integrated with energy across history samples boundary)
-        sample_curr: new (current) history sample (to be integrated with energy at the boundary)
-        """
-        prev_delta_time_ts = sample_prev.time_next_ts - observation_prev.time_ts
-        prev_power_next = (
-            observation_prev.value
-            + ((observation_curr.value - observation_prev.value) * prev_delta_time_ts)
-            / delta_time_ts
-        )
-        sample_prev.energy += (
-            (observation_prev.value + prev_power_next) * prev_delta_time_ts / 7200
-        )
-        next_delta_time_ts = observation_curr.time_ts - sample_curr.time_ts
-        sample_curr.energy += (
-            (prev_power_next + observation_curr.value) * next_delta_time_ts / 7200
-        )
