@@ -546,31 +546,15 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
     ):
         config = config_entry.data
         self.observed_entity_id = config["observed_entity_id"]
-        reg_entry = Manager.entity_registry.async_get(self.observed_entity_id)
-        if not reg_entry:
-            raise ValueError(
-                f"Observed entity {self.observed_entity_id} not found in entity registry"
-            )
-        if reg_entry.unit_of_measurement in hac.UnitOfPower:
-            self._state_is_energy = False
-            self._state_convert_func = PowerConverter.convert
-            self._state_convert_unit = hac.UnitOfPower.WATT
-        elif reg_entry.unit_of_measurement in hac.UnitOfEnergy:
-            self._state_is_energy = True
-            self._state_convert_func = EnergyConverter.convert
-            self._state_convert_unit = hac.UnitOfEnergy.WATT_HOUR
-        else:
-            raise ValueError(
-                f"Unsupported unit of measurement {reg_entry.unit_of_measurement} for observed entity: {self.observed_entity_id}"
-            )
-
         self.refresh_period_ts = config.get("refresh_period_minutes", 5) * 60
         self.estimator = estimator_class(
             tzinfo=dt_util.get_default_time_zone(),
             **(estimator_kwargs | config),  # type: ignore
         )
-
         self.estimator_sensors = set()
+        self._state_is_energy = False
+        self._state_convert_func = self._state_convert_detect
+        self._state_convert_unit = None
         self._refresh_callback_unsub = None
         self._restore_history_task = None
         self._restore_history_exit = False
@@ -677,7 +661,7 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
             )
         except Exception as e:
             if state and state.state not in (hac.STATE_UNKNOWN, hac.STATE_UNAVAILABLE):
-                self.log_exception(self.WARNING, e, "updating estimate")
+                self.log_exception(self.WARNING, e, "updating estimate", timeout=3600)
 
     def _update_estimate(self, estimator: "estimator.Estimator"):
 
@@ -730,3 +714,23 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
                 f"model_{self.observed_entity_id}_{self.config.get('name', self.TYPE).lower().replace(" ", "_")}.json",
             )
             json.save_json(filepath, self.estimator.as_dict())
+
+    def _state_convert_detect(
+        self, value: float, from_unit: str | None, to_unit: str | None
+    ) -> float:
+        """Installed as _state_convert_func at init time this will detect the type of observed entity
+        by inspecting the unit and install the proper converter."""
+        if from_unit in hac.UnitOfPower:
+            self._state_is_energy = False
+            self._state_convert_func = PowerConverter.convert
+            self._state_convert_unit = hac.UnitOfPower.WATT
+        elif from_unit in hac.UnitOfEnergy:
+            self._state_is_energy = True
+            self._state_convert_func = EnergyConverter.convert
+            self._state_convert_unit = hac.UnitOfEnergy.WATT_HOUR
+        else:
+            # TODO: raise issue?
+            raise ValueError(
+                f"Unsupported unit of measurement '{from_unit}' for observed entity: '{self.observed_entity_id}'"
+            )
+        return self._state_convert_func(value, from_unit, self._state_convert_unit)
