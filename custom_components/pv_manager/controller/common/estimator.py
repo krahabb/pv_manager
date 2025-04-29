@@ -6,6 +6,7 @@ import abc
 from collections import deque
 import dataclasses
 import datetime as dt
+import enum
 import typing
 
 from ...helpers import datetime_from_epoch
@@ -14,10 +15,13 @@ if typing.TYPE_CHECKING:
     pass
 
 
+SAFE_MAXIMUM_POWER_INFINITE = 1e6
+
 @dataclasses.dataclass(slots=True)
 class Observation:
     time_ts: float
     value: float
+    """[W] if power observation - [J] if energy observation"""
     is_energy: bool
 
 
@@ -49,6 +53,11 @@ class ObservedEnergy:
         self.samples = 0
 
 
+class EstimatorWarning(enum.StrEnum):
+    maximum_latency = enum.auto()
+    out_of_range = enum.auto()
+
+
 class EstimatorConfig(typing.TypedDict):
     sampling_interval_minutes: int
     """Time resolution of model data"""
@@ -58,6 +67,8 @@ class EstimatorConfig(typing.TypedDict):
     """Number of (backward) days of data to keep in the model (used to build the estimates for the time forward)."""
     maximum_latency_minutes: int
     """Maximum time between source pv power/energy samples before considering an error in data sampling."""
+    safe_maximum_power_w: typing.NotRequired[float]
+    """Maximum power expected at the input used to filter out outliers from observations. If not set disables the chcek."""
 
 
 class Estimator(abc.ABC):
@@ -70,7 +81,10 @@ class Estimator(abc.ABC):
 
     tzinfo: dt.tzinfo
     on_update_estimate: typing.Callable[["Estimator"], None] | None
+    on_state_change: typing.Callable[["Estimator"], None] | None
 
+    state: set
+    """Contains warnings and any other useful operating condition of the estimator."""
     observed_samples: typing.Final[deque[ObservedEnergy]]
     observed_time_ts: int
     today_ts: int
@@ -85,9 +99,12 @@ class Estimator(abc.ABC):
         "history_duration_ts",
         "observation_duration_ts",
         "maximum_latency_ts",
+        "safe_maximum_power",
         "tzinfo",
         "on_update_estimate",
+        "on_state_change",
         # state
+        "state",
         "observed_samples",
         "observed_time_ts",  # time of most recent observed sample
         "observations_per_sample_avg",
@@ -118,8 +135,11 @@ class Estimator(abc.ABC):
         self.maximum_latency_ts: typing.Final = (
             kwargs.get("maximum_latency_minutes", 5) * 60
         )
+        self.safe_maximum_power: typing.Final = kwargs.get("safe_maximum_power_w", SAFE_MAXIMUM_POWER_INFINITE)
         self.tzinfo = tzinfo
         self.on_update_estimate = None
+        self.on_state_change = None
+        self.state = set()
         self.observed_samples = deque()
         self.observed_time_ts = 0
         self.observations_per_sample_avg = 0
@@ -138,12 +158,14 @@ class Estimator(abc.ABC):
             "observation_duration_minutes": self.observation_duration_ts / 60,
             "history_duration_days": self.history_duration_ts / 86400,
             "maximum_latency_minutes": self.maximum_latency_ts / 60,
+            "safe_maximum_power": self.safe_maximum_power,
         }
 
     def get_state_dict(self):
         """Returns a synthetic state string for the estimator.
         Used for debugging purposes."""
         return {
+            "state": list(self.state),
             "today": datetime_from_epoch(self.today_ts).isoformat(),
             # "tomorrow_ts": estimator._tomorrow_local_ts,
             "tomorrow": datetime_from_epoch(self.tomorrow_ts).isoformat(),
@@ -164,97 +186,97 @@ class Estimator(abc.ABC):
         Add a new Observation to the model. Observations are collected to build an Observation window
         to get an average of recent observations used for 'recent time' auto-regressive estimation.
         When an ObservedSample exits the observation window it is added to the history to update the model.
-        Estimation is based both on local observations and on the 'long term' history model.
+        For simplicity and performance reasons observations are required to be either [J] for energy or
+        [W] for power
         """
         try:
-            observed_sample_curr = self._observed_sample_curr
+
+            sample_curr = self._observed_sample_curr
             observation_prev = self._observation_prev
-            if observation.time_ts < observed_sample_curr.time_next_ts:
-                delta_time_ts = observation.time_ts - observation_prev.time_ts
-                if delta_time_ts < self.maximum_latency_ts:
-                    if observation.is_energy:
-                        delta_energy = observation.value - observation_prev.value
-                        if delta_energy > 0:
-                            observed_sample_curr.energy += delta_energy
-                        # else: < 0 -> assume an energy reset
+            self._observation_prev = observation
+            _notify_state = None
+            d_ts = observation.time_ts - observation_prev.time_ts
+            if 0 < d_ts < self.maximum_latency_ts:
+                if EstimatorWarning.maximum_latency in self.state:
+                    self.state.remove(EstimatorWarning.maximum_latency)
+                    _notify_state = self.on_state_change
+
+                if observation.is_energy:
+                    energy = observation.value - observation_prev.value
+                    if 0 <= energy < self.safe_maximum_power * d_ts:
+                        good = True
                     else:
+                        # assume an energy reset or out of range
+                        good = False
+                else:
+                    if 0 <= observation.value < self.safe_maximum_power:
+                        good = True
                         # power left rect integration
-                        observed_sample_curr.energy += (
-                            observation_prev.value * delta_time_ts / 3600
-                        )
-                    observed_sample_curr.samples += 1
-                self._observation_prev = observation
+                        energy = observation_prev.value * d_ts
+                    else:
+                        # discard the out of range observation
+                        good = False
+                        observation.value = 0
+
+                if good:
+                    if EstimatorWarning.out_of_range in self.state:
+                        self.state.remove(EstimatorWarning.out_of_range)
+                        _notify_state = self.on_state_change
+                else:
+                    if EstimatorWarning.out_of_range not in self.state:
+                        self.state.add(EstimatorWarning.out_of_range)
+                        _notify_state = self.on_state_change
+            else:
+                good = None
+                if EstimatorWarning.maximum_latency not in self.state:
+                    self.state.add(EstimatorWarning.maximum_latency)
+                    _notify_state = self.on_state_change
+
+            if _notify_state:
+                _notify_state(self)
+
+            if sample_curr.time_ts < observation.time_ts < sample_curr.time_next_ts:
+                if good:
+                    sample_curr.energy += energy
+                    sample_curr.samples += 1
                 return False
             else:
-                observed_sample_prev = observed_sample_curr
-                self._observed_sample_curr = observed_sample_curr = (
-                    self._observed_energy_new(observation)
+                sample_prev = sample_curr
+                self._observed_sample_curr = sample_curr = self._observed_energy_new(
+                    observation
                 )
-                if observed_sample_curr.time_ts == observed_sample_prev.time_next_ts:
+                if sample_curr.time_ts == sample_prev.time_next_ts:
                     # previous and next samples in history are contiguous in time so we try
                     # to interpolate energy accumulation in between
-                    delta_time_ts = observation.time_ts - observation_prev.time_ts
-                    if delta_time_ts < self.maximum_latency_ts:
-                        if observation.is_energy:
-                            delta_energy = observation.value - observation_prev.value
-                            if delta_energy > 0:
-                                # The next sample starts with more energy than previous so we interpolate both
-                                power_avg = delta_energy / delta_time_ts
-                                observed_sample_prev.energy += power_avg * (
-                                    observed_sample_prev.time_next_ts
-                                    - observation_prev.time_ts
-                                )
-                                observed_sample_curr.energy += power_avg * (
-                                    observation.time_ts - observed_sample_curr.time_ts
-                                )
-                        else:
-                            prev_delta_time_ts = (
-                                observed_sample_prev.time_next_ts
-                                - observation_prev.time_ts
-                            )
-                            prev_power_next = (
-                                observation_prev.value
-                                + (
-                                    (observation.value - observation_prev.value)
-                                    * prev_delta_time_ts
-                                )
-                                / delta_time_ts
-                            )
-                            observed_sample_prev.energy += (
-                                (observation_prev.value + prev_power_next)
-                                * prev_delta_time_ts
-                                / 7200
-                            )
-                            next_delta_time_ts = (
-                                observation.time_ts - observed_sample_curr.time_ts
-                            )
-                            observed_sample_curr.energy += (
-                                (prev_power_next + observation.value)
-                                * next_delta_time_ts
-                                / 7200
-                            )
-
+                    if good:
+                        power = energy / d_ts
+                        sample_prev.energy += power * (
+                            sample_prev.time_next_ts - observation_prev.time_ts
+                        )
+                        sample_curr.energy += power * (
+                            observation.time_ts - sample_curr.time_ts
+                        )
                         # for simplicity we consider interpolation as adding a full 1 sample
-                        observed_sample_prev.samples += 1
-                        observed_sample_curr.samples += 1
+                        sample_prev.samples += 1
+                        sample_curr.samples += 1
 
                 self.observations_per_sample_avg = (
                     self.observations_per_sample_avg * Estimator.OPS_DECAY
-                    + observed_sample_prev.samples * (1 - Estimator.OPS_DECAY)
+                    + sample_prev.samples * (1 - Estimator.OPS_DECAY)
                 )
-                self._observation_prev = observation
-                self.observed_samples.append(observed_sample_prev)
-                self.observed_time_ts = observed_sample_prev.time_next_ts
+                sample_prev.energy /= 3600  # from now on energy is [WH]
+                self.observed_samples.append(sample_prev)
+                self.observed_time_ts = sample_prev.time_next_ts
 
-                if observed_sample_prev.time_ts >= self.tomorrow_ts:
+                if sample_prev.time_ts >= self.tomorrow_ts:
                     # new day
-                    self._observed_energy_daystart(observed_sample_prev.time_ts)
+                    self._observed_energy_daystart(sample_prev.time_ts)
 
-                self.today_energy += observed_sample_prev.energy
+                self.today_energy += sample_prev.energy
 
                 try:
                     observation_min_ts = (
-                        observed_sample_prev.time_next_ts - self.observation_duration_ts
+                        sample_prev.time_next_ts - self.observation_duration_ts
                     )
                     # check if we can discard it since the next is old enough
                     while self.observed_samples[1].time_ts < observation_min_ts:
@@ -278,15 +300,23 @@ class Estimator(abc.ABC):
 
                 return True
 
-        except AttributeError as e:
-            if e.name == "_observed_sample_curr":
+        except AttributeError as error:
+            if error.name == "_observed_sample_curr":
                 # expected right at the first call..use this to initialize the state
                 # and avoid needless checks on subsequent calls
                 self._observed_sample_curr = self._observed_energy_new(observation)
                 self._observation_prev = observation
+                if not observation.is_energy:
+                    if 0 <= observation.value < self.safe_maximum_power:
+                        pass
+                    else:
+                        observation.value = 0
+                        self.state.add(EstimatorWarning.out_of_range)
+                        if self.on_state_change:
+                            self.on_state_change(self)
                 return False
             else:
-                raise e
+                raise error
 
     def get_observed_energy(self) -> tuple[float, float, float]:
         """compute the energy stored in the 'observations'.

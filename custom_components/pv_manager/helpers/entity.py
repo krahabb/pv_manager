@@ -7,16 +7,18 @@ from . import Loggable
 from ..manager import Manager
 
 if typing.TYPE_CHECKING:
-    from typing import ClassVar, Final
+    from typing import ClassVar, Final, NotRequired
 
     from .. import const as pmc
     from ..controller import Controller
 
     class EntityArgs(typing.TypedDict):
-        config_subentry_id: typing.NotRequired[str]
-        name: typing.NotRequired[str | None]
+        config_subentry_id: NotRequired[str]
+        name: NotRequired[str | None]
+        entity_category: NotRequired[entity.EntityCategory]
+        icon: NotRequired[str]
         # translation_key: typing.NotRequired[str]
-        parent_attr: typing.NotRequired["ParentAttr | None"]
+        parent_attr: NotRequired["ParentAttr | None"]
 
 
 class ParentAttr(enum.Enum):
@@ -36,12 +38,12 @@ class ParentAttr(enum.Enum):
 
 class Entity(Loggable, entity.Entity if typing.TYPE_CHECKING else object):
 
-    PLATFORM: "ClassVar[str]"
+    PLATFORM: typing.ClassVar[str]
 
     EntityCategory = entity.EntityCategory
     ParentAttr = ParentAttr
 
-    is_diagnostic: "ClassVar[bool]" = False
+    is_diagnostic: typing.ClassVar[bool] = False
 
     controller: "Final[Controller]"
 
@@ -50,10 +52,25 @@ class Entity(Loggable, entity.Entity if typing.TYPE_CHECKING else object):
     at shutdown. Be sure to override this at construction or inheritance when a different
     behavior is required."""
 
+    # HA core entity attributes:
+    _attr_entity_category = None
+    _attr_icon = None
+
+    # HA core cache/slots const presets
+    available: typing.Final
+    assumed_state: typing.Final
+    force_update: typing.Final
+    should_poll: typing.Final
+
     __slots__ = (
         "controller",
         "config_subentry_id",
+        "assumed_state",
+        "available",
         "device_info",
+        "entity_category",
+        "force_update",
+        "icon",
         "name",
         "should_poll",
         "unique_id",
@@ -69,7 +86,12 @@ class Entity(Loggable, entity.Entity if typing.TYPE_CHECKING else object):
     ):
         self.controller = controller
         self.config_subentry_id = kwargs.pop("config_subentry_id", None)
+        self.assumed_state = False
+        self.available = True
         self.device_info = controller.device_info
+        self.entity_category = kwargs.pop("entity_category", self._attr_entity_category)
+        self.force_update = False
+        self.icon = kwargs.pop("icon", self._attr_icon)
         self.name = kwargs.pop("name", None) or id
         self.should_poll = False
         self.unique_id = "_".join((controller.config_entry.entry_id, id))

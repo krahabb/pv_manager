@@ -145,14 +145,14 @@ class Controller(controller.EnergyEstimatorController[EntryConfig]):
                 d_e_d.init(self)
 
     # interface: EnergyEstimatorController
-    def _update_estimate(self, estimator: Estimator_PVEnergy_Heuristic):
+    def _on_update_estimate(self, estimator: Estimator_PVEnergy_Heuristic):
 
         for diagnostic_entity in self.diagnostic_entities.values():
             diagnostic_entity.update_safe(
                 DIAGNOSTIC_DESCR[diagnostic_entity.id].value(self)
             )
 
-        super()._update_estimate(estimator)
+        super()._on_update_estimate(estimator)
 
     def _restore_history(self, history_start_time: dt.datetime):
         if self._restore_history_exit:

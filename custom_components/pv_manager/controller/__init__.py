@@ -16,14 +16,14 @@ from homeassistant.util.unit_conversion import (
 )
 
 from .. import const as pmc, helpers
+from ..binary_sensor import BinarySensor
 from ..helpers import validation as hv
 from ..manager import Manager
 from ..sensor import Sensor
-from .common import estimator
+from .common.estimator import Estimator, EstimatorConfig, EstimatorWarning, Observation
 
 if typing.TYPE_CHECKING:
-    from types import MappingProxyType
-    from typing import Any, Callable, ClassVar, Coroutine, Final, Mapping, Unpack
+    from typing import Any, Callable, ClassVar, Coroutine, Final, Unpack
 
     from homeassistant.config_entries import ConfigEntry, ConfigSubentry
     from homeassistant.core import Event, HomeAssistant, State
@@ -411,7 +411,7 @@ class EnergyEstimatorSensor(Sensor):
         self.controller.estimator_sensors.remove(self)
         await super().async_will_remove_from_hass()
 
-    def update_estimate(self, estimator: estimator.Estimator, flush: bool):
+    def update_estimate(self, estimator: Estimator, flush: bool):
         self.native_value = round(
             estimator.get_estimated_energy(
                 estimator.observed_time_ts,
@@ -424,7 +424,7 @@ class EnergyEstimatorSensor(Sensor):
 
 class TodayEnergyEstimatorSensor(EnergyEstimatorSensor):
 
-    def update_estimate(self, estimator: estimator.Estimator, flush: bool):
+    def update_estimate(self, estimator: Estimator, flush: bool):
         self.extra_state_attributes = estimator.get_state_dict()
         self.native_value = round(
             estimator.today_energy
@@ -438,7 +438,7 @@ class TodayEnergyEstimatorSensor(EnergyEstimatorSensor):
 
 class TomorrowEnergyEstimatorSensor(EnergyEstimatorSensor):
 
-    def update_estimate(self, estimator: estimator.Estimator, flush: bool):
+    def update_estimate(self, estimator: Estimator, flush: bool):
         self.native_value = round(
             estimator.get_estimated_energy(
                 estimator.tomorrow_ts, estimator.tomorrow_ts + 86400
@@ -448,11 +448,11 @@ class TomorrowEnergyEstimatorSensor(EnergyEstimatorSensor):
             self._async_write_ha_state()
 
 
-class EnergyEstimatorControllerConfig(pmc.EntryConfig, estimator.EstimatorConfig):
+class EnergyEstimatorControllerConfig(pmc.EntryConfig, EstimatorConfig):
 
     observed_entity_id: str
     """Entity ID of the energy/power observed entity"""
-    refresh_period_minutes: int
+    refresh_period_minutes: typing.NotRequired[int]
     """Time between model updates (polling of input pv sensor) beside listening to state changes"""
 
 
@@ -462,7 +462,9 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
 
     PLATFORMS = {Sensor.PLATFORM}
 
+    estimator: Estimator
     estimator_sensors: set[EnergyEstimatorSensor]
+    warning_binary_sensors: dict[EstimatorWarning, BinarySensor]
 
     __slots__ = (
         # configuration
@@ -471,6 +473,7 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
         # state
         "estimator",
         "estimator_sensors",
+        "warning_binary_sensors",
         "_state_is_energy",
         "_state_convert_func",
         "_state_convert_unit",
@@ -490,7 +493,6 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
                 "maximum_latency_minutes": 1,
                 "observation_duration_minutes": 20,
                 "history_duration_days": 7,
-                "refresh_period_minutes": 5,
             }
         return {
             hv.req_config("observed_entity_id", config): hv.sensor_selector(
@@ -509,7 +511,10 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
             hv.req_config("history_duration_days", config): hv.time_period_selector(
                 unit_of_measurement=hac.UnitOfTime.DAYS, max=30
             ),
-            hv.req_config("refresh_period_minutes", config): hv.time_period_selector(
+            hv.opt_config("safe_maximum_power_w", config): hv.positive_number_selector(
+                unit_of_measurement=hac.UnitOfPower.WATT
+            ),
+            hv.opt_config("refresh_period_minutes", config): hv.time_period_selector(
                 unit_of_measurement=hac.UnitOfTime.MINUTES
             ),
         }
@@ -541,12 +546,12 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
         self,
         hass: "HomeAssistant",
         config_entry: "ConfigEntry",
-        estimator_class: "type[estimator.Estimator]",
+        estimator_class: type[Estimator],
         **estimator_kwargs,
     ):
         config = config_entry.data
         self.observed_entity_id = config["observed_entity_id"]
-        self.refresh_period_ts = config.get("refresh_period_minutes", 5) * 60
+        self.refresh_period_ts = config.get("refresh_period_minutes", 0) * 60
         self.estimator = estimator_class(
             tzinfo=dt_util.get_default_time_zone(),
             **(estimator_kwargs | config),  # type: ignore
@@ -571,6 +576,16 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
             "tomorrow_energy_estimate",
             name=f"{config.get("name", "Estimated energy")} (tomorrow)",
         )
+        self.warning_binary_sensors = {
+            warning: BinarySensor(
+                self,
+                f"{warning}_warning",
+                device_class=BinarySensor.DeviceClass.PROBLEM,
+                entity_category=BinarySensor.EntityCategory.DIAGNOSTIC,
+                parent_attr=None,
+            )
+            for warning in EstimatorWarning
+        }
 
     # interface: Controller
     async def async_init(self):
@@ -585,12 +600,16 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
         await self._restore_history_task
         self._restore_history_task = None
 
-        self._refresh_callback_unsub = self.schedule_callback(
-            self.refresh_period_ts, self._refresh_callback
-        )
-        self.estimator.on_update_estimate = self._update_estimate
-        self.estimator.update_estimate()
+        if self.refresh_period_ts:
+            self._refresh_callback_unsub = self.schedule_callback(
+                self.refresh_period_ts, self._refresh_callback
+            )
+        estimator = self.estimator
+        estimator.on_update_estimate = self._on_update_estimate
+        estimator.update_estimate()
         self.track_state_update(self.observed_entity_id, self._process_observation)
+        estimator.on_state_change = self._on_state_change
+        self._on_state_change(estimator)
         await super().async_init()
 
     async def async_shutdown(self):
@@ -603,7 +622,9 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
             self._refresh_callback_unsub.cancel()
             self._refresh_callback_unsub = None
         self.estimator.on_update_estimate = None
-        self.estimator: "estimator.Estimator" = None  # type: ignore
+        self.estimator.on_state_change = None
+        self.estimator = None  # type: ignore
+        self.warning_binary_sensors = None  # type: ignore
         await super().async_shutdown()
         assert not self.estimator_sensors
 
@@ -649,7 +670,7 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
     def _process_observation(self, state: "State | None"):
         try:
             self.estimator.add_observation(
-                estimator.Observation(
+                Observation(
                     time.time(),
                     self._state_convert_func(
                         float(state.state),  # type: ignore
@@ -663,10 +684,15 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
             if state and state.state not in (hac.STATE_UNKNOWN, hac.STATE_UNAVAILABLE):
                 self.log_exception(self.WARNING, e, "updating estimate", timeout=3600)
 
-    def _update_estimate(self, estimator: "estimator.Estimator"):
+    def _on_update_estimate(self, estimator: Estimator):
 
         for sensor in self.estimator_sensors:
             sensor.update_estimate(estimator, True)
+
+    def _on_state_change(self, estimator: Estimator):
+        state = estimator.state
+        for warning, binary_sensor in self.warning_binary_sensors.items():
+            binary_sensor.update_safe(warning in state)
 
     def _restore_history(self, history_start_time: dt.datetime):
         if self._restore_history_exit:
@@ -693,7 +719,7 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
                 return
             try:
                 self.estimator.add_observation(
-                    estimator.Observation(
+                    Observation(
                         state.last_updated_timestamp,
                         self._state_convert_func(
                             float(state.state),
@@ -727,7 +753,7 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
         elif from_unit in hac.UnitOfEnergy:
             self._state_is_energy = True
             self._state_convert_func = EnergyConverter.convert
-            self._state_convert_unit = hac.UnitOfEnergy.WATT_HOUR
+            self._state_convert_unit = hac.UnitOfEnergy.JOULE
         else:
             # TODO: raise issue?
             raise ValueError(
