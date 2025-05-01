@@ -116,8 +116,8 @@ class HeuristicConsumptionEstimator(Estimator):
             # no data or invalid
             self.observed_ratio = 1
 
-        if self.on_update_estimate:
-            self.on_update_estimate(self)
+        for listener in self._update_listeners:
+            listener(self)
 
     def get_estimated_energy(
         self, time_begin_ts: float | int, time_end_ts: float | int

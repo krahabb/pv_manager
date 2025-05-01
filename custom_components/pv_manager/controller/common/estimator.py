@@ -61,7 +61,9 @@ class Estimator(BaseEnergyProcessor):
     """Decay factor for the average number of observations per sample."""
 
     tzinfo: dt.tzinfo
-    on_update_estimate: typing.Callable[["Estimator"], None] | None
+
+    UPDATE_LISTENER_TYPE = typing.Callable[["Estimator"], None]
+    _update_listeners: typing.Final[set[UPDATE_LISTENER_TYPE]]
 
     """Contains warnings and any other useful operating condition of the estimator."""
     observed_samples: typing.Final[deque[ObservedEnergy]]
@@ -77,7 +79,6 @@ class Estimator(BaseEnergyProcessor):
         "history_duration_ts",
         "observation_duration_ts",
         "tzinfo",
-        "on_update_estimate",
         # state
         "observed_samples",
         "observed_time_ts",  # time of most recent observed sample
@@ -85,6 +86,7 @@ class Estimator(BaseEnergyProcessor):
         "today_ts",  # UTC time of local midnight (start of today)
         "tomorrow_ts",  # UTC time of local midnight tomorrow (start of tomorrow)
         "today_energy",  # energy accumulated today
+        "_update_listeners",
         "_observed_sample_curr",
     )
 
@@ -106,22 +108,33 @@ class Estimator(BaseEnergyProcessor):
             kwargs.get("observation_duration_minutes", 20) * 60
         )
         self.tzinfo = tzinfo
-        BaseEnergyProcessor.__init__(self, **kwargs)
-        self.on_update_estimate = None
         self.observed_samples = deque()
         self.observed_time_ts = 0
         self.observations_per_sample_avg = 0
         self.today_ts = 0
         self.tomorrow_ts = 0
         self.today_energy = 0
+        self._update_listeners = set()
         # do not define here..we're relying on AttributeError for proper initialization
         # self._history_sample_curr = None
+        BaseEnergyProcessor.__init__(self, **kwargs)
 
     @typing.override
     def shutdown(self):
         """Used to remove references when wanting to shutdown resources usage."""
-        self.on_update_estimate = None
+        self._update_listeners.clear()
         BaseEnergyProcessor.shutdown(self)
+
+    def listen_update(self, callback_func: UPDATE_LISTENER_TYPE):
+        self._update_listeners.add(callback_func)
+
+        def _unsub():
+            try:
+                self._update_listeners.remove(callback_func)
+            except KeyError:
+                pass
+
+        return _unsub
 
     def as_dict(self):
         """Returns the full state info of the estimator as a dictionary.
@@ -218,7 +231,7 @@ class Estimator(BaseEnergyProcessor):
                 # at start when observed_samples is empty
                 return energy
 
-            if self.on_update_estimate:
+            if self._update_listeners:
                 # this is used as a possible optimization when initially loading history samples
                 # where we don't want to update_estimate inline. Once a listener is installed then
                 # we proceed to keeping the estimate updated
@@ -256,8 +269,8 @@ class Estimator(BaseEnergyProcessor):
 
     @abc.abstractmethod
     def update_estimate(self):
-        if self.on_update_estimate:
-            self.on_update_estimate(self)
+        for listener in self._update_listeners:
+            listener(self)
 
     @abc.abstractmethod
     def get_estimated_energy(self, time_begin_ts: float, time_end_ts: float) -> float:

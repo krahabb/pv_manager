@@ -11,6 +11,7 @@ if typing.TYPE_CHECKING:
 
     from .. import const as pmc
     from ..controller import Controller
+    from ..controller.common.estimator import Estimator
 
     class EntityArgs(typing.TypedDict):
         config_subentry_id: NotRequired[str]
@@ -53,6 +54,7 @@ class Entity(Loggable, entity.Entity if typing.TYPE_CHECKING else object):
     behavior is required."""
 
     # HA core entity attributes:
+    _attr_device_class = None
     _attr_entity_category = None
     _attr_icon = None
 
@@ -153,6 +155,7 @@ class Entity(Loggable, entity.Entity if typing.TYPE_CHECKING else object):
         if self.added_to_hass:
             self._async_write_ha_state()
 
+
 class ExtraStoredDataDict(dict, restore_state.ExtraStoredData):
     """Object to hold extra stored data as a plain dict"""
 
@@ -173,7 +176,7 @@ class DiagnosticEntity(Entity if typing.TYPE_CHECKING else object):
 
     is_diagnostic: typing.Final = True
 
-    _attr_parent_attr: ParentAttr | None = None
+    _attr_parent_attr = None
 
     # HA core entity attributes:
     _attr_entity_category = entity.EntityCategory.DIAGNOSTIC
@@ -185,3 +188,63 @@ class DiagnosticEntity(Entity if typing.TYPE_CHECKING else object):
     async def async_shutdown(self, remove: bool):
         self.controller.diagnostic_entities.pop(self.id)
         return await super().async_shutdown(remove)
+
+
+class EstimatorEntity(Entity if typing.TYPE_CHECKING else object):
+
+    estimator: "Estimator"
+
+    # by default we likely don't want to manage self instances in controller
+    _attr_parent_attr = None
+
+    _SLOTS_ = (
+        "estimator",
+        "_estimator_update_unsub",
+        "_estimator_update_func",
+    )
+
+    def __init__(
+        self,
+        controller: "Controller",
+        id: str,
+        estimator: "Estimator",
+        *args,
+        estimator_update_func: typing.Callable[
+            ["Estimator"], typing.Any
+        ] = lambda e: None,
+        **kwargs,
+    ):
+        self.estimator = estimator
+        self._estimator_update_unsub = None
+        self._estimator_update_func = estimator_update_func
+        super().__init__(controller, id, *args, **kwargs)
+
+    async def async_shutdown(self, remove: bool):
+        if self._estimator_update_unsub:
+            self._estimator_update_unsub()
+            self._estimator_update_unsub = None
+        self.estimator = None  # type: ignore
+        await super().async_shutdown(remove)
+
+    async def async_added_to_hass(self):
+        self.on_estimator_update(self.estimator)
+        await super().async_added_to_hass()
+        self._estimator_update_unsub = self.estimator.listen_update(
+            self.on_estimator_update
+        )
+
+    async def async_will_remove_from_hass(self):
+        if self._estimator_update_unsub:
+            self._estimator_update_unsub()
+            self._estimator_update_unsub = None
+        await super().async_will_remove_from_hass()
+
+    def on_estimator_update(self, estimator: "Estimator"):
+        """Called automatically whenever the binded estimator updates (if the entity is loaded).
+        Since it could be used to prepare the state before adding to hass it will nevertheless
+        need to check for added_to_hass.
+        The default implementation could work in simple cases by passing a
+        conversion function to the constructor (estimator_update_func):
+        - (estimator) -> entity state
+        """
+        self.update_safe(self._estimator_update_func(estimator))

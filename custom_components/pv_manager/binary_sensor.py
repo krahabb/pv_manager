@@ -11,6 +11,7 @@ if typing.TYPE_CHECKING:
     from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
     from .controller import Controller
+    from .controller.common import ProcessorWarning
     from .helpers.entity import EntityArgs
 
     class BinarySensorArgs(EntityArgs):
@@ -45,7 +46,7 @@ class BinarySensor(Entity, binary_sensor.BinarySensorEntity):
         id: str,
         **kwargs: "typing.Unpack[BinarySensorArgs]",
     ):
-        self.device_class = kwargs.pop("device_class", None)
+        self.device_class = kwargs.pop("device_class", self._attr_device_class)
         self.is_on = kwargs.pop("is_on", None)
         Entity.__init__(self, controller, id, **kwargs)
 
@@ -59,3 +60,49 @@ class BinarySensor(Entity, binary_sensor.BinarySensorEntity):
             self.is_on = is_on
             if self.added_to_hass:
                 self._async_write_ha_state()
+
+
+class ProcessorWarningBinarySensor(BinarySensor):
+
+    _attr_device_class = BinarySensor.DeviceClass.PROBLEM
+    _attr_entity_category = BinarySensor.EntityCategory.DIAGNOSTIC
+    _attr_parent_attr = None
+
+    _processor_warning: "ProcessorWarning"
+    __slots__ = (
+        "_processor_warning",
+        "_processor_warning_unsub",
+    )
+
+    def __init__(
+        self,
+        controller,
+        id,
+        processor_warning: "ProcessorWarning",
+        **kwargs: "typing.Unpack[BinarySensorArgs]",
+    ):
+        self._processor_warning = processor_warning
+        self._processor_warning_unsub = None
+        super().__init__(
+            controller,
+            id,
+            **kwargs,
+        )
+
+    async def async_shutdown(self, remove):
+        if self._processor_warning_unsub:
+            self._processor_warning_unsub()
+            self._processor_warning_unsub = None
+        await super().async_shutdown(remove)
+        self._processor_warning = None # type: ignore
+
+    async def async_added_to_hass(self):
+        self.is_on = self._processor_warning.on
+        self._processor_warning_unsub = self._processor_warning.listen(self.update)
+        return await super().async_added_to_hass()
+
+    async def async_will_remove_from_hass(self):
+        if self._processor_warning_unsub:
+            self._processor_warning_unsub()
+            self._processor_warning_unsub = None
+        return await super().async_will_remove_from_hass()

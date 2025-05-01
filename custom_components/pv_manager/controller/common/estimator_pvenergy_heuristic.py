@@ -8,7 +8,7 @@ import typing
 from astral import sun
 
 from ...helpers import datetime_from_epoch
-from .estimator_pvenergy import PVEnergyEstimator, ObservedPVEnergy, WeatherModel
+from .estimator_pvenergy import ObservedPVEnergy, PVEnergyEstimator, WeatherModel
 
 if typing.TYPE_CHECKING:
     import datetime as dt
@@ -192,8 +192,8 @@ class HeuristicPVEnergyEstimator(PVEnergyEstimator):
             # no data or invalid
             self.observed_ratio = 1
 
-        if self.on_update_estimate:
-            self.on_update_estimate(self)
+        for listener in self._update_listeners:
+            listener(self)
 
     def get_estimated_energy(
         self, time_begin_ts: float | int, time_end_ts: float | int

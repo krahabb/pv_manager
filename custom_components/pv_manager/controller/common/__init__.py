@@ -9,35 +9,37 @@ class ProcessorWarning:
 
     id: str
     on: bool
-    listeners: set[CALLBACK_TYPE]
+    _listeners: set[CALLBACK_TYPE]
 
     __slots__ = (
         "id",
         "on",
-        "listeners",
+        "_listeners",
     )
 
     def __init__(self, processor: "BaseProcessor", id: str):
         self.id = id
         self.on = False
-        self.listeners = set()
+        self._listeners = set()
         setattr(processor, f"warning_{id}", self)
 
     def shutdown(self):
-        self.listeners.clear()
+        self._listeners.clear()
 
     def listen(self, callback_func: CALLBACK_TYPE):
-        self.listeners.add(callback_func)
-        callback_func(self.on)
+        self._listeners.add(callback_func)
 
-        def remove():
-            self.listeners.remove(callback_func)
+        def _unsub():
+            try:
+                self._listeners.remove(callback_func)
+            except KeyError:
+                pass
 
-        return remove
+        return _unsub
 
     def toggle(self):
         self.on = not self.on
-        for listener in self.listeners:
+        for listener in self._listeners:
             listener(self.on)
 
 
@@ -58,7 +60,7 @@ class BaseProcessor[_input_t, _output_t](abc.ABC):
     )
 
     def __init__(self):
-        self.time_ts = None # type: ignore
+        self.time_ts = None  # type: ignore
         self.warnings = {ProcessorWarning(self, id) for id in self.WARNINGS}
 
     def configure(self, *args, **kwargs):
@@ -82,7 +84,7 @@ class BaseProcessor[_input_t, _output_t](abc.ABC):
         """Returns a synthetic state dict for the estimator.
         Used for debugging purposes."""
         return {
-            "warnings": { warning.id: warning.on for warning in self.warnings},
+            "warnings": {warning.id: warning.on for warning in self.warnings},
         }
 
 
@@ -161,7 +163,7 @@ class BaseEnergyProcessor(BaseProcessor[float, float]):
         self,
         input_mode: EnergyInputMode,
     ):
-        self.input_mode, self.input_unit = input_mode.value # type: ignore
+        self.input_mode, self.input_unit = input_mode.value  # type: ignore
 
     @typing.override
     def process(self, input: float, time_ts: float) -> float | None:

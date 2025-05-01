@@ -11,13 +11,13 @@ import astral.sun
 from homeassistant import const as hac
 from homeassistant.components import weather
 from homeassistant.components.recorder import history
-from homeassistant.core import callback
 from homeassistant.helpers import sun as sun_helpers
 from homeassistant.util import dt as dt_util
 
-from .. import const as pmc, controller, helpers
+from .. import const as pmc, helpers
+from ..controller import EnergyEstimatorController, EnergyEstimatorControllerConfig
 from ..helpers import validation as hv
-from ..sensor import DiagnosticSensor, Sensor
+from ..sensor import DiagnosticSensor, EstimatorDiagnosticSensor
 from .common.estimator_pvenergy import WEATHER_MODELS, WeatherSample
 from .common.estimator_pvenergy_heuristic import HeuristicPVEnergyEstimator
 
@@ -28,9 +28,10 @@ if typing.TYPE_CHECKING:
     from homeassistant.core import Event, HomeAssistant, State
 
     from ..helpers.entity import EntityArgs
+    from .common.estimator import Estimator
 
 
-class ControllerConfig(controller.EnergyEstimatorControllerConfig):
+class ControllerConfig(EnergyEstimatorControllerConfig):
     weather_entity_id: typing.NotRequired[str]
     """The entity used for weather forecast in the system"""
     weather_model: typing.NotRequired[str]
@@ -38,6 +39,28 @@ class ControllerConfig(controller.EnergyEstimatorControllerConfig):
 
 class EntryConfig(ControllerConfig, pmc.EntityConfig):
     """TypedDict for ConfigEntry data"""
+
+
+# TODO: create a global generalization for diagnostic sensors linked to estimator
+class ObservedRatioDiagnosticSensor(EstimatorDiagnosticSensor):
+
+    def __init__(self, controller: "Controller", id: str):
+        super().__init__(controller, id, controller.estimator)
+
+    def on_estimator_update(self, estimator: HeuristicPVEnergyEstimator):
+        self.update_safe(estimator.observed_ratio)
+
+
+class WeatherModelDiagnosticSensor(EstimatorDiagnosticSensor):
+
+    __slots__ = ("weather_param_index",)
+
+    def __init__(self, controller: "Controller", id: str, index: int):
+        self.weather_param_index = index
+        super().__init__(controller, id, controller.estimator)
+
+    def on_estimator_update(self, estimator: HeuristicPVEnergyEstimator):
+        self.update_safe(estimator.weather_model.get_param(self.weather_param_index))
 
 
 class DiagnosticDescr:
@@ -56,7 +79,7 @@ class DiagnosticDescr:
         self,
         id: str,
         init_func: "Callable[[Controller], DiagnosticSensor]",
-        value_func: "Callable[[Controller], Any]",
+        value_func: "Callable[[Controller], Any]" = lambda c: None,
     ):
         self.id = id
         self.init = init_func
@@ -70,26 +93,38 @@ class DiagnosticDescr:
             value_func,
         )
 
+    @staticmethod
+    def EstimatorSensor(id: str, estimator_update_func: "Callable[[Estimator], Any]"):
+        return DiagnosticDescr(
+            id,
+            lambda c: EstimatorDiagnosticSensor(
+                c, id, c.estimator, estimator_update_func=estimator_update_func
+            ),
+            lambda c: estimator_update_func(c.estimator),
+        )
+
 
 DIAGNOSTIC_DESCR = {
-    "observed_ratio": DiagnosticDescr.Sensor(
-        "observed_ratio", lambda c: c.estimator.observed_ratio
+    "observed_ratio": DiagnosticDescr(
+        "observed_ratio", lambda c: ObservedRatioDiagnosticSensor(c, "observed_ratio")
     ),
-    "weather_cloud_constant_0": DiagnosticDescr.Sensor(
-        "weather_cloud_constant_0", lambda c: c.estimator.weather_model.get_param(0)
+    "weather_cloud_constant_0": DiagnosticDescr(
+        "weather_cloud_constant_0",
+        lambda c: WeatherModelDiagnosticSensor(c, "weather_cloud_constant_0", 0),
     ),
-    "weather_cloud_constant_1": DiagnosticDescr.Sensor(
-        "weather_cloud_constant_1", lambda c: c.estimator.weather_model.get_param(1)
+    "weather_cloud_constant_1": DiagnosticDescr(
+        "weather_cloud_constant_1",
+        lambda c: WeatherModelDiagnosticSensor(c, "weather_cloud_constant_1", 1),
     ),
 }
 
 
-class Controller(controller.EnergyEstimatorController[EntryConfig]):
+class Controller(EnergyEstimatorController[EntryConfig]):
     """Base controller class for managing ConfigEntry behavior."""
 
     TYPE = pmc.ConfigEntryType.PV_ENERGY_ESTIMATOR
 
-    estimator: HeuristicPVEnergyEstimator
+    estimator: "HeuristicPVEnergyEstimator"
 
     __slots__ = (
         # configuration
@@ -115,7 +150,7 @@ class Controller(controller.EnergyEstimatorController[EntryConfig]):
                     ],
                 ),
             }
-            | controller.EnergyEstimatorController.get_config_entry_schema(config)
+            | EnergyEstimatorController.get_config_entry_schema(config)
         )
 
     def __init__(self, hass: "HomeAssistant", config_entry: "ConfigEntry"):
@@ -145,15 +180,6 @@ class Controller(controller.EnergyEstimatorController[EntryConfig]):
                 d_e_d.init(self)
 
     # interface: EnergyEstimatorController
-    def _on_update_estimate(self, estimator: HeuristicPVEnergyEstimator):
-
-        for diagnostic_entity in self.diagnostic_entities.values():
-            diagnostic_entity.update_safe(
-                DIAGNOSTIC_DESCR[diagnostic_entity.id].value(self)
-            )
-
-        super()._on_update_estimate(estimator)
-
     def _restore_history(self, history_start_time: dt.datetime):
         if self._restore_history_exit:
             return

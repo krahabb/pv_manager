@@ -4,7 +4,6 @@ import enum
 import time
 import typing
 
-
 from homeassistant import const as hac
 from homeassistant.core import callback
 from homeassistant.util import dt as dt_util
@@ -21,12 +20,11 @@ if typing.TYPE_CHECKING:
     from typing import Any, Final, NotRequired, Unpack
 
     from astral import sun
-
     from homeassistant.core import Event, HomeAssistant, State
 
-    from .off_grid_manager import Controller
-    from .common.estimator_pvenergy_heuristic import PVEnergyEstimatorConfig
     from ..helpers.entity import EntityArgs
+    from .common.estimator_pvenergy_heuristic import PVEnergyEstimatorConfig
+    from .off_grid_manager import Controller
 
 POWER_UNIT = hac.UnitOfPower.WATT
 ENERGY_UNIT = hac.UnitOfEnergy.WATT_HOUR
@@ -63,7 +61,7 @@ class BaseMeter(BaseEnergyProcessor if typing.TYPE_CHECKING else object):
     controller: "Final[Controller]"
     metering_source: "Final[MeteringSource]"
 
-    _SLOTS = (
+    _SLOTS_ = (
         "controller",
         "metering_source",
         "_state_convert_func",
@@ -134,7 +132,7 @@ class BaseMeter(BaseEnergyProcessor if typing.TYPE_CHECKING else object):
 class _BaseMeter(BaseMeter, BaseEnergyProcessor):
     """Concrete base class for BaseMeter(s) not implemented through estimators."""
 
-    __slots__ = BaseMeter._SLOTS
+    __slots__ = BaseMeter._SLOTS_
 
     def __init__(self, controller: "Controller", metering_source: MeteringSource):
         BaseEnergyProcessor.__init__(self)
@@ -310,7 +308,7 @@ class EstimatorMeter(BaseMeter):
 
 class HeuristicPVEnergyEstimatorMeter(EstimatorMeter, HeuristicPVEnergyEstimator):
 
-    __slots__ = EstimatorMeter._SLOTS
+    __slots__ = EstimatorMeter._SLOTS_
 
     def __init__(
         self,

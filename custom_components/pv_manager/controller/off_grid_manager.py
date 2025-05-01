@@ -22,11 +22,11 @@ from ..sensor import BatteryChargeSensor, EnergySensor, PowerSensor, Sensor
 from ._energy_meters import (
     BaseMeter,
     BatteryMeter,
-    PvMeter,
     LoadMeter,
     LossesMeter,
     MeteringSource,
     MeterStoreType,
+    PvMeter,
 )
 
 if typing.TYPE_CHECKING:

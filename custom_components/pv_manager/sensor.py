@@ -103,6 +103,11 @@ class DiagnosticSensor(he.DiagnosticEntity, Sensor):
     pass
 
 
+class EstimatorDiagnosticSensor(he.EstimatorEntity, DiagnosticSensor):
+
+    __slots__ = he.EstimatorEntity._SLOTS_
+
+
 class PowerSensor(Sensor):
 
     _attr_device_class = Sensor.DeviceClass.POWER
@@ -303,10 +308,12 @@ class BatteryChargeSensor(Sensor, he.RestoreEntity):
             charge = self.charge - (self._current * (now_ts - self._current_ts) / 3600)
             if charge < 0:
                 charge = 0
-                current = 0
+                if current > 0:
+                    current = 0
             elif charge > self.capacity:
                 charge = self.capacity
-                current = 0
+                if current < 0:
+                    current = 0
             self.update(charge)
         self._current = current
         self._current_ts = now_ts
