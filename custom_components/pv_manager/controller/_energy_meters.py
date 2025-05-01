@@ -15,7 +15,7 @@ from homeassistant.util.unit_conversion import (
 
 from .. import const as pmc
 from .common import BaseEnergyProcessor, EnergyInputMode
-from .common.estimator_pvenergy_heuristic import Estimator_PVEnergy_Heuristic
+from .common.estimator_pvenergy_heuristic import HeuristicPVEnergyEstimator
 
 if typing.TYPE_CHECKING:
     from typing import Any, Final, NotRequired, Unpack
@@ -25,7 +25,7 @@ if typing.TYPE_CHECKING:
     from homeassistant.core import Event, HomeAssistant, State
 
     from .off_grid_manager import Controller
-    from .common.estimator_pvenergy_heuristic import Estimator_PVEnergyConfig
+    from .common.estimator_pvenergy_heuristic import PVEnergyEstimatorConfig
     from ..helpers.entity import EntityArgs
 
 POWER_UNIT = hac.UnitOfPower.WATT
@@ -308,7 +308,7 @@ class EstimatorMeter(BaseMeter):
     pass
 
 
-class HeuristicPVEnergyEstimatorMeter(EstimatorMeter, Estimator_PVEnergy_Heuristic):
+class HeuristicPVEnergyEstimatorMeter(EstimatorMeter, HeuristicPVEnergyEstimator):
 
     __slots__ = EstimatorMeter._SLOTS
 
@@ -317,9 +317,9 @@ class HeuristicPVEnergyEstimatorMeter(EstimatorMeter, Estimator_PVEnergy_Heurist
         controller,
         astral_observer: "sun.Observer",
         tzinfo: tzinfo,
-        **kwargs: "Unpack[Estimator_PVEnergyConfig]",
+        **kwargs: "Unpack[PVEnergyEstimatorConfig]",
     ):
         BaseMeter.__init__(self, controller, MeteringSource.PV)
-        Estimator_PVEnergy_Heuristic.__init__(
+        HeuristicPVEnergyEstimator.__init__(
             self, astral_observer=astral_observer, tzinfo=tzinfo, **kwargs
         )

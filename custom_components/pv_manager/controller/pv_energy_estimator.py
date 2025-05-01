@@ -19,7 +19,7 @@ from .. import const as pmc, controller, helpers
 from ..helpers import validation as hv
 from ..sensor import DiagnosticSensor, Sensor
 from .common.estimator_pvenergy import WEATHER_MODELS, WeatherSample
-from .common.estimator_pvenergy_heuristic import Estimator_PVEnergy_Heuristic
+from .common.estimator_pvenergy_heuristic import HeuristicPVEnergyEstimator
 
 if typing.TYPE_CHECKING:
     from typing import Any, Callable, Final
@@ -89,7 +89,7 @@ class Controller(controller.EnergyEstimatorController[EntryConfig]):
 
     TYPE = pmc.ConfigEntryType.PV_ENERGY_ESTIMATOR
 
-    estimator: Estimator_PVEnergy_Heuristic
+    estimator: HeuristicPVEnergyEstimator
 
     __slots__ = (
         # configuration
@@ -123,7 +123,7 @@ class Controller(controller.EnergyEstimatorController[EntryConfig]):
         super().__init__(
             hass,
             config_entry,
-            Estimator_PVEnergy_Heuristic,
+            HeuristicPVEnergyEstimator,
             astral_observer=astral.sun.Observer(
                 location.latitude, location.longitude, elevation
             ),
@@ -145,7 +145,7 @@ class Controller(controller.EnergyEstimatorController[EntryConfig]):
                 d_e_d.init(self)
 
     # interface: EnergyEstimatorController
-    def _on_update_estimate(self, estimator: Estimator_PVEnergy_Heuristic):
+    def _on_update_estimate(self, estimator: HeuristicPVEnergyEstimator):
 
         for diagnostic_entity in self.diagnostic_entities.values():
             diagnostic_entity.update_safe(

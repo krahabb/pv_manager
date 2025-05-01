@@ -53,7 +53,7 @@ class EnergyModel:
         }
 
 
-class Estimator_Consumption_Heuristic(Estimator):
+class HeuristicConsumptionEstimator(Estimator):
     """
     Proof-of-concept of an estimator model based on some heuristics:
 

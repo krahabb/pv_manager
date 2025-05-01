@@ -3,7 +3,7 @@ import typing
 from .. import const as pmc, controller
 from ..helpers import validation as hv
 from .common.estimator_consumption_heuristic import (
-    Estimator_Consumption_Heuristic,
+    HeuristicConsumptionEstimator,
 )
 
 if typing.TYPE_CHECKING:
@@ -38,5 +38,5 @@ class Controller(controller.EnergyEstimatorController[EntryConfig]):
         super().__init__(
             hass,
             config_entry,
-            Estimator_Consumption_Heuristic,
+            HeuristicConsumptionEstimator,
         )

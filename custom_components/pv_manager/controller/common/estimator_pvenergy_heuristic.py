@@ -8,12 +8,12 @@ import typing
 from astral import sun
 
 from ...helpers import datetime_from_epoch
-from .estimator_pvenergy import Estimator_PVEnergy, ObservedPVEnergy, WeatherModel
+from .estimator_pvenergy import PVEnergyEstimator, ObservedPVEnergy, WeatherModel
 
 if typing.TYPE_CHECKING:
     import datetime as dt
 
-    from .estimator_pvenergy import Estimator_PVEnergyConfig
+    from .estimator_pvenergy import PVEnergyEstimatorConfig
 
 
 class TimeSpanEnergyModel:
@@ -91,7 +91,7 @@ class TimeSpanEnergyModel:
             return True
 
 
-class Estimator_PVEnergy_Heuristic(Estimator_PVEnergy):
+class HeuristicPVEnergyEstimator(PVEnergyEstimator):
     """
     Proof-of-concept of an estimator model based on some heuristics:
 
@@ -120,7 +120,7 @@ class Estimator_PVEnergy_Heuristic(Estimator_PVEnergy):
         *,
         astral_observer: sun.Observer,
         tzinfo: "dt.tzinfo",
-        **kwargs: "typing.Unpack[Estimator_PVEnergyConfig]",
+        **kwargs: "typing.Unpack[PVEnergyEstimatorConfig]",
     ):
         self.history_samples = deque()
         self.energy_model = {}
@@ -131,14 +131,14 @@ class Estimator_PVEnergy_Heuristic(Estimator_PVEnergy):
         so it represents the 'peak' of the discrete function represented by 'model' and, depending
         on plant orientation it should more or less happen at noon in the model
         """
-        Estimator_PVEnergy.__init__(
+        PVEnergyEstimator.__init__(
             self,
             astral_observer=astral_observer,
             tzinfo=tzinfo,
             **kwargs,
         )
 
-    # interface: Estimator_PVEnergy
+    # interface: PVEnergyEstimator
     def as_dict(self):
         return super().as_dict() | {
             "energy_model": self.energy_model,

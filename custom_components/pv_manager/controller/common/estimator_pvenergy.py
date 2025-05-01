@@ -200,11 +200,11 @@ WEATHER_MODELS: dict[str | None, type[WeatherModel]] = {
 }
 
 
-class Estimator_PVEnergyConfig(EstimatorConfig):
+class PVEnergyEstimatorConfig(EstimatorConfig):
     weather_model: typing.NotRequired[str]
 
 
-class Estimator_PVEnergy(Estimator):
+class PVEnergyEstimator(Estimator):
     """
     Base class for estimator implementations based off different approaches.
     Beside the current HeuristicEstimator we should think about using neural networks for implementation.
@@ -230,7 +230,7 @@ class Estimator_PVEnergy(Estimator):
         *,
         astral_observer: "sun.Observer",
         tzinfo: dt.tzinfo,
-        **kwargs: "typing.Unpack[Estimator_PVEnergyConfig]",
+        **kwargs: "typing.Unpack[PVEnergyEstimatorConfig]",
     ):
         self.astral_observer = astral_observer
         self.weather_model = WeatherModel.build(kwargs.pop("weather_model", None))
