@@ -79,8 +79,8 @@ CE_OFF_GRID_MANAGER = ConfigEntriesItem(
             "battery_current_entity_id": EntityIdEnum.BATTERY_CURRENT,
             "battery_charge_entity_id": OptionalString(""),
             "battery_capacity": 100,
-            "pv_power_entity_id": OptionalString(""),
-            "load_power_entity_id": OptionalString(""),
+            "pv_power_entity_id": OptionalString(EntityIdEnum.PV_POWER),
+            "load_power_entity_id": OptionalString(EntityIdEnum.LOAD_POWER),
             "maximum_latency_minutes": 5,
         },
     }

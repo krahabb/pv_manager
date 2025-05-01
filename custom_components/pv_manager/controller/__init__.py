@@ -20,7 +20,8 @@ from ..binary_sensor import BinarySensor
 from ..helpers import validation as hv
 from ..manager import Manager
 from ..sensor import Sensor
-from .common.estimator import Estimator, EstimatorConfig, EstimatorWarning, Observation
+from .common import EnergyInputMode, ProcessorWarning
+from .common.estimator import Estimator, EstimatorConfig
 
 if typing.TYPE_CHECKING:
     from typing import Any, Callable, ClassVar, Coroutine, Final, Unpack
@@ -210,13 +211,13 @@ class Controller[_ConfigT: pmc.EntryConfig](helpers.Loggable):
                 add_entities(entities, config_subentry_id=subentry_id)
 
     async def async_shutdown(self):
+        for unsub in self._callbacks_unsub:
+            unsub()
+
         if not await self.hass.config_entries.async_unload_platforms(
             self.config_entry, self.platforms.keys()
         ):
             raise Exception("Failed to unload platforms")
-
-        for unsub in self._callbacks_unsub:
-            unsub()
 
         # removing circular refs here
         for subentry_id, entry_data in self.entries.items():
@@ -464,7 +465,6 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
 
     estimator: Estimator
     estimator_sensors: set[EnergyEstimatorSensor]
-    warning_binary_sensors: dict[EstimatorWarning, BinarySensor]
 
     __slots__ = (
         # configuration
@@ -473,8 +473,6 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
         # state
         "estimator",
         "estimator_sensors",
-        "warning_binary_sensors",
-        "_state_is_energy",
         "_state_convert_func",
         "_state_convert_unit",
         "_refresh_callback_unsub",
@@ -557,7 +555,6 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
             **(estimator_kwargs | config),  # type: ignore
         )
         self.estimator_sensors = set()
-        self._state_is_energy = False
         self._state_convert_func = self._state_convert_detect
         self._state_convert_unit = None
         self._refresh_callback_unsub = None
@@ -576,16 +573,6 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
             "tomorrow_energy_estimate",
             name=f"{config.get("name", "Estimated energy")} (tomorrow)",
         )
-        self.warning_binary_sensors = {
-            warning: BinarySensor(
-                self,
-                f"{warning}_warning",
-                device_class=BinarySensor.DeviceClass.PROBLEM,
-                entity_category=BinarySensor.EntityCategory.DIAGNOSTIC,
-                parent_attr=None,
-            )
-            for warning in EstimatorWarning
-        }
 
     # interface: Controller
     async def async_init(self):
@@ -608,8 +595,16 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
         estimator.on_update_estimate = self._on_update_estimate
         estimator.update_estimate()
         self.track_state_update(self.observed_entity_id, self._process_observation)
-        estimator.on_state_change = self._on_state_change
-        self._on_state_change(estimator)
+        for warning in self.estimator.warnings:
+            warning.listen(
+                BinarySensor(
+                    self,
+                    f"{warning.id}_warning",
+                    device_class=BinarySensor.DeviceClass.PROBLEM,
+                    entity_category=BinarySensor.EntityCategory.DIAGNOSTIC,
+                    parent_attr=None,
+                ).update_safe
+            )
         await super().async_init()
 
     async def async_shutdown(self):
@@ -621,10 +616,8 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
         if self._refresh_callback_unsub:
             self._refresh_callback_unsub.cancel()
             self._refresh_callback_unsub = None
-        self.estimator.on_update_estimate = None
-        self.estimator.on_state_change = None
+        self.estimator.shutdown()
         self.estimator = None  # type: ignore
-        self.warning_binary_sensors = None  # type: ignore
         await super().async_shutdown()
         assert not self.estimator_sensors
 
@@ -669,16 +662,13 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
 
     def _process_observation(self, state: "State | None"):
         try:
-            self.estimator.add_observation(
-                Observation(
-                    time.time(),
-                    self._state_convert_func(
-                        float(state.state),  # type: ignore
-                        state.attributes["unit_of_measurement"],  # type: ignore
-                        self._state_convert_unit,
-                    ),
-                    self._state_is_energy,
-                )
+            self.estimator.process(
+                self._state_convert_func(
+                    float(state.state),  # type: ignore
+                    state.attributes["unit_of_measurement"],  # type: ignore
+                    self._state_convert_unit,
+                ),
+                time.time(),
             )
         except Exception as e:
             if state and state.state not in (hac.STATE_UNKNOWN, hac.STATE_UNAVAILABLE):
@@ -688,11 +678,6 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
 
         for sensor in self.estimator_sensors:
             sensor.update_estimate(estimator, True)
-
-    def _on_state_change(self, estimator: Estimator):
-        state = estimator.state
-        for warning, binary_sensor in self.warning_binary_sensors.items():
-            binary_sensor.update_safe(warning in state)
 
     def _restore_history(self, history_start_time: dt.datetime):
         if self._restore_history_exit:
@@ -718,16 +703,13 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
             if self._restore_history_exit:
                 return
             try:
-                self.estimator.add_observation(
-                    Observation(
-                        state.last_updated_timestamp,
-                        self._state_convert_func(
-                            float(state.state),
-                            state.attributes["unit_of_measurement"],
-                            self._state_convert_unit,
-                        ),
-                        self._state_is_energy,
-                    )
+                self.estimator.process(
+                    self._state_convert_func(
+                        float(state.state),
+                        state.attributes["unit_of_measurement"],
+                        self._state_convert_unit,
+                    ),
+                    state.last_updated_timestamp,
                 )
             except:
                 # in case the state doesn't represent a proper value
@@ -747,16 +729,15 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
         """Installed as _state_convert_func at init time this will detect the type of observed entity
         by inspecting the unit and install the proper converter."""
         if from_unit in hac.UnitOfPower:
-            self._state_is_energy = False
+            self.estimator.configure(EnergyInputMode.POWER)
             self._state_convert_func = PowerConverter.convert
-            self._state_convert_unit = hac.UnitOfPower.WATT
         elif from_unit in hac.UnitOfEnergy:
-            self._state_is_energy = True
+            self.estimator.configure(EnergyInputMode.ENERGY)
             self._state_convert_func = EnergyConverter.convert
-            self._state_convert_unit = hac.UnitOfEnergy.JOULE
         else:
             # TODO: raise issue?
             raise ValueError(
                 f"Unsupported unit of measurement '{from_unit}' for observed entity: '{self.observed_entity_id}'"
             )
+        self._state_convert_unit = self.estimator.input_unit
         return self._state_convert_func(value, from_unit, self._state_convert_unit)

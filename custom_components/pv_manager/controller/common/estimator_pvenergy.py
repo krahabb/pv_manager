@@ -5,7 +5,7 @@ import typing
 
 from astral import sun
 
-from .estimator import Estimator, EstimatorConfig, Observation, ObservedEnergy
+from .estimator import Estimator, EstimatorConfig, ObservedEnergy
 
 if typing.TYPE_CHECKING:
     pass
@@ -45,11 +45,11 @@ class ObservedPVEnergy(ObservedEnergy):
 
     def __init__(
         self,
-        observation: Observation,
+        time_ts: int,
         sampling_interval_ts: int,
         weather: WeatherSample | None,
     ):
-        ObservedEnergy.__init__(self, observation, sampling_interval_ts)
+        ObservedEnergy.__init__(self, time_ts, sampling_interval_ts)
         self.weather = weather
         self.sun_azimuth = self.sun_zenith = self.SUN_NOT_SET
 
@@ -261,11 +261,11 @@ class Estimator_PVEnergy(Estimator):
             "weather": self.get_weather_at(self.observed_time_ts),
         }
 
-    def _observed_energy_new(self, observation: Observation):
+    def _observed_energy_new(self, time_ts: int):
         return ObservedPVEnergy(
-            observation,
+            time_ts,
             self.sampling_interval_ts,
-            self.get_weather_at(observation.time_ts),
+            self.get_weather_at(time_ts),
         )
 
     """
