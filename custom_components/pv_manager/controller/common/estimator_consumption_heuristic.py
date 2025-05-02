@@ -2,10 +2,10 @@ from collections import deque
 import datetime as dt
 import typing
 
-from .estimator import Estimator, ObservedEnergy
+from .estimator import EnergyEstimator, ObservedEnergy
 
 if typing.TYPE_CHECKING:
-    from .estimator import EstimatorConfig
+    from .estimator import EnergyEstimatorConfig
 
 
 class EnergyModel:
@@ -53,7 +53,7 @@ class EnergyModel:
         }
 
 
-class HeuristicConsumptionEstimator(Estimator):
+class HeuristicConsumptionEstimator(EnergyEstimator):
     """
     Proof-of-concept of an estimator model based on some heuristics:
 
@@ -70,12 +70,14 @@ class HeuristicConsumptionEstimator(Estimator):
 
     def __init__(
         self,
+        id,
         *,
         tzinfo: "dt.tzinfo",
-        **kwargs: "typing.Unpack[EstimatorConfig]",
+        **kwargs: "typing.Unpack[EnergyEstimatorConfig]",
     ):
-        Estimator.__init__(
+        EnergyEstimator.__init__(
             self,
+            id,
             tzinfo=tzinfo,
             **kwargs,
         )

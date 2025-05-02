@@ -13,7 +13,58 @@ from . import BaseEnergyProcessor, EnergyProcessorConfig
 from ...helpers import datetime_from_epoch
 
 if typing.TYPE_CHECKING:
-    pass
+    from . import BaseProcessor
+
+
+SAMPLING_INTERVAL_MODULO = 300  # 5 minutes
+
+
+class Estimator(BaseProcessor if typing.TYPE_CHECKING else object):
+    """This class acts mainly as a 'protocol' class for estimators.
+    It inherits (in typing) the same interface as BaseProcessor but the implementation
+    must be done in concrete implementations."""
+
+    UPDATE_LISTENER_TYPE = typing.Callable[["Estimator"], None]
+    _update_listeners: typing.Final[set[UPDATE_LISTENER_TYPE]]
+
+    _SLOTS_ = ("_update_listeners",)
+
+    def __init__(self):
+        self._update_listeners = set()
+
+    @typing.override
+    def shutdown(self):
+        """Used to remove references when wanting to shutdown resources usage."""
+        self._update_listeners.clear()
+
+    @typing.override
+    def as_dict(self):
+        """Returns the full state info of the estimator as a dictionary.
+        Used for serialization to debug logs or so."""
+        return {}
+
+    @typing.override
+    def get_state_dict(self):
+        """Returns a synthetic state dict for the estimator.
+        Used for debugging purposes."""
+        return {}
+
+    # interface: self
+    def listen_update(self, callback_func: UPDATE_LISTENER_TYPE):
+        self._update_listeners.add(callback_func)
+
+        def _unsub():
+            try:
+                self._update_listeners.remove(callback_func)
+            except KeyError:
+                pass
+
+        return _unsub
+
+    @abc.abstractmethod
+    def update_estimate(self):
+        for listener in self._update_listeners:
+            listener(self)
 
 
 @dataclasses.dataclass(slots=True)
@@ -43,7 +94,7 @@ class ObservedEnergy:
         self.samples = 0
 
 
-class EstimatorConfig(EnergyProcessorConfig):
+class EnergyEstimatorConfig(EnergyProcessorConfig):
     sampling_interval_minutes: int
     """Time resolution of model data"""
     observation_duration_minutes: int  # minutes
@@ -52,7 +103,7 @@ class EstimatorConfig(EnergyProcessorConfig):
     """Number of (backward) days of data to keep in the model (used to build the estimates for the time forward)."""
 
 
-class Estimator(BaseEnergyProcessor):
+class EnergyEstimator(Estimator, BaseEnergyProcessor):
     """
     Base class for all (energy) estimators.
     """
@@ -61,9 +112,6 @@ class Estimator(BaseEnergyProcessor):
     """Decay factor for the average number of observations per sample."""
 
     tzinfo: dt.tzinfo
-
-    UPDATE_LISTENER_TYPE = typing.Callable[["Estimator"], None]
-    _update_listeners: typing.Final[set[UPDATE_LISTENER_TYPE]]
 
     """Contains warnings and any other useful operating condition of the estimator."""
     observed_samples: typing.Final[deque[ObservedEnergy]]
@@ -86,21 +134,23 @@ class Estimator(BaseEnergyProcessor):
         "today_ts",  # UTC time of local midnight (start of today)
         "tomorrow_ts",  # UTC time of local midnight tomorrow (start of tomorrow)
         "today_energy",  # energy accumulated today
-        "_update_listeners",
         "_observed_sample_curr",
-    )
+    ) + Estimator._SLOTS_
 
     def __init__(
         self,
+        id,
         *,
         tzinfo: dt.tzinfo,
-        **kwargs: typing.Unpack[EstimatorConfig],
+        **kwargs: typing.Unpack[EnergyEstimatorConfig],
     ):
-        sampling_interval_ts = kwargs.get("sampling_interval_minutes", 10) * 60
-        assert (
-            sampling_interval_ts % 300
-        ) == 0, "sampling_interval must be a multiple of 5 minutes"
-        self.sampling_interval_ts: typing.Final = sampling_interval_ts
+        self.sampling_interval_ts: typing.Final = (
+            (
+                ((kwargs.get("sampling_interval_minutes") or 10) * 60)
+                // SAMPLING_INTERVAL_MODULO
+            )
+            * SAMPLING_INTERVAL_MODULO
+        ) or SAMPLING_INTERVAL_MODULO
         self.history_duration_ts: typing.Final = (
             kwargs.get("history_duration_days", 7) * 86400
         )
@@ -114,27 +164,15 @@ class Estimator(BaseEnergyProcessor):
         self.today_ts = 0
         self.tomorrow_ts = 0
         self.today_energy = 0
-        self._update_listeners = set()
         # do not define here..we're relying on AttributeError for proper initialization
         # self._history_sample_curr = None
-        BaseEnergyProcessor.__init__(self, **kwargs)
+        Estimator.__init__(self)
+        BaseEnergyProcessor.__init__(self, id, **kwargs)
 
     @typing.override
     def shutdown(self):
-        """Used to remove references when wanting to shutdown resources usage."""
-        self._update_listeners.clear()
+        Estimator.shutdown(self)
         BaseEnergyProcessor.shutdown(self)
-
-    def listen_update(self, callback_func: UPDATE_LISTENER_TYPE):
-        self._update_listeners.add(callback_func)
-
-        def _unsub():
-            try:
-                self._update_listeners.remove(callback_func)
-            except KeyError:
-                pass
-
-        return _unsub
 
     def as_dict(self):
         """Returns the full state info of the estimator as a dictionary.
@@ -203,8 +241,8 @@ class Estimator(BaseEnergyProcessor):
                     sample_curr.samples += 1
 
             self.observations_per_sample_avg = (
-                self.observations_per_sample_avg * Estimator.OPS_DECAY
-                + sample_prev.samples * (1 - Estimator.OPS_DECAY)
+                self.observations_per_sample_avg * EnergyEstimator.OPS_DECAY
+                + sample_prev.samples * (1 - EnergyEstimator.OPS_DECAY)
             )
             self.observed_samples.append(sample_prev)
             self.observed_time_ts = sample_prev.time_next_ts
@@ -266,11 +304,6 @@ class Estimator(BaseEnergyProcessor):
         except IndexError:
             # no observations though
             return (0, 0, 0)
-
-    @abc.abstractmethod
-    def update_estimate(self):
-        for listener in self._update_listeners:
-            listener(self)
 
     @abc.abstractmethod
     def get_estimated_energy(self, time_begin_ts: float, time_end_ts: float) -> float:

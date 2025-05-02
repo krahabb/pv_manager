@@ -5,7 +5,7 @@ import typing
 
 from astral import sun
 
-from .estimator import Estimator, EstimatorConfig, ObservedEnergy
+from .estimator import EnergyEstimator, EnergyEstimatorConfig, ObservedEnergy
 
 if typing.TYPE_CHECKING:
     pass
@@ -200,11 +200,11 @@ WEATHER_MODELS: dict[str | None, type[WeatherModel]] = {
 }
 
 
-class PVEnergyEstimatorConfig(EstimatorConfig):
+class PVEnergyEstimatorConfig(EnergyEstimatorConfig):
     weather_model: typing.NotRequired[str]
 
 
-class PVEnergyEstimator(Estimator):
+class PVEnergyEstimator(EnergyEstimator):
     """
     Base class for estimator implementations based off different approaches.
     Beside the current HeuristicEstimator we should think about using neural networks for implementation.
@@ -227,6 +227,7 @@ class PVEnergyEstimator(Estimator):
 
     def __init__(
         self,
+        id,
         *,
         astral_observer: "sun.Observer",
         tzinfo: dt.tzinfo,
@@ -239,8 +240,9 @@ class PVEnergyEstimator(Estimator):
         self._noon_ts: int = 0
         self._sunrise_ts: int = 0
         self._sunset_ts: int = 0
-        Estimator.__init__(
+        EnergyEstimator.__init__(
             self,
+            id,
             tzinfo=tzinfo,
             **kwargs,
         )

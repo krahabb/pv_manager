@@ -13,7 +13,8 @@ from homeassistant.util.unit_conversion import (
 )
 
 from .. import const as pmc
-from .common import BaseEnergyProcessor, EnergyInputMode
+from ..sensor import EnergySensor
+from .common import BaseEnergyProcessor, EnergyInputMode, SourceType
 from .common.estimator_pvenergy_heuristic import HeuristicPVEnergyEstimator
 
 if typing.TYPE_CHECKING:
@@ -23,6 +24,7 @@ if typing.TYPE_CHECKING:
     from homeassistant.core import Event, HomeAssistant, State
 
     from ..helpers.entity import EntityArgs
+    from .common import EnergyProcessorConfig
     from .common.estimator_pvenergy_heuristic import PVEnergyEstimatorConfig
     from .off_grid_manager import Controller
 
@@ -31,15 +33,6 @@ ENERGY_UNIT = hac.UnitOfEnergy.WATT_HOUR
 
 # define a common name so to eventually switch to time.monotonic for time integration
 TIME_TS = time.time
-
-
-class MeteringSource(enum.StrEnum):
-    BATTERY = enum.auto()
-    BATTERY_IN = enum.auto()
-    BATTERY_OUT = enum.auto()
-    LOAD = enum.auto()
-    LOSSES = enum.auto()
-    PV = enum.auto()
 
 
 class MeterStoreType(typing.TypedDict):
@@ -55,11 +48,11 @@ class BaseMeter(BaseEnergyProcessor if typing.TYPE_CHECKING else object):
     which also is a (concrete) descendant of BaseEnergyProcessor.
 
     For actual energy meters not implemented through Estimator
-    we'll then have to declare a concrete class (see ConcreteBaseMeter)
+    we'll then have to declare a concrete class (see _BaseMeter)
     """
 
     controller: "Final[Controller]"
-    metering_source: "Final[MeteringSource]"
+    metering_source: "Final[SourceType]"
 
     _SLOTS_ = (
         "controller",
@@ -67,7 +60,7 @@ class BaseMeter(BaseEnergyProcessor if typing.TYPE_CHECKING else object):
         "_state_convert_func",
     )
 
-    def __init__(self, controller: "Controller", metering_source: MeteringSource):
+    def __init__(self, controller: "Controller", metering_source: SourceType):
         self.controller = controller
         self.metering_source = metering_source
         self._state_convert_func = self._state_convert_detect
@@ -134,8 +127,13 @@ class _BaseMeter(BaseMeter, BaseEnergyProcessor):
 
     __slots__ = BaseMeter._SLOTS_
 
-    def __init__(self, controller: "Controller", metering_source: MeteringSource):
-        BaseEnergyProcessor.__init__(self)
+    def __init__(
+        self,
+        controller: "Controller",
+        metering_source: SourceType,
+        **kwargs: "Unpack[EnergyProcessorConfig]",
+    ):
+        BaseEnergyProcessor.__init__(self, metering_source, **kwargs)
         BaseMeter.__init__(self, controller, metering_source)
 
     def shutdown(self):
@@ -145,13 +143,13 @@ class _BaseMeter(BaseMeter, BaseEnergyProcessor):
 
 class BatteryMeter(_BaseMeter):
 
-    def __init__(self, controller: "Controller"):
-        _BaseMeter.__init__(self, controller, MeteringSource.BATTERY)
+    def __init__(
+        self, controller: "Controller", **kwargs: "Unpack[EnergyProcessorConfig]"
+    ):
+        _BaseMeter.__init__(self, controller, SourceType.BATTERY, **kwargs)
         self.configure(EnergyInputMode.POWER)
-        controller.battery_in_meter = _BaseMeter(controller, MeteringSource.BATTERY_IN)
-        controller.battery_out_meter = _BaseMeter(
-            controller, MeteringSource.BATTERY_OUT
-        )
+        controller.battery_in_meter = _BaseMeter(controller, SourceType.BATTERY_IN)
+        controller.battery_out_meter = _BaseMeter(controller, SourceType.BATTERY_OUT)
         self.energy_listeners.add(self._energy_callback)
 
     def _energy_callback(self, energy: float, time_ts: float):
@@ -168,13 +166,13 @@ class BatteryMeter(_BaseMeter):
 
 
 class PvMeter(_BaseMeter):
-    def __init__(self, controller: "Controller"):
-        _BaseMeter.__init__(self, controller, MeteringSource.PV)
+    def __init__(self, controller: "Controller", **kwargs: "Unpack[EnergyProcessorConfig]"):
+        _BaseMeter.__init__(self, controller, SourceType.PV, **kwargs)
 
 
 class LoadMeter(_BaseMeter):
-    def __init__(self, controller: "Controller"):
-        _BaseMeter.__init__(self, controller, MeteringSource.LOAD)
+    def __init__(self, controller: "Controller", **kwargs: "Unpack[EnergyProcessorConfig]"):
+        _BaseMeter.__init__(self, controller, SourceType.LOAD, **kwargs)
 
 
 class LossesMeter(_BaseMeter):
@@ -192,7 +190,7 @@ class LossesMeter(_BaseMeter):
     def __init__(self, controller: "Controller", callback_interval_ts: float):
         self._callback_interval_ts = callback_interval_ts
         self._callback_unsub = None
-        _BaseMeter.__init__(self, controller, MeteringSource.LOSSES)
+        _BaseMeter.__init__(self, controller, SourceType.LOSSES)
 
     def start(self):
         """Called after restoring data in the controller so to initialize incremental counters."""
@@ -317,7 +315,54 @@ class HeuristicPVEnergyEstimatorMeter(EstimatorMeter, HeuristicPVEnergyEstimator
         tzinfo: tzinfo,
         **kwargs: "Unpack[PVEnergyEstimatorConfig]",
     ):
-        BaseMeter.__init__(self, controller, MeteringSource.PV)
+        BaseMeter.__init__(self, controller, SourceType.PV)
         HeuristicPVEnergyEstimator.__init__(
-            self, astral_observer=astral_observer, tzinfo=tzinfo, **kwargs
+            self,
+            SourceType.PV,
+            astral_observer=astral_observer,
+            tzinfo=tzinfo,
+            **kwargs,
         )
+
+
+class ManagerEnergySensorConfig(pmc.EntityConfig, pmc.SubentryConfig):
+    """Configure additional energy (metering) sensors for the various energy sources."""
+
+    metering_source: SourceType
+    cycle_modes: list[EnergySensor.CycleMode]
+
+
+class ManagerEnergySensor(EnergySensor):
+    # TODO: generalize and  restructure ENERGY_CALCULATOR to use BaseMeter
+    controller: "Controller"
+
+    energy_meter: "Final[BaseMeter]"
+
+    _attr_parent_attr = None
+
+    __slots__ = ("energy_meter",)
+
+    def __init__(
+        self,
+        energy_meter: BaseMeter,
+        name: str,
+        config_subentry_id: str,
+        cycle_mode: EnergySensor.CycleMode,
+    ):
+        self.energy_meter = energy_meter
+        # TODO: rename sensor id using energy_meter instead of subentry_id
+        super().__init__(
+            energy_meter.controller,
+            f"{pmc.ConfigSubentryType.MANAGER_ENERGY_SENSOR}_{energy_meter.metering_source}",
+            cycle_mode,
+            name=name,
+            config_subentry_id=config_subentry_id,
+        )
+
+    async def async_added_to_hass(self):
+        await super().async_added_to_hass()
+        self.energy_meter.energy_listeners.add(self.accumulate)
+
+    async def async_will_remove_from_hass(self):
+        self.energy_meter.energy_listeners.remove(self.accumulate)
+        return await super().async_will_remove_from_hass()

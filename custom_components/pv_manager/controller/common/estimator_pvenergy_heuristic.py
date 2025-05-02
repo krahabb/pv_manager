@@ -117,6 +117,7 @@ class HeuristicPVEnergyEstimator(PVEnergyEstimator):
 
     def __init__(
         self,
+        id,
         *,
         astral_observer: sun.Observer,
         tzinfo: "dt.tzinfo",
@@ -133,6 +134,7 @@ class HeuristicPVEnergyEstimator(PVEnergyEstimator):
         """
         PVEnergyEstimator.__init__(
             self,
+            id,
             astral_observer=astral_observer,
             tzinfo=tzinfo,
             **kwargs,

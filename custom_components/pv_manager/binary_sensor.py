@@ -3,15 +3,17 @@ import typing
 from homeassistant.components import binary_sensor
 
 from . import const as pmc, helpers
+from .controller.common import ProcessorWarning
 from .helpers.entity import Entity
 
 if typing.TYPE_CHECKING:
+    from typing import Callable, Iterable
+
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
     from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
     from .controller import Controller
-    from .controller.common import ProcessorWarning
     from .helpers.entity import EntityArgs
 
     class BinarySensorArgs(EntityArgs):
@@ -63,26 +65,39 @@ class BinarySensor(Entity, binary_sensor.BinarySensorEntity):
 
 
 class ProcessorWarningBinarySensor(BinarySensor):
+    """Manages the state of multiple ProcessorWarning for the same warning id.
+    The state is set as the 'or' of the warnings states meaning any warning in the collection
+    being on will set the sensor on."""
 
     _attr_device_class = BinarySensor.DeviceClass.PROBLEM
     _attr_entity_category = BinarySensor.EntityCategory.DIAGNOSTIC
     _attr_parent_attr = None
 
-    _processor_warning: "ProcessorWarning"
+    _processor_warnings: "Iterable[ProcessorWarning]"
+    _processor_warnings_unsub: "Iterable[Callable[[], None]]"
+
+    # optimized properties for the case where we only have one
+    _processor_warning: "ProcessorWarning | None"
+
     __slots__ = (
+        "_processor_warnings",
+        "_processor_warnings_unsub",
         "_processor_warning",
-        "_processor_warning_unsub",
     )
 
     def __init__(
         self,
         controller,
         id,
-        processor_warning: "ProcessorWarning",
+        processor_warning: "Iterable[ProcessorWarning] | ProcessorWarning",
         **kwargs: "typing.Unpack[BinarySensorArgs]",
     ):
-        self._processor_warning = processor_warning
-        self._processor_warning_unsub = None
+        if isinstance(processor_warning, ProcessorWarning):
+            self._processor_warning = processor_warning
+        else:
+            self._processor_warning = None
+            self._processor_warnings = processor_warning
+        self._processor_warnings_unsub = ()
         super().__init__(
             controller,
             id,
@@ -90,19 +105,48 @@ class ProcessorWarningBinarySensor(BinarySensor):
         )
 
     async def async_shutdown(self, remove):
-        if self._processor_warning_unsub:
-            self._processor_warning_unsub()
-            self._processor_warning_unsub = None
+        for unsub in self._processor_warnings_unsub:
+            unsub()
         await super().async_shutdown(remove)
-        self._processor_warning = None # type: ignore
+        self._processor_warnings = None  # type: ignore
+        self._processor_warnings_unsub = None  # type: ignore
+        self._processor_warning = None
 
     async def async_added_to_hass(self):
-        self.is_on = self._processor_warning.on
-        self._processor_warning_unsub = self._processor_warning.listen(self.update)
-        return await super().async_added_to_hass()
+        if self._processor_warning:
+            self.is_on = self._processor_warning.on
+            self._processor_warnings_unsub = (
+                self._processor_warning.listen(self._update_warnings),
+            )
+        else:
+            self._update_warnings(False)
+            self._processor_warnings_unsub = [
+                _processor_warning.listen(self._update_warnings)
+                for _processor_warning in self._processor_warnings
+            ]
+        await super().async_added_to_hass()
 
     async def async_will_remove_from_hass(self):
-        if self._processor_warning_unsub:
-            self._processor_warning_unsub()
-            self._processor_warning_unsub = None
-        return await super().async_will_remove_from_hass()
+        for unsub in self._processor_warnings_unsub:
+            unsub()
+        self._processor_warnings_unsub = ()
+        await super().async_will_remove_from_hass()
+
+    def _update_warnings(self, is_on):
+        if self._processor_warning:
+            # Binded to a single source of warning: no need to populate
+            # extra_state_attributes or cycle whatever
+            self.is_on = is_on
+        else:
+            sources = []
+            for warning in self._processor_warnings:
+                if warning.on:
+                    sources.append(warning.processor.id)
+            if sources:
+                self.is_on = True
+                self.extra_state_attributes = {"sources": sources}
+            else:
+                self.is_on = False
+                self.extra_state_attributes = None
+        if self.added_to_hass:
+            self.async_write_ha_state()

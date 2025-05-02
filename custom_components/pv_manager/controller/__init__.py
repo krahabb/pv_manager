@@ -22,7 +22,7 @@ from ..helpers.entity import EstimatorEntity
 from ..manager import Manager
 from ..sensor import Sensor
 from .common import EnergyInputMode
-from .common.estimator import Estimator, EstimatorConfig
+from .common.estimator import EnergyEstimator, EnergyEstimatorConfig
 
 if typing.TYPE_CHECKING:
     from typing import Any, Callable, ClassVar, Coroutine, Final, Unpack
@@ -404,7 +404,7 @@ class EnergyEstimatorSensor(EstimatorEntity, Sensor):
         )
 
     @typing.override
-    def on_estimator_update(self, estimator: Estimator):
+    def on_estimator_update(self, estimator: EnergyEstimator):
         self.native_value = round(
             estimator.get_estimated_energy(
                 estimator.observed_time_ts,
@@ -418,7 +418,7 @@ class EnergyEstimatorSensor(EstimatorEntity, Sensor):
 class TodayEnergyEstimatorSensor(EnergyEstimatorSensor):
 
     @typing.override
-    def on_estimator_update(self, estimator: Estimator):
+    def on_estimator_update(self, estimator: EnergyEstimator):
         self.extra_state_attributes = estimator.get_state_dict()
         self.native_value = round(
             estimator.today_energy
@@ -433,7 +433,7 @@ class TodayEnergyEstimatorSensor(EnergyEstimatorSensor):
 class TomorrowEnergyEstimatorSensor(EnergyEstimatorSensor):
 
     @typing.override
-    def on_estimator_update(self, estimator: Estimator):
+    def on_estimator_update(self, estimator: EnergyEstimator):
         self.native_value = round(
             estimator.get_estimated_energy(
                 estimator.tomorrow_ts, estimator.tomorrow_ts + 86400
@@ -443,7 +443,7 @@ class TomorrowEnergyEstimatorSensor(EnergyEstimatorSensor):
             self._async_write_ha_state()
 
 
-class EnergyEstimatorControllerConfig(pmc.EntryConfig, EstimatorConfig):
+class EnergyEstimatorControllerConfig(pmc.EntryConfig, EnergyEstimatorConfig):
 
     observed_entity_id: str
     """Entity ID of the energy/power observed entity"""
@@ -457,7 +457,7 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
 
     PLATFORMS = {Sensor.PLATFORM}
 
-    estimator: Estimator
+    estimator: EnergyEstimator
 
     __slots__ = (
         # configuration
@@ -536,14 +536,16 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
         self,
         hass: "HomeAssistant",
         config_entry: "ConfigEntry",
-        estimator_class: type[Estimator],
+        estimator_class: type[EnergyEstimator],
         **estimator_kwargs,
     ):
         config = config_entry.data
         self.observed_entity_id = config["observed_entity_id"]
         self.refresh_period_ts = config.get("refresh_period_minutes", 0) * 60
         self.estimator = estimator_class(
+            self.observed_entity_id,
             tzinfo=dt_util.get_default_time_zone(),
+            safe_minimum_power_w=0,
             **(estimator_kwargs | config),  # type: ignore
         )
         self._state_convert_func = self._state_convert_detect

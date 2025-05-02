@@ -3,21 +3,33 @@ import enum
 import typing
 
 
+class SourceType(enum.StrEnum):
+    BATTERY = enum.auto()
+    BATTERY_IN = enum.auto()
+    BATTERY_OUT = enum.auto()
+    LOAD = enum.auto()
+    LOSSES = enum.auto()
+    PV = enum.auto()
+
+
 class ProcessorWarning:
 
     CALLBACK_TYPE = typing.Callable[[bool], None]
 
-    id: str
+    processor: "BaseProcessor"
+    id: str  # could be any object but it should have a 'proper' str behaviour
     on: bool
     _listeners: set[CALLBACK_TYPE]
 
     __slots__ = (
+        "processor",
         "id",
         "on",
         "_listeners",
     )
 
-    def __init__(self, processor: "BaseProcessor", id: str):
+    def __init__(self, processor: "BaseProcessor", id):
+        self.processor = processor
         self.id = id
         self.on = False
         self._listeners = set()
@@ -25,6 +37,8 @@ class ProcessorWarning:
 
     def shutdown(self):
         self._listeners.clear()
+        setattr(self.processor, f"warning_{self.id}", None)
+        self.processor = None # type: ignore
 
     def listen(self, callback_func: CALLBACK_TYPE):
         self._listeners.add(callback_func)
@@ -43,25 +57,28 @@ class ProcessorWarning:
             listener(self.on)
 
 
-class BaseProcessor[_input_t, _output_t](abc.ABC):
+class BaseProcessor[_input_t](abc.ABC):
 
+    id: str
     time_ts: float
     input: _input_t
-    output: _output_t
 
     WARNINGS: typing.ClassVar[typing.Iterable[str]] = ()
     warnings: typing.Final[set[ProcessorWarning]]
 
     __slots__ = (
+        "id",
         "time_ts",
         "input",
-        "output",
         "warnings",
     )
 
-    def __init__(self):
+    def __init__(self, id):
+        self.id = id
         self.time_ts = None  # type: ignore
-        self.warnings = {ProcessorWarning(self, id) for id in self.WARNINGS}
+        self.warnings = {
+            ProcessorWarning(self, warning_id) for warning_id in self.WARNINGS
+        }
 
     def configure(self, *args, **kwargs):
         pass
@@ -98,23 +115,32 @@ class EnergyProcessorWarningId(enum.StrEnum):
     out_of_range = enum.auto()
 
 
+# these defaults are applied when the corresponding config option is not set or is 0
+# they means by default we're measuring positive energies with (almost) no latency checks
+# In code they're checked anyway but the set limits should be high enough to not pose any real issue
+# preferring this behavior over spending time against checking for 'disabled'
 MAXIMUM_LATENCY_DISABLED = 1e6
 SAFE_MAXIMUM_POWER_DISABLED = 1e6
+SAFE_MINIMUM_POWER_DISABLED = 0
 
 
 class EnergyProcessorConfig(typing.TypedDict):
     maximum_latency_minutes: typing.NotRequired[float]
     """Maximum time between source pv power/energy samples before considering an error in data sampling."""
     safe_maximum_power_w: typing.NotRequired[float]
-    """Maximum power expected at the input used to filter out outliers from processing. If not set disables the chcek."""
+    """Maximum power expected at the input used to filter out outliers from processing. If not set disables the check."""
+    safe_minimum_power_w: typing.NotRequired[float]
+    """Minimum power expected at the input used to filter out outliers from processing. If not set disables the check."""
 
 
-class BaseEnergyProcessor(BaseProcessor[float, float]):
+class BaseEnergyProcessor(BaseProcessor[float]):
 
     input_mode: typing.Final[bool]
     input_unit: typing.Final[str | None]
     """input_mode is not implicitly initialized since it must be configured by calling
     configure() before process()."""
+
+    output: float
 
     WARNINGS = EnergyProcessorWarningId
 
@@ -129,8 +155,11 @@ class BaseEnergyProcessor(BaseProcessor[float, float]):
         "maximum_latency_ts",
         "safe_maximum_power",
         "safe_maximum_power_cal",
+        "safe_minimum_power",
+        "safe_minimum_power_cal",
         "input_mode",
         "input_unit",
+        "output",
         "warning_maximum_latency",
         "warning_out_of_range",
         "energy_listeners",
@@ -138,6 +167,7 @@ class BaseEnergyProcessor(BaseProcessor[float, float]):
 
     def __init__(
         self,
+        id,
         **kwargs: typing.Unpack[EnergyProcessorConfig],
     ):
         self.maximum_latency_ts = (
@@ -147,10 +177,14 @@ class BaseEnergyProcessor(BaseProcessor[float, float]):
             kwargs.get("safe_maximum_power_w") or SAFE_MAXIMUM_POWER_DISABLED
         )
         self.safe_maximum_power_cal = self.safe_maximum_power / 3600
+        self.safe_minimum_power = (
+            kwargs.get("safe_minimum_power_w") or SAFE_MINIMUM_POWER_DISABLED
+        )
+        self.safe_minimum_power_cal = self.safe_minimum_power / 3600
         self.input_unit = None
-        self.energy_listeners = set()
-        BaseProcessor.__init__(self)
         self.output = 0
+        self.energy_listeners = set()
+        BaseProcessor.__init__(self, id)
 
     @typing.override
     def shutdown(self):
@@ -177,7 +211,7 @@ class BaseEnergyProcessor(BaseProcessor[float, float]):
 
                 if self.input_mode:
                     energy = input - self.input
-                    if 0 <= energy <= self.safe_maximum_power_cal * d_ts:
+                    if self.safe_minimum_power_cal <= energy / d_ts <= self.safe_maximum_power_cal:
                         if self.warning_out_of_range.on:
                             self.warning_out_of_range.toggle()
                         self.output += energy
@@ -190,7 +224,7 @@ class BaseEnergyProcessor(BaseProcessor[float, float]):
                             self.warning_out_of_range.toggle()
                 else:
                     # power left rect integration
-                    if 0 <= self.input <= self.safe_maximum_power:  # type: ignore
+                    if self.safe_minimum_power <= self.input <= self.safe_maximum_power:  # type: ignore
                         if self.warning_out_of_range.on:
                             self.warning_out_of_range.toggle()
                         energy = self.input * d_ts / 3600
@@ -248,5 +282,10 @@ class BaseEnergyProcessor(BaseProcessor[float, float]):
                 None
                 if self.safe_maximum_power is SAFE_MAXIMUM_POWER_DISABLED
                 else self.safe_maximum_power
+            ),
+            "safe_minimum_power_w": (
+                None
+                if self.safe_minimum_power == -SAFE_MAXIMUM_POWER_DISABLED
+                else self.safe_minimum_power
             ),
         }

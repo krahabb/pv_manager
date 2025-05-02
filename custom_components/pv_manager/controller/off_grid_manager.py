@@ -15,18 +15,22 @@ from homeassistant.util.unit_conversion import (
     PowerConverter,
 )
 
+from custom_components.pv_manager.controller.common import SAFE_MAXIMUM_POWER_DISABLED
+
 from .. import const as pmc, controller
-from ..binary_sensor import BinarySensor
+from ..binary_sensor import ProcessorWarningBinarySensor
+from ..controller.common.battery_estimator import BatteryEstimator
 from ..helpers import entity as he, validation as hv
-from ..sensor import BatteryChargeSensor, EnergySensor, PowerSensor, Sensor
+from ..sensor import BatteryChargeSensor, PowerSensor, Sensor
 from ._energy_meters import (
     BaseMeter,
     BatteryMeter,
     LoadMeter,
     LossesMeter,
-    MeteringSource,
+    ManagerEnergySensor,
     MeterStoreType,
     PvMeter,
+    SourceType,
 )
 
 if typing.TYPE_CHECKING:
@@ -36,14 +40,13 @@ if typing.TYPE_CHECKING:
     from homeassistant.core import Event, HomeAssistant, State
 
     from ..controller import EntryData
+    from ..controller.common import ProcessorWarning
     from ..helpers.entity import EntityArgs
 
 
 MAXIMUM_LATENCY_INFINITE = 1e6
 VOLTAGE_UNIT = hac.UnitOfElectricPotential.VOLT
 CURRENT_UNIT = hac.UnitOfElectricCurrent.AMPERE
-POWER_UNIT = hac.UnitOfPower.WATT
-ENERGY_UNIT = hac.UnitOfEnergy.WATT_HOUR
 
 # define a common name so to eventually switch to time.monotonic for time integration
 TIME_TS = time.time
@@ -75,49 +78,6 @@ class ControllerStore(storage.Store[ControllerStoreType]):
 
 
 MANAGER_ENERGY_SENSOR_NAME = "Energy"  # default name for ManagerEnergySensor
-
-
-class ManagerEnergySensorConfig(pmc.EntityConfig, pmc.SubentryConfig):
-    """Configure additional energy (metering) sensors for the various energy sources."""
-
-    metering_source: MeteringSource
-    cycle_modes: list[EnergySensor.CycleMode]
-
-
-class ManagerEnergySensor(EnergySensor):
-
-    controller: "Controller"
-
-    energy_meter: "Final[BaseMeter]"
-
-    _attr_parent_attr = None
-
-    __slots__ = ("energy_meter",)
-
-    def __init__(
-        self,
-        energy_meter: BaseMeter,
-        name: str,
-        config_subentry_id: str,
-        cycle_mode: EnergySensor.CycleMode,
-    ):
-        self.energy_meter = energy_meter
-        # TODO: rename sensor id using energy_meter instead of subentry_id
-        super().__init__(
-            energy_meter.controller,
-            f"{pmc.ConfigSubentryType.MANAGER_ENERGY_SENSOR}_{energy_meter.metering_source}",
-            cycle_mode,
-            name=name,
-            config_subentry_id=config_subentry_id,
-        )
-
-    async def async_added_to_hass(self):
-        await super().async_added_to_hass()
-        self.energy_meter.energy_listeners.add(self.accumulate)
-
-    async def async_will_remove_from_hass(self):
-        self.energy_meter.energy_listeners.remove(self.accumulate)
-        return await super().async_will_remove_from_hass()
 
 
 class YieldSensorId(enum.StrEnum):
@@ -164,7 +124,7 @@ class ManagerYieldConfig(pmc.EntityConfig, pmc.SubentryConfig):
     battery efficiency = battery_out / battery_in (sampled at same battery charge)
     """
 
-    cycle_modes: list[EnergySensor.CycleMode]
+    cycle_modes: list[ManagerEnergySensor.CycleMode]
     """For energy losses sensor(s)"""
 
     sampling_interval_seconds: int
@@ -179,12 +139,15 @@ class ManagerYieldConfig(pmc.EntityConfig, pmc.SubentryConfig):
 class ControllerConfig(typing.TypedDict):
     battery_voltage_entity_id: str
     battery_current_entity_id: str
+    safe_maximum_battery_power_w: "NotRequired[float]"
     battery_charge_entity_id: "NotRequired[str]"
 
     battery_capacity: float
 
     pv_power_entity_id: "NotRequired[str]"
+    safe_maximum_pv_power_w: "NotRequired[float]"
     load_power_entity_id: "NotRequired[str]"
+    safe_maximum_load_power_w: "NotRequired[float]"
 
     maximum_latency_minutes: int
     """Maximum time between source pv power/energy samples before considering an error in data sampling."""
@@ -203,13 +166,15 @@ class Controller(controller.Controller[EntryConfig]):
 
     STORE_SAVE_PERIOD = 3600
 
-    energy_meters: "Final[dict[MeteringSource, BaseMeter]]"
+    energy_meters: "Final[dict[SourceType, BaseMeter]]"
     battery_meter: BatteryMeter
     battery_in_meter: BaseMeter
     battery_out_meter: BaseMeter
     pv_meter: PvMeter
     load_meter: LoadMeter
     losses_meter: LossesMeter | None
+
+    battery_estimator: BatteryEstimator
 
     battery_charge_sensor: BatteryChargeSensor | None
     losses_power_sensor: PowerSensor | None
@@ -242,6 +207,7 @@ class Controller(controller.Controller[EntryConfig]):
         "pv_meter",
         "load_meter",
         "losses_meter",
+        "battery_estimator",
         # entities
         "battery_charge_sensor",
         "losses_power_sensor",
@@ -271,15 +237,24 @@ class Controller(controller.Controller[EntryConfig]):
             hv.req_config("battery_current_entity_id", config): hv.sensor_selector(
                 device_class=Sensor.DeviceClass.CURRENT
             ),
+            hv.opt_config(
+                "safe_maximum_battery_power_w", config
+            ): hv.positive_number_selector(unit_of_measurement="W"),
             hv.req_config("battery_capacity", config): hv.positive_number_selector(
                 unit_of_measurement="Ah"
             ),
             hv.opt_config("pv_power_entity_id", config): hv.sensor_selector(
                 device_class=Sensor.DeviceClass.POWER
             ),
+            hv.opt_config(
+                "safe_maximum_pv_power_w", config
+            ): hv.positive_number_selector(unit_of_measurement="W"),
             hv.opt_config("load_power_entity_id", config): hv.sensor_selector(
                 device_class=Sensor.DeviceClass.POWER
             ),
+            hv.opt_config(
+                "safe_maximum_load_power_w", config
+            ): hv.positive_number_selector(unit_of_measurement="W"),
             hv.opt_config("maximum_latency_minutes", config): hv.time_period_selector(
                 unit_of_measurement=hac.UnitOfTime.MINUTES
             ),
@@ -297,7 +272,7 @@ class Controller(controller.Controller[EntryConfig]):
                     }
                     return hv.entity_schema(config) | {
                         hv.req_config("metering_source", config): hv.select_selector(
-                            options=list(MeteringSource)
+                            options=list(SourceType)
                         ),
                         hv.req_config("cycle_modes", config): hv.cycle_modes_selector(),
                     }
@@ -351,9 +326,10 @@ class Controller(controller.Controller[EntryConfig]):
         self.battery_capacity = config.get("battery_capacity", 0)
         self.pv_power_entity_id = config.get("pv_power_entity_id")
         self.load_power_entity_id = config.get("load_power_entity_id")
-        self.maximum_latency_ts = (
-            config.get("maximum_latency_minutes", MAXIMUM_LATENCY_INFINITE) * 60
+        maximum_latency_minutes = (
+            config.get("maximum_latency_minutes") or MAXIMUM_LATENCY_INFINITE
         )
+        self.maximum_latency_ts = maximum_latency_minutes * 60
 
         self._store = ControllerStore(hass, config_entry.entry_id)
         self.battery_voltage: float = 0
@@ -364,9 +340,30 @@ class Controller(controller.Controller[EntryConfig]):
         self.battery_capacity_estimate: float = self.battery_capacity
 
         self.energy_meters = {}
-        self.battery_meter = BatteryMeter(self)
-        self.pv_meter = PvMeter(self)
-        self.load_meter = LoadMeter(self)
+        self.battery_meter = BatteryMeter(
+            self,
+            maximum_latency_minutes=maximum_latency_minutes,
+            safe_maximum_power_w=config.get("safe_maximum_battery_power_w")
+            or SAFE_MAXIMUM_POWER_DISABLED,
+            safe_minimum_power_w=-(
+                config.get("safe_maximum_battery_power_w")
+                or SAFE_MAXIMUM_POWER_DISABLED
+            ),
+        )
+        self.pv_meter = PvMeter(
+            self,
+            maximum_latency_minutes=maximum_latency_minutes,
+            safe_maximum_power_w=config.get("safe_maximum_pv_power_w")
+            or SAFE_MAXIMUM_POWER_DISABLED,
+            safe_minimum_power_w=0,
+        )
+        self.load_meter = LoadMeter(
+            self,
+            maximum_latency_minutes=maximum_latency_minutes,
+            safe_maximum_power_w=config.get("safe_maximum_load_power_w")
+            or SAFE_MAXIMUM_POWER_DISABLED,
+            safe_minimum_power_w=0,
+        )
         self.losses_meter = None
 
         self.battery_charge_sensor: BatteryChargeSensor | None = None
@@ -405,6 +402,23 @@ class Controller(controller.Controller[EntryConfig]):
             name="Battery charge",
             parent_attr=Sensor.ParentAttr.DYNAMIC,
         )
+
+        _warning_meters = (self.battery_meter, self.load_meter, self.pv_meter)
+        _warning_processors_map: dict[str, set["ProcessorWarning"]] = {}
+        for _meter in _warning_meters:
+            for _warning_processor in _meter.warnings:
+                try:
+                    _warning_processors_map[_warning_processor.id].add(
+                        _warning_processor
+                    )
+                except KeyError:
+                    _warning_processors_map[_warning_processor.id] = {
+                        _warning_processor
+                    }
+        for _warning_id, _warning_processors in _warning_processors_map.items():
+            ProcessorWarningBinarySensor(
+                self, f"{_warning_id}_warning", _warning_processors
+            )
 
         self.track_state_update(
             self.battery_voltage_entity_id, self._battery_voltage_callback
