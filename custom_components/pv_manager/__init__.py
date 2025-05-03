@@ -32,7 +32,7 @@ async def async_setup_entry(
             hass, pmc.ConfigEntryType.get_from_entry(config_entry)
         )
     except Exception as e:
-        raise ConfigEntryError("Error loading Controller class") from e
+        raise ConfigEntryError(f"Error loading Controller class: {str(e)}") from e
 
     try:
         cntrl = controller_class(hass, config_entry)
@@ -42,7 +42,7 @@ async def async_setup_entry(
         if hasattr(config_entry, "runtime_data"):
             # TODO: better cleanup maybe invoking a 'safer' async_shutdown
             object.__delattr__(config_entry, "runtime_data")
-        raise ConfigEntryError("Error initializing Controller class") from e
+        raise ConfigEntryError(f"Error initializing Controller class: {str(e)}") from e
 
 
 async def async_unload_entry(

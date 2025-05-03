@@ -37,6 +37,7 @@ class EntityIdEnum(enum.StrEnum):
     LOAD_POWER = "sensor.load_power"
     CONSUMPTION_POWER = "sensor.consumption_power"
 
+
 ENTITY_REGISTRY_PRELOAD: dict[EntityIdEnum, dict[str, typing.Any]] = {
     EntityIdEnum.CONSUMPTION_POWER: {
         "original_device_class": "power",
@@ -44,6 +45,7 @@ ENTITY_REGISTRY_PRELOAD: dict[EntityIdEnum, dict[str, typing.Any]] = {
         "unit_of_measurement": "W",
     }
 }
+
 
 class ConfigEntriesItem(typing.TypedDict):
     type: pmc.ConfigEntryType
@@ -57,7 +59,7 @@ CE_PV_PLANT_SIMULATOR = ConfigEntriesItem(
         "type": pmc.ConfigEntryType.PV_PLANT_SIMULATOR,
         "data": {
             "name": "PV plant simulator",
-            "native_unit_of_measurement": "kW",
+            "native_unit_of_measurement": "W",
             "peak_power": 1000,
             "weather_entity_id": OptionalString(EntityIdEnum.WEATHER),
             "battery_voltage": 48,
@@ -103,11 +105,27 @@ CE_CONSUMPTION_ESTIMATOR = ConfigEntriesItem(
         "data": {
             "name": "Consumption estimator",
             "observed_entity_id": EntityIdEnum.CONSUMPTION_POWER,
-            "refresh_period_minutes": 5,
             "sampling_interval_minutes": 10,
             "observation_duration_minutes": 60,
             "history_duration_days": 1,
+            "refresh_period_minutes": OptionalFloat(5),
             "maximum_latency_seconds": 10,
+            "safe_maximum_power_w": OptionalFloat(1000),
+        },
+    }
+)
+CE_PVENERGY_HEURISTIC_ESTIMATOR = ConfigEntriesItem(
+    {
+        "type": pmc.ConfigEntryType.PV_ENERGY_ESTIMATOR,
+        "data": {
+            "name": "PV Energy estimator",
+            "observed_entity_id": EntityIdEnum.PV_POWER,
+            "sampling_interval_minutes": 10,
+            "observation_duration_minutes": 60,
+            "history_duration_days": 1,
+            "refresh_period_minutes": OptionalFloat(5),
+            "maximum_latency_seconds": 10,
+            "safe_maximum_power_w": OptionalFloat(1000),
         },
     }
 )
@@ -116,9 +134,12 @@ CONFIG_ENTRIES: list[ConfigEntriesItem] = [
     CE_OFF_GRID_MANAGER,
     CE_ENERGY_CALCULATOR,
     CE_CONSUMPTION_ESTIMATOR,
+    CE_PVENERGY_HEURISTIC_ESTIMATOR,
 ]
 
 if pmc.DEBUG:
-    CONFIG_ENTRIES.extend([
-        CE_PV_PLANT_SIMULATOR,
-    ])
+    CONFIG_ENTRIES.extend(
+        [
+            CE_PV_PLANT_SIMULATOR,
+        ]
+    )

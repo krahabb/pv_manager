@@ -19,6 +19,8 @@ from unittest.mock import patch
 
 import pytest
 
+from custom_components.pv_manager.helpers import Loggable
+
 from . import helpers
 
 pytest_plugins = "pytest_homeassistant_custom_component"
@@ -64,9 +66,7 @@ def skip_notifications_fixture():
 @pytest.fixture(name="disable_debug", autouse=False)
 def disable_debug_fixture():
     """Disable development debug code so to test in a production env."""
-    with (
-        patch("custom_components.pv_manager.const.DEBUG", None)
-    ):
+    with patch("custom_components.pv_manager.const.DEBUG", None):
         yield
 
 
@@ -74,3 +74,22 @@ def disable_debug_fixture():
 def time_mock(hass):
     with helpers.TimeMocker(hass) as _time_mock:
         yield _time_mock
+
+
+@pytest.fixture()
+def log_exception(autouse=True):
+    """Intercepts any code managed exception sent to logging."""
+
+    def _patch_loggable_log_exception(
+        level: int, exception: Exception, msg: str, *args, **kwargs
+    ):
+        raise Exception(
+            f'log_exception called with msg="{msg}" args=({args})'
+        ) from exception
+
+    with patch.object(
+        Loggable,
+        "log_exception",
+        side_effect=_patch_loggable_log_exception,
+    ):
+        yield

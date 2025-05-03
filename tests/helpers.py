@@ -67,13 +67,16 @@ async def async_assert_flow_menu_to_step(
         assert result["step_id"] == next_step_id  # type: ignore
     return result
 
+
 def ensure_registry_entries(hass: "HomeAssistant"):
     """Preloads the entity registry with some default entities needed to configure/run our controllers."""
     ent_reg = er.async_get(hass)
 
     for entity_id_enum, kwargs in tc.ENTITY_REGISTRY_PRELOAD.items():
         platform, entity_id = entity_id_enum.split(".")
-        ent_reg.async_get_or_create(platform, platform, entity_id_enum, suggested_object_id=entity_id, **kwargs)
+        ent_reg.async_get_or_create(
+            platform, platform, entity_id_enum, suggested_object_id=entity_id, **kwargs
+        )
 
 
 class DictMatcher(dict):
@@ -215,15 +218,15 @@ class TimeMocker(contextlib.AbstractContextManager):
         self._warp_task = None
 
 
-class ConfigEntryMocker(contextlib.AbstractAsyncContextManager):
+class ConfigEntryMocker[_controllerT: "Controller"](
+    contextlib.AbstractAsyncContextManager
+):
 
     __slots__ = (
         "hass",
         "config_entry",
         "config_entry_id",
         "auto_setup",
-        "_exception_warning_patcher",
-        "exception_warning_mock",
     )
 
     def __init__(
@@ -255,7 +258,7 @@ class ConfigEntryMocker(contextlib.AbstractAsyncContextManager):
         return self.hass.data[pmc.DOMAIN]
 
     @property
-    def controller(self) -> "Controller":
+    def controller(self) -> _controllerT:
         return self.config_entry.runtime_data
 
     @property
@@ -281,30 +284,11 @@ class ConfigEntryMocker(contextlib.AbstractAsyncContextManager):
         assert diagnostic
 
     async def __aenter__(self):
-
-        def _patch_loggable_log_exception(
-            level: int, exception: Exception, msg: str, *args, **kwargs
-        ):
-            raise Exception(
-                f"log_exception called while testing {self.config_entry.title}"
-            ) from exception
-
-        self._exception_warning_patcher = patch.object(
-            Loggable,
-            "log_exception",
-            side_effect=_patch_loggable_log_exception,
-        )
-        self.exception_warning_mock = self._exception_warning_patcher.start()
-
         if self.auto_setup:
-            assert await self.async_setup()
-
+            assert await self.async_setup(), self.config_entry.reason
         return self
 
     async def __aexit__(self, exc_type, exc_value: BaseException | None, traceback):
-        try:
-            if self.config_entry.state.recoverable:
-                assert await self.async_unload()
-            return None
-        finally:
-            self._exception_warning_patcher.stop()
+        if self.config_entry.state.recoverable:
+            assert await self.async_unload(), self.config_entry.reason
+        return None

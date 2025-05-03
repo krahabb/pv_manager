@@ -50,6 +50,8 @@ class Controller(controller.Controller[EntryConfig]):
 
     TYPE = pmc.ConfigEntryType.PV_PLANT_SIMULATOR
 
+    SAMPLING_PERIOD: float = 5
+
     __slots__ = (
         "peak_power",
         "weather_entity_id",
@@ -203,14 +205,16 @@ class Controller(controller.Controller[EntryConfig]):
 
     @callback
     def _timer_callback(self):
-        self._timer_callback_unsub = self.schedule_callback(5, self._timer_callback)
+        self._timer_callback_unsub = self.schedule_callback(
+            self.SAMPLING_PERIOD, self._timer_callback
+        )
 
         sun_zenith, sun_azimuth = sun.zenith_and_azimuth(
             self.astral_observer,
             dt_util.now(),
         )
         elevation = 90 - sun_zenith
-        daytime = elevation > -5 # roughly dusk
+        daytime = elevation > -5  # roughly dusk
         if daytime:
             # it is very hard to model the transition night/day since when the sun is low
             # and starts to rise/set the sun energy is very low even if the elevation is relatively high
@@ -265,7 +269,8 @@ class Controller(controller.Controller[EntryConfig]):
                 if a < (self.consumption_daily_fill_factor / p1):
                     consumption_power += self.consumption_daily_extra_power_w * p1
             total_consumption_power = (
-                consumption_power / self.inverter_efficiency + self.inverter_zeroload_power
+                consumption_power / self.inverter_efficiency
+                + self.inverter_zeroload_power
             )
         else:
             consumption_power = 0
@@ -283,7 +288,9 @@ class Controller(controller.Controller[EntryConfig]):
             )
             battery_current = battery_power / battery_voltage
             if self.battery_charge_sensor:
-                battery_charge = self.battery_charge_sensor.update_current(battery_current)
+                battery_charge = self.battery_charge_sensor.update_current(
+                    battery_current
+                )
                 if battery_charge == 0:
                     self._inverter_on = False
                 elif battery_charge == self.battery_capacity:
@@ -301,7 +308,9 @@ class Controller(controller.Controller[EntryConfig]):
 
         self.pv_power_simulator_sensor.update_safe(round(pv_power, 2))
         self.consumption_sensor.update_safe(round(consumption_power, 2))
-        self.inverter_losses_sensor.update_safe(round(total_consumption_power - consumption_power, 2))
+        self.inverter_losses_sensor.update_safe(
+            round(total_consumption_power - consumption_power, 2)
+        )
 
     def _weather_update(self, state: "State | None"):
         if state:
