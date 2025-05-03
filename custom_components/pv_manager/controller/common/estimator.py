@@ -163,7 +163,7 @@ class EnergyEstimator(Estimator, BaseEnergyProcessor):
 
     def as_dict(self):
         return BaseEnergyProcessor.as_dict(self) | {
-            "tz_info": self.tzinfo,
+            "tz_info": str(self.tzinfo),
             "sampling_interval_minutes": self.sampling_interval_ts / 60,
             "observation_duration_minutes": self.observation_duration_ts / 60,
             "history_duration_days": self.history_duration_ts / 86400,
