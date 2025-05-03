@@ -31,16 +31,6 @@ if typing.TYPE_CHECKING:
     from .common.estimator import Estimator
 
 
-class ControllerConfig(EnergyEstimatorControllerConfig):
-    weather_entity_id: typing.NotRequired[str]
-    """The entity used for weather forecast in the system"""
-    weather_model: typing.NotRequired[str]
-
-
-class EntryConfig(ControllerConfig, pmc.EntityConfig):
-    """TypedDict for ConfigEntry data"""
-
-
 # TODO: create a global generalization for diagnostic sensors linked to estimator
 class ObservedRatioDiagnosticSensor(EstimatorDiagnosticSensor):
 
@@ -117,6 +107,16 @@ DIAGNOSTIC_DESCR = {
         lambda c: WeatherModelDiagnosticSensor(c, "weather_cloud_constant_1", 1),
     ),
 }
+
+
+class ControllerConfig(EnergyEstimatorControllerConfig):
+    weather_entity_id: typing.NotRequired[str]
+    """The entity used for weather forecast in the system"""
+    weather_model: typing.NotRequired[str]
+
+
+class EntryConfig(ControllerConfig, pmc.EntityConfig):
+    """TypedDict for ConfigEntry data"""
 
 
 class Controller(EnergyEstimatorController[EntryConfig]):

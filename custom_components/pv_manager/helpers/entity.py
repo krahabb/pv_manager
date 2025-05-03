@@ -71,6 +71,7 @@ class Entity(Loggable, entity.Entity if typing.TYPE_CHECKING else object):
         "available",
         "device_info",
         "entity_category",
+        "extra_state_attributes",
         "force_update",
         "icon",
         "name",
@@ -92,6 +93,7 @@ class Entity(Loggable, entity.Entity if typing.TYPE_CHECKING else object):
         self.available = True
         self.device_info = controller.device_info
         self.entity_category = kwargs.pop("entity_category", self._attr_entity_category)
+        self.extra_state_attributes = None
         self.force_update = False
         self.icon = kwargs.pop("icon", self._attr_icon)
         self.name = kwargs.pop("name", None) or id

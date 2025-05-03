@@ -37,7 +37,7 @@
                     "observation_duration_minutes": "Observation period",
                     "history_duration_days": "History length",
                     "refresh_period_minutes": "Refresh interval",
-                    "maximum_latency_minutes": "Maximum latency"
+                    "maximum_latency_seconds": "Maximum latency"
                 }
             },
             "pv_energy_estimator": {
@@ -51,7 +51,7 @@
                     "observation_duration_minutes": "Observation period",
                     "history_duration_days": "History length",
                     "refresh_period_minutes": "Refresh interval",
-                    "maximum_latency_minutes": "Maximum latency"
+                    "maximum_latency_seconds": "Maximum latency"
                 }
             },
             "pv_plant_simulator": {

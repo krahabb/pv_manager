@@ -1,38 +1,32 @@
-import abc
-from datetime import tzinfo
-import enum
-import time
+from time import time as TIME_TS
 import typing
 
 from homeassistant import const as hac
 from homeassistant.core import callback
-from homeassistant.util import dt as dt_util
 from homeassistant.util.unit_conversion import (
     EnergyConverter,
     PowerConverter,
 )
 
 from .. import const as pmc
-from ..sensor import EnergySensor
 from .common import BaseEnergyProcessor, EnergyInputMode, SourceType
 from .common.estimator_pvenergy_heuristic import HeuristicPVEnergyEstimator
 
 if typing.TYPE_CHECKING:
+    from datetime import tzinfo
     from typing import Any, Final, NotRequired, Unpack
 
     from astral import sun
-    from homeassistant.core import Event, HomeAssistant, State
+    from homeassistant.core import State
 
+    from . import Controller
     from ..helpers.entity import EntityArgs
     from .common import EnergyProcessorConfig
     from .common.estimator_pvenergy_heuristic import PVEnergyEstimatorConfig
-    from .off_grid_manager import Controller
+    from .off_grid_manager import Controller as OffGridManager
 
 POWER_UNIT = hac.UnitOfPower.WATT
 ENERGY_UNIT = hac.UnitOfEnergy.WATT_HOUR
-
-# define a common name so to eventually switch to time.monotonic for time integration
-TIME_TS = time.time
 
 
 class MeterStoreType(typing.TypedDict):
@@ -64,11 +58,14 @@ class BaseMeter(BaseEnergyProcessor if typing.TYPE_CHECKING else object):
         self.controller = controller
         self.metering_source = metering_source
         self._state_convert_func = self._state_convert_detect
-        controller.energy_meters[metering_source] = self
+        if metering_source is not SourceType.UNKNOWN:
+            controller.energy_meters[metering_source] = self  # type: ignore
+            setattr(self.controller, f"{self.metering_source}_meter", self)
 
     def shutdown(self):
-        self.controller.energy_meters.pop(self.metering_source)
-        setattr(self.controller, f"{self.metering_source}_meter", None)
+        if self.metering_source is not SourceType.UNKNOWN:
+            self.controller.energy_meters.pop(self.metering_source)  # type: ignore
+            setattr(self.controller, f"{self.metering_source}_meter", None)
         self.controller = None  # type: ignore
         # TODO: unregister track_state?
 
@@ -84,6 +81,8 @@ class BaseMeter(BaseEnergyProcessor if typing.TYPE_CHECKING else object):
             )  # type: ignore
         except Exception as e:
             # this is expected and silently managed when state == None or 'unknown'
+            # TODO: put the BaseProcessor in warning like if it was a maximum_latency
+            # or set a new warning id like no_signal
             self.process(0, TIME_TS())
             if state and state.state not in (hac.STATE_UNKNOWN, hac.STATE_UNAVAILABLE):
                 self.controller.log_exception(
@@ -122,8 +121,8 @@ class BaseMeter(BaseEnergyProcessor if typing.TYPE_CHECKING else object):
         )
 
 
-class _BaseMeter(BaseMeter, BaseEnergyProcessor):
-    """Concrete base class for BaseMeter(s) not implemented through estimators."""
+class EnergyMeter(BaseMeter, BaseEnergyProcessor):
+    """Concrete class for BaseMeter(s) not implemented through estimators."""
 
     __slots__ = BaseMeter._SLOTS_
 
@@ -141,41 +140,52 @@ class _BaseMeter(BaseMeter, BaseEnergyProcessor):
         BaseEnergyProcessor.shutdown(self)
 
 
-class BatteryMeter(_BaseMeter):
+class BatteryMeter(EnergyMeter):
+
+    __slots__ = (
+        "in_meter",
+        "out_meter",
+    )
 
     def __init__(
         self, controller: "Controller", **kwargs: "Unpack[EnergyProcessorConfig]"
     ):
-        _BaseMeter.__init__(self, controller, SourceType.BATTERY, **kwargs)
+        EnergyMeter.__init__(self, controller, SourceType.BATTERY, **kwargs)
         self.configure(EnergyInputMode.POWER)
-        controller.battery_in_meter = _BaseMeter(controller, SourceType.BATTERY_IN)
-        controller.battery_out_meter = _BaseMeter(controller, SourceType.BATTERY_OUT)
-        self.energy_listeners.add(self._energy_callback)
+        self.in_meter = EnergyMeter(controller, SourceType.BATTERY_IN)
+        self.out_meter = EnergyMeter(controller, SourceType.BATTERY_OUT)
+        self._energy_listeners.add(self._energy_callback)
 
     def _energy_callback(self, energy: float, time_ts: float):
         if energy > 0:
-            in_out_meter = self.controller.battery_out_meter
+            in_out_meter = self.out_meter
         else:
-            in_out_meter = self.controller.battery_in_meter
+            in_out_meter = self.in_meter
             energy = -energy
         in_out_meter.time_ts = time_ts
         in_out_meter.input = energy
         in_out_meter.output += energy
-        for listener in in_out_meter.energy_listeners:
+        for listener in in_out_meter._energy_listeners:
             listener(energy, time_ts)
 
 
-class PvMeter(_BaseMeter):
-    def __init__(self, controller: "Controller", **kwargs: "Unpack[EnergyProcessorConfig]"):
-        _BaseMeter.__init__(self, controller, SourceType.PV, **kwargs)
+class PvMeter(EnergyMeter):
+    def __init__(
+        self, controller: "Controller", **kwargs: "Unpack[EnergyProcessorConfig]"
+    ):
+        EnergyMeter.__init__(self, controller, SourceType.PV, **kwargs)
 
 
-class LoadMeter(_BaseMeter):
-    def __init__(self, controller: "Controller", **kwargs: "Unpack[EnergyProcessorConfig]"):
-        _BaseMeter.__init__(self, controller, SourceType.LOAD, **kwargs)
+class LoadMeter(EnergyMeter):
+    def __init__(
+        self, controller: "Controller", **kwargs: "Unpack[EnergyProcessorConfig]"
+    ):
+        EnergyMeter.__init__(self, controller, SourceType.LOAD, **kwargs)
 
 
-class LossesMeter(_BaseMeter):
+class LossesMeter(EnergyMeter):
+
+    controller: "OffGridManager"
 
     __slots__ = (
         "battery_energy",
@@ -187,10 +197,10 @@ class LossesMeter(_BaseMeter):
         "_callback_unsub",
     )
 
-    def __init__(self, controller: "Controller", callback_interval_ts: float):
+    def __init__(self, controller: "OffGridManager", callback_interval_ts: float):
         self._callback_interval_ts = callback_interval_ts
         self._callback_unsub = None
-        _BaseMeter.__init__(self, controller, SourceType.LOSSES)
+        EnergyMeter.__init__(self, controller, SourceType.LOSSES)
 
     def start(self):
         """Called after restoring data in the controller so to initialize incremental counters."""
@@ -227,7 +237,7 @@ class LossesMeter(_BaseMeter):
         # we don't check maximum_latency here since it has already been
         # managed in pc, load and battery meters
         d_losses = self.output - losses_old
-        for energy_listener in self.energy_listeners:
+        for energy_listener in self._energy_listeners:
             energy_listener(d_losses, time_ts)
 
         if controller.losses_power_sensor:
@@ -312,7 +322,7 @@ class HeuristicPVEnergyEstimatorMeter(EstimatorMeter, HeuristicPVEnergyEstimator
         self,
         controller,
         astral_observer: "sun.Observer",
-        tzinfo: tzinfo,
+        tzinfo: "tzinfo",
         **kwargs: "Unpack[PVEnergyEstimatorConfig]",
     ):
         BaseMeter.__init__(self, controller, SourceType.PV)
@@ -323,46 +333,3 @@ class HeuristicPVEnergyEstimatorMeter(EstimatorMeter, HeuristicPVEnergyEstimator
             tzinfo=tzinfo,
             **kwargs,
         )
-
-
-class ManagerEnergySensorConfig(pmc.EntityConfig, pmc.SubentryConfig):
-    """Configure additional energy (metering) sensors for the various energy sources."""
-
-    metering_source: SourceType
-    cycle_modes: list[EnergySensor.CycleMode]
-
-
-class ManagerEnergySensor(EnergySensor):
-    # TODO: generalize and  restructure ENERGY_CALCULATOR to use BaseMeter
-    controller: "Controller"
-
-    energy_meter: "Final[BaseMeter]"
-
-    _attr_parent_attr = None
-
-    __slots__ = ("energy_meter",)
-
-    def __init__(
-        self,
-        energy_meter: BaseMeter,
-        name: str,
-        config_subentry_id: str,
-        cycle_mode: EnergySensor.CycleMode,
-    ):
-        self.energy_meter = energy_meter
-        # TODO: rename sensor id using energy_meter instead of subentry_id
-        super().__init__(
-            energy_meter.controller,
-            f"{pmc.ConfigSubentryType.MANAGER_ENERGY_SENSOR}_{energy_meter.metering_source}",
-            cycle_mode,
-            name=name,
-            config_subentry_id=config_subentry_id,
-        )
-
-    async def async_added_to_hass(self):
-        await super().async_added_to_hass()
-        self.energy_meter.energy_listeners.add(self.accumulate)
-
-    async def async_will_remove_from_hass(self):
-        self.energy_meter.energy_listeners.remove(self.accumulate)
-        return await super().async_will_remove_from_hass()

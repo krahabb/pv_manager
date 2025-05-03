@@ -1,12 +1,7 @@
-from datetime import datetime, timedelta
-import enum
 import time
 import typing
 
 from homeassistant.components import sensor
-from homeassistant.core import HassJob, callback
-from homeassistant.helpers import event
-from homeassistant.util import dt as dt_util
 
 from . import const as pmc
 from .helpers import entity as he
@@ -20,6 +15,7 @@ if typing.TYPE_CHECKING:
     from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
     from .controller import Controller
+    from .controller._energy_meters import BaseMeter
     from .helpers.entity import EntityArgs
 
     SensorStateType = sensor.StateType | sensor.date | sensor.datetime | sensor.Decimal
@@ -131,12 +127,15 @@ class EnergySensor(MeteringEntity, Sensor, he.RestoreEntity):
 
     CycleMode = CycleMode
 
-    controller: "Controller"
+    cycle_mode: "Final[CycleMode]"
+    energy_meter: "Final[BaseMeter]"
 
-    metering_cycle: "MeteringCycle"
+    _metering_cycle: "MeteringCycle"
 
     native_value: int
     _integral_value: float
+
+    _attr_parent_attr = None
 
     _attr_device_class = Sensor.DeviceClass.ENERGY
     _attr_native_value = 0
@@ -144,10 +143,12 @@ class EnergySensor(MeteringEntity, Sensor, he.RestoreEntity):
 
     __slots__ = (
         "cycle_mode",
-        "metering_cycle",
+        "energy_meter",
         "last_reset",  # HA property
-        "next_reset_ts",  # UTC timestamp of next reset
         "_integral_value",
+        "_meter_energy_unsub_",
+        "_metering_cycle",
+        "_next_reset_ts",  # UTC timestamp of next reset
     )
 
     def __init__(
@@ -155,11 +156,14 @@ class EnergySensor(MeteringEntity, Sensor, he.RestoreEntity):
         controller: "Controller",
         id: str,
         cycle_mode: CycleMode,
+        energy_meter: "BaseMeter",
         **kwargs: "Unpack[EntityArgs]",
     ):
         self.cycle_mode = cycle_mode
+        self.energy_meter = energy_meter
         self.last_reset = None
         self._integral_value = 0
+        self._meter_energy_unsub_ = None
 
         if cycle_mode == CycleMode.TOTAL:
             self.accumulate = self._accumulate_total
@@ -177,8 +181,8 @@ class EnergySensor(MeteringEntity, Sensor, he.RestoreEntity):
 
     async def async_added_to_hass(self):
 
-        self.metering_cycle = metering_cycle = MeteringCycle.register(self)
-        self.next_reset_ts = metering_cycle.next_reset_ts
+        self._metering_cycle = metering_cycle = MeteringCycle.register(self)
+        self._next_reset_ts = metering_cycle.next_reset_ts
         self.last_reset = metering_cycle.last_reset_dt
 
         restored_data = self._async_get_restored_data()
@@ -195,9 +199,13 @@ class EnergySensor(MeteringEntity, Sensor, he.RestoreEntity):
 
         self.native_value = int(self._integral_value)
         await super().async_added_to_hass()
+        self._meter_energy_unsub_ =  self.energy_meter.listen_energy(self.accumulate)
 
     async def async_will_remove_from_hass(self):
-        self.metering_cycle.unregister(self)
+        if self._meter_energy_unsub_:
+            self._meter_energy_unsub_()
+            self._meter_energy_unsub_ = None
+        self._metering_cycle.unregister(self)
         return await super().async_will_remove_from_hass()
 
     @property
@@ -211,9 +219,9 @@ class EnergySensor(MeteringEntity, Sensor, he.RestoreEntity):
     def accumulate(self, energy_wh: float, time_ts: float):
         # assert self.added_to_hass
         self._integral_value += energy_wh
-        if time_ts >= self.next_reset_ts:
+        if time_ts >= self._next_reset_ts:
             # update done in _reset_cycle
-            self.metering_cycle.update(time_ts)
+            self._metering_cycle.update(time_ts)
             return
 
         _rounded = int(self._integral_value)
@@ -231,7 +239,7 @@ class EnergySensor(MeteringEntity, Sensor, he.RestoreEntity):
             self._async_write_ha_state()
 
     def _reset_cycle(self, metering_cycle: MeteringCycle):
-        self.next_reset_ts = metering_cycle.next_reset_ts
+        self._next_reset_ts = metering_cycle.next_reset_ts
         self.last_reset = metering_cycle.last_reset_dt
         self._integral_value -= self.native_value
         self.native_value = int(self._integral_value)

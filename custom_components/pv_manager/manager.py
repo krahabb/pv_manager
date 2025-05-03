@@ -2,16 +2,15 @@
 The component global api.
 """
 
-import enum
 import typing
 
 from homeassistant import const as hac
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import callback
 from homeassistant.helpers import (
     device_registry as dr,
     entity_registry as er,
     event,
-    json,
 )
 
 from . import const as pmc
@@ -21,7 +20,14 @@ if typing.TYPE_CHECKING:
     from datetime import datetime
     from typing import Any, Callable, Coroutine, Final
 
+    from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HassJob, HomeAssistant
+
+    from .controller import (
+        Controller,
+        EnergyEstimatorController,
+        EnergyEstimatorControllerConfig,
+    )
 
 
 class ManagerClass(Loggable):
@@ -93,6 +99,25 @@ class ManagerClass(Loggable):
         target: "HassJob[[datetime], Coroutine[Any, Any, None] | None] | Callable[[datetime], Coroutine[Any, Any, None] | None]",
     ):
         return event.async_track_point_in_utc_time(self.hass, target, dt)
+
+    def lookup_estimator_controller(
+        self, entity_id: str, entry_type: pmc.ConfigEntryType | None = None
+    ):
+        """Given an entity_id, looks through config_entries if any estimator exists for that
+        entity."""
+        estimator_entry_types = (
+            pmc.ConfigEntryType.PV_ENERGY_ESTIMATOR,
+            pmc.ConfigEntryType.CONSUMPTION_ESTIMATOR,
+        )
+        config_entry: ConfigEntry[EnergyEstimatorController[EnergyEstimatorControllerConfig]]
+        for config_entry in self.hass.config_entries.async_entries(domain=pmc.DOMAIN):
+            _entry_type = pmc.ConfigEntryType.get_from_entry(config_entry)
+            if _entry_type in estimator_entry_types:
+                config: "EnergyEstimatorControllerConfig" = config_entry.data  # type: ignore
+                if (config.get("observed_entity_id") == entity_id) and (
+                    (not entry_type) or (entry_type is _entry_type)
+                ):
+                    return config_entry, config_entry.runtime_data if config_entry.state == ConfigEntryState.LOADED else None
 
 
 Manager = ManagerClass()

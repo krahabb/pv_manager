@@ -249,7 +249,7 @@ class PVEnergyEstimator(EnergyEstimator):
 
     # interface: Estimator
     def as_dict(self):
-        return super().as_dict() | {
+        return EnergyEstimator.as_dict(self) | {
             "weather_model": self.weather_model.as_dict(),
             "weather_history": list(self.weather_history),
             "weather_forecasts": self.weather_forecasts,
@@ -258,7 +258,7 @@ class PVEnergyEstimator(EnergyEstimator):
     def get_state_dict(self):
         """Returns a synthetic state string for the estimator.
         Used for debugging purposes."""
-        return super().get_state_dict() | {
+        return EnergyEstimator.get_state_dict(self) | {
             "weather_model": self.weather_model.as_dict(),
             "weather": self.get_weather_at(self.observed_time_ts),
         }

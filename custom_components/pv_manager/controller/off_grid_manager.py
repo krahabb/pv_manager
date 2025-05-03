@@ -1,33 +1,31 @@
-from dataclasses import dataclass
-import datetime
 import enum
-import time
 import typing
 
 from homeassistant import const as hac
 from homeassistant.config_entries import ConfigEntryState
-from homeassistant.core import callback
 from homeassistant.helpers import storage
 from homeassistant.util import dt as dt_util
 from homeassistant.util.unit_conversion import (
     ElectricCurrentConverter,
     ElectricPotentialConverter,
-    PowerConverter,
 )
 
-from custom_components.pv_manager.controller.common import SAFE_MAXIMUM_POWER_DISABLED
+from custom_components.pv_manager.controller.common import (
+    SAFE_MAXIMUM_POWER_DISABLED,
+    SAFE_MINIMUM_POWER_DISABLED,
+)
 
 from .. import const as pmc, controller
 from ..binary_sensor import ProcessorWarningBinarySensor
 from ..controller.common.battery_estimator import BatteryEstimator
-from ..helpers import entity as he, validation as hv
-from ..sensor import BatteryChargeSensor, PowerSensor, Sensor
+from ..helpers import validation as hv
+from ..sensor import BatteryChargeSensor, EnergySensor, PowerSensor, Sensor
 from ._energy_meters import (
+    TIME_TS,
     BaseMeter,
     BatteryMeter,
     LoadMeter,
     LossesMeter,
-    ManagerEnergySensor,
     MeterStoreType,
     PvMeter,
     SourceType,
@@ -47,9 +45,6 @@ if typing.TYPE_CHECKING:
 MAXIMUM_LATENCY_INFINITE = 1e6
 VOLTAGE_UNIT = hac.UnitOfElectricPotential.VOLT
 CURRENT_UNIT = hac.UnitOfElectricCurrent.AMPERE
-
-# define a common name so to eventually switch to time.monotonic for time integration
-TIME_TS = time.time
 
 
 class ControllerStoreType(typing.TypedDict):
@@ -78,6 +73,13 @@ class ControllerStore(storage.Store[ControllerStoreType]):
 
 
 MANAGER_ENERGY_SENSOR_NAME = "Energy"  # default name for ManagerEnergySensor
+
+
+class ManagerEnergySensorConfig(pmc.EntityConfig, pmc.SubentryConfig):
+    """Configure additional energy (metering) sensors for the various energy sources."""
+
+    metering_source: SourceType
+    cycle_modes: list[EnergySensor.CycleMode]
 
 
 class YieldSensorId(enum.StrEnum):
@@ -124,7 +126,7 @@ class ManagerYieldConfig(pmc.EntityConfig, pmc.SubentryConfig):
     battery efficiency = battery_out / battery_in (sampled at same battery charge)
     """
 
-    cycle_modes: list[ManagerEnergySensor.CycleMode]
+    cycle_modes: list[EnergySensor.CycleMode]
     """For energy losses sensor(s)"""
 
     sampling_interval_seconds: int
@@ -149,7 +151,7 @@ class ControllerConfig(typing.TypedDict):
     load_power_entity_id: "NotRequired[str]"
     safe_maximum_load_power_w: "NotRequired[float]"
 
-    maximum_latency_minutes: int
+    maximum_latency_seconds: int
     """Maximum time between source pv power/energy samples before considering an error in data sampling."""
 
 
@@ -228,7 +230,7 @@ class Controller(controller.Controller[EntryConfig]):
                 "battery_voltage_entity_id": "",
                 "battery_current_entity_id": "",
                 "battery_capacity": 100,
-                "maximum_latency_minutes": 1,
+                "maximum_latency_seconds": 10,
             }
         return hv.entity_schema(config) | {
             hv.req_config("battery_voltage_entity_id", config): hv.sensor_selector(
@@ -255,8 +257,8 @@ class Controller(controller.Controller[EntryConfig]):
             hv.opt_config(
                 "safe_maximum_load_power_w", config
             ): hv.positive_number_selector(unit_of_measurement="W"),
-            hv.opt_config("maximum_latency_minutes", config): hv.time_period_selector(
-                unit_of_measurement=hac.UnitOfTime.MINUTES
+            hv.opt_config("maximum_latency_seconds", config): hv.time_period_selector(
+                unit_of_measurement=hac.UnitOfTime.SECONDS
             ),
         }
 
@@ -326,10 +328,10 @@ class Controller(controller.Controller[EntryConfig]):
         self.battery_capacity = config.get("battery_capacity", 0)
         self.pv_power_entity_id = config.get("pv_power_entity_id")
         self.load_power_entity_id = config.get("load_power_entity_id")
-        maximum_latency_minutes = (
-            config.get("maximum_latency_minutes") or MAXIMUM_LATENCY_INFINITE
+        maximum_latency_seconds = (
+            config.get("maximum_latency_seconds") or MAXIMUM_LATENCY_INFINITE
         )
-        self.maximum_latency_ts = maximum_latency_minutes * 60
+        self.maximum_latency_ts = maximum_latency_seconds
 
         self._store = ControllerStore(hass, config_entry.entry_id)
         self.battery_voltage: float = 0
@@ -340,28 +342,33 @@ class Controller(controller.Controller[EntryConfig]):
         self.battery_capacity_estimate: float = self.battery_capacity
 
         self.energy_meters = {}
+        safe_maximum_battery_power_w = config.get(
+            "safe_maximum_battery_power_w", SAFE_MAXIMUM_POWER_DISABLED
+        )
         self.battery_meter = BatteryMeter(
             self,
-            maximum_latency_minutes=maximum_latency_minutes,
-            safe_maximum_power_w=config.get("safe_maximum_battery_power_w")
-            or SAFE_MAXIMUM_POWER_DISABLED,
-            safe_minimum_power_w=-(
-                config.get("safe_maximum_battery_power_w")
-                or SAFE_MAXIMUM_POWER_DISABLED
+            maximum_latency_seconds=maximum_latency_seconds,
+            safe_maximum_power_w=safe_maximum_battery_power_w,
+            safe_minimum_power_w=(
+                SAFE_MINIMUM_POWER_DISABLED
+                if safe_maximum_battery_power_w is SAFE_MAXIMUM_POWER_DISABLED
+                else -safe_maximum_battery_power_w
             ),
         )
         self.pv_meter = PvMeter(
             self,
-            maximum_latency_minutes=maximum_latency_minutes,
-            safe_maximum_power_w=config.get("safe_maximum_pv_power_w")
-            or SAFE_MAXIMUM_POWER_DISABLED,
+            maximum_latency_seconds=maximum_latency_seconds,
+            safe_maximum_power_w=config.get(
+                "safe_maximum_pv_power_w", SAFE_MAXIMUM_POWER_DISABLED
+            ),
             safe_minimum_power_w=0,
         )
         self.load_meter = LoadMeter(
             self,
-            maximum_latency_minutes=maximum_latency_minutes,
-            safe_maximum_power_w=config.get("safe_maximum_load_power_w")
-            or SAFE_MAXIMUM_POWER_DISABLED,
+            maximum_latency_seconds=maximum_latency_seconds,
+            safe_maximum_power_w=config.get(
+                "safe_maximum_load_power_w", SAFE_MAXIMUM_POWER_DISABLED
+            ),
             safe_minimum_power_w=0,
         )
         self.losses_meter = None
@@ -470,11 +477,18 @@ class Controller(controller.Controller[EntryConfig]):
                     if name == MANAGER_ENERGY_SENSOR_NAME:
                         name = f"{energy_meter.metering_source} {name}"
                     for cycle_mode in sensor_config["cycle_modes"]:
-                        ManagerEnergySensor(energy_meter, name, subentry_id, cycle_mode)
+                        EnergySensor(
+                            self,
+                            f"{pmc.ConfigSubentryType.MANAGER_ENERGY_SENSOR}_{energy_meter.metering_source}",
+                            cycle_mode,
+                            energy_meter,
+                            name=name,
+                            config_subentry_id=subentry_id,
+                        )
             case pmc.ConfigSubentryType.MANAGER_YIELD:
                 assert not self.losses_meter
                 yield_config: ManagerYieldConfig = entry_data.config  # type: ignore
-                self.losses_meter = LossesMeter(
+                self.losses_meter = losses_meter = LossesMeter(
                     self, yield_config["sampling_interval_seconds"]
                 )
                 name = yield_config["name"]
@@ -486,8 +500,13 @@ class Controller(controller.Controller[EntryConfig]):
                     parent_attr=PowerSensor.ParentAttr.DYNAMIC,
                 )
                 for cycle_mode in yield_config["cycle_modes"]:
-                    ManagerEnergySensor(
-                        self.losses_meter, name, subentry_id, cycle_mode
+                    EnergySensor(
+                        self,
+                        f"{pmc.ConfigSubentryType.MANAGER_ENERGY_SENSOR}_{losses_meter.metering_source}",
+                        cycle_mode,
+                        losses_meter,
+                        name=name,
+                        config_subentry_id=subentry_id,
                     )
                 for yield_sensor_id in YieldSensorId:
                     setattr(self, f"{yield_sensor_id}_sensor", None)
@@ -499,7 +518,7 @@ class Controller(controller.Controller[EntryConfig]):
                             name=name,
                         )
                 if self.config_entry.state == ConfigEntryState.LOADED:
-                    self.losses_meter.start()
+                    losses_meter.start()
 
     async def _async_subentry_update(self, subentry_id: str, entry_data: "EntryData"):
         match entry_data.subentry_type:
@@ -511,7 +530,7 @@ class Controller(controller.Controller[EntryConfig]):
                     if name == MANAGER_ENERGY_SENSOR_NAME:
                         name = f"{energy_meter.metering_source} {name}"
                     cycle_modes_new = set(sensor_config["cycle_modes"])
-                    energy_sensor: ManagerEnergySensor
+                    energy_sensor: EnergySensor
                     for energy_sensor in list(entry_data.entities.values()):  # type: ignore
                         try:
                             cycle_modes_new.remove(energy_sensor.cycle_mode)
@@ -524,14 +543,22 @@ class Controller(controller.Controller[EntryConfig]):
                             await energy_sensor.async_shutdown(True)
                     # leftovers are those newly added cycle_mode(s)
                     for cycle_mode in cycle_modes_new:
-                        ManagerEnergySensor(energy_meter, name, subentry_id, cycle_mode)
+                        EnergySensor(
+                            self,
+                            f"{pmc.ConfigSubentryType.MANAGER_ENERGY_SENSOR}_{energy_meter.metering_source}",
+                            cycle_mode,
+                            energy_meter,
+                            name=name,
+                            config_subentry_id=subentry_id,
+                        )
                     # no state flush/update for entities since they're all integrating sensors
                     # and need a cycle to be computed/refreshed
             case pmc.ConfigSubentryType.MANAGER_YIELD:
-                assert self.losses_meter
+                losses_meter = self.losses_meter
+                assert losses_meter
                 yield_config: ManagerYieldConfig = entry_data.config  # type: ignore
                 name = yield_config["name"]
-                self.losses_meter._callback_interval_ts = yield_config[
+                losses_meter._callback_interval_ts = yield_config[
                     "sampling_interval_seconds"
                 ]
                 entities = entry_data.entities
@@ -543,7 +570,7 @@ class Controller(controller.Controller[EntryConfig]):
                 for energy_sensor in [
                     entity
                     for entity in entities.values()
-                    if isinstance(entity, ManagerEnergySensor)
+                    if isinstance(entity, EnergySensor)
                 ]:
                     try:
                         cycle_modes_new.remove(energy_sensor.cycle_mode)
@@ -554,8 +581,13 @@ class Controller(controller.Controller[EntryConfig]):
                         await energy_sensor.async_shutdown(True)
                 # leftovers are those newly added cycle_mode(s)
                 for cycle_mode in cycle_modes_new:
-                    ManagerEnergySensor(
-                        self.losses_meter, name, subentry_id, cycle_mode
+                    EnergySensor(
+                        self,
+                        f"{pmc.ConfigSubentryType.MANAGER_ENERGY_SENSOR}_{losses_meter.metering_source}",
+                        cycle_mode,
+                        losses_meter,
+                        name=name,
+                        config_subentry_id=subentry_id,
                     )
                 # update yield sensors
                 yield_sensors_id_new = {

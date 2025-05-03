@@ -6,7 +6,6 @@ import abc
 from collections import deque
 import dataclasses
 import datetime as dt
-import enum
 import typing
 
 from . import BaseEnergyProcessor, EnergyProcessorConfig
@@ -36,18 +35,6 @@ class Estimator(BaseProcessor if typing.TYPE_CHECKING else object):
     def shutdown(self):
         """Used to remove references when wanting to shutdown resources usage."""
         self._update_listeners.clear()
-
-    @typing.override
-    def as_dict(self):
-        """Returns the full state info of the estimator as a dictionary.
-        Used for serialization to debug logs or so."""
-        return {}
-
-    @typing.override
-    def get_state_dict(self):
-        """Returns a synthetic state dict for the estimator.
-        Used for debugging purposes."""
-        return {}
 
     # interface: self
     def listen_update(self, callback_func: UPDATE_LISTENER_TYPE):
@@ -175,17 +162,14 @@ class EnergyEstimator(Estimator, BaseEnergyProcessor):
         BaseEnergyProcessor.shutdown(self)
 
     def as_dict(self):
-        """Returns the full state info of the estimator as a dictionary.
-        Used for serialization to debug logs or so."""
         return BaseEnergyProcessor.as_dict(self) | {
+            "tz_info": self.tzinfo,
             "sampling_interval_minutes": self.sampling_interval_ts / 60,
             "observation_duration_minutes": self.observation_duration_ts / 60,
             "history_duration_days": self.history_duration_ts / 86400,
         }
 
     def get_state_dict(self):
-        """Returns a synthetic state dict for the estimator.
-        Used for debugging purposes."""
         return BaseEnergyProcessor.get_state_dict(self) | {
             "today": datetime_from_epoch(self.today_ts).isoformat(),
             # "tomorrow_ts": estimator._tomorrow_local_ts,

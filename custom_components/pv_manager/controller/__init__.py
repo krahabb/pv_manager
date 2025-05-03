@@ -480,9 +480,9 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
             config = {
                 "observed_entity_id": "",
                 "sampling_interval_minutes": 10,
-                "maximum_latency_minutes": 1,
                 "observation_duration_minutes": 20,
                 "history_duration_days": 7,
+                "maximum_latency_seconds": 60,
             }
         return {
             hv.req_config("observed_entity_id", config): hv.sensor_selector(
@@ -492,20 +492,20 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
                 "sampling_interval_minutes",
                 config,
             ): hv.time_period_selector(unit_of_measurement=hac.UnitOfTime.MINUTES),
-            hv.req_config("maximum_latency_minutes", config): hv.time_period_selector(
-                unit_of_measurement=hac.UnitOfTime.MINUTES
-            ),
             hv.req_config(
                 "observation_duration_minutes", config
             ): hv.time_period_selector(unit_of_measurement=hac.UnitOfTime.MINUTES),
             hv.req_config("history_duration_days", config): hv.time_period_selector(
                 unit_of_measurement=hac.UnitOfTime.DAYS, max=30
             ),
-            hv.opt_config("safe_maximum_power_w", config): hv.positive_number_selector(
-                unit_of_measurement=hac.UnitOfPower.WATT
-            ),
             hv.opt_config("refresh_period_minutes", config): hv.time_period_selector(
                 unit_of_measurement=hac.UnitOfTime.MINUTES
+            ),
+            hv.opt_config("maximum_latency_seconds", config): hv.time_period_selector(
+                unit_of_measurement=hac.UnitOfTime.SECONDS
+            ),
+            hv.opt_config("safe_maximum_power_w", config): hv.positive_number_selector(
+                unit_of_measurement=hac.UnitOfPower.WATT
             ),
         }
 

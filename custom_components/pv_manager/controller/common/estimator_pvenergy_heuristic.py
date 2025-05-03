@@ -142,14 +142,14 @@ class HeuristicPVEnergyEstimator(PVEnergyEstimator):
 
     # interface: PVEnergyEstimator
     def as_dict(self):
-        return super().as_dict() | {
+        return PVEnergyEstimator.as_dict(self) | {
             "energy_model": self.energy_model,
         }
 
     def get_state_dict(self):
         """Returns a synthetic state string for the estimator.
         Used for debugging purposes."""
-        return super().get_state_dict() | {
+        return PVEnergyEstimator.get_state_dict(self) | {
             "history_samples": len(self.history_samples),
             "model_energy_max": self._model_energy_max,
             "observed_ratio": self.observed_ratio,

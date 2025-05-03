@@ -109,3 +109,17 @@ def time_period_selector(**kwargs: "Unpack[selector.NumberSelectorConfig]"):
         "unit_of_measurement", hac.UnitOfTime.SECONDS
     )
     return selector.NumberSelector(kwargs)
+
+
+def consumption_estimator_selector():
+    # TODO: need to find out a way to filter on entry type
+    return selector.ConfigEntrySelector(
+        selector.ConfigEntrySelectorConfig(integration=pmc.DOMAIN)
+    )
+
+
+def pvenergy_estimator_selector():
+    # TODO: need to find out a way to filter on entry type
+    return selector.ConfigEntrySelector(
+        selector.ConfigEntrySelectorConfig(integration=pmc.DOMAIN)
+    )

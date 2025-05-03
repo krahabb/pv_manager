@@ -4,6 +4,7 @@ import typing
 
 
 class SourceType(enum.StrEnum):
+    UNKNOWN = enum.auto()
     BATTERY = enum.auto()
     BATTERY_IN = enum.auto()
     BATTERY_OUT = enum.auto()
@@ -38,7 +39,7 @@ class ProcessorWarning:
     def shutdown(self):
         self._listeners.clear()
         setattr(self.processor, f"warning_{self.id}", None)
-        self.processor = None # type: ignore
+        self.processor = None  # type: ignore
 
     def listen(self, callback_func: CALLBACK_TYPE):
         self._listeners.add(callback_func)
@@ -76,6 +77,7 @@ class BaseProcessor[_input_t](abc.ABC):
     def __init__(self, id):
         self.id = id
         self.time_ts = None  # type: ignore
+        self.input = None  # type: ignore
         self.warnings = {
             ProcessorWarning(self, warning_id) for warning_id in self.WARNINGS
         }
@@ -94,11 +96,12 @@ class BaseProcessor[_input_t](abc.ABC):
             warning.shutdown()
 
     def as_dict(self):
-        """Used for serialization to debug files or so."""
+        """Used for serialization to debug files or so.
+        Returns the configuration."""
         return {}
 
     def get_state_dict(self):
-        """Returns a synthetic state dict for the estimator.
+        """Returns a synthetic state dict.
         Used for debugging purposes."""
         return {
             "warnings": {warning.id: warning.on for warning in self.warnings},
@@ -121,11 +124,11 @@ class EnergyProcessorWarningId(enum.StrEnum):
 # preferring this behavior over spending time against checking for 'disabled'
 MAXIMUM_LATENCY_DISABLED = 1e6
 SAFE_MAXIMUM_POWER_DISABLED = 1e6
-SAFE_MINIMUM_POWER_DISABLED = 0
+SAFE_MINIMUM_POWER_DISABLED = -1e6
 
 
 class EnergyProcessorConfig(typing.TypedDict):
-    maximum_latency_minutes: typing.NotRequired[float]
+    maximum_latency_seconds: typing.NotRequired[float]
     """Maximum time between source pv power/energy samples before considering an error in data sampling."""
     safe_maximum_power_w: typing.NotRequired[float]
     """Maximum power expected at the input used to filter out outliers from processing. If not set disables the check."""
@@ -149,7 +152,7 @@ class BaseEnergyProcessor(BaseProcessor[float]):
     warning_out_of_range: ProcessorWarning
 
     ENERGY_LISTENER_TYPE = typing.Callable[[float, float], None]
-    energy_listeners: typing.Final[set[ENERGY_LISTENER_TYPE]]
+    _energy_listeners: typing.Final[set[ENERGY_LISTENER_TYPE]]
 
     __slots__ = (
         "maximum_latency_ts",
@@ -162,7 +165,7 @@ class BaseEnergyProcessor(BaseProcessor[float]):
         "output",
         "warning_maximum_latency",
         "warning_out_of_range",
-        "energy_listeners",
+        "_energy_listeners",
     )
 
     def __init__(
@@ -171,25 +174,36 @@ class BaseEnergyProcessor(BaseProcessor[float]):
         **kwargs: typing.Unpack[EnergyProcessorConfig],
     ):
         self.maximum_latency_ts = (
-            kwargs.get("maximum_latency_minutes", 0) * 60 or MAXIMUM_LATENCY_DISABLED
+            kwargs.get("maximum_latency_seconds", 0) or MAXIMUM_LATENCY_DISABLED
         )
-        self.safe_maximum_power = (
-            kwargs.get("safe_maximum_power_w") or SAFE_MAXIMUM_POWER_DISABLED
+        self.safe_maximum_power = kwargs.get(
+            "safe_maximum_power_w", SAFE_MAXIMUM_POWER_DISABLED
         )
         self.safe_maximum_power_cal = self.safe_maximum_power / 3600
-        self.safe_minimum_power = (
-            kwargs.get("safe_minimum_power_w") or SAFE_MINIMUM_POWER_DISABLED
+        self.safe_minimum_power = kwargs.get(
+            "safe_minimum_power_w", SAFE_MINIMUM_POWER_DISABLED
         )
         self.safe_minimum_power_cal = self.safe_minimum_power / 3600
         self.input_unit = None
         self.output = 0
-        self.energy_listeners = set()
+        self._energy_listeners = set()
         BaseProcessor.__init__(self, id)
+
+    def listen_energy(self, callback_func: ENERGY_LISTENER_TYPE):
+        self._energy_listeners.add(callback_func)
+
+        def _unsub():
+            try:
+                self._energy_listeners.remove(callback_func)
+            except KeyError:
+                pass
+
+        return _unsub
 
     @typing.override
     def shutdown(self):
         """Used to remove references when wanting to shutdown resources usage."""
-        self.energy_listeners.clear()
+        self._energy_listeners.clear()
         BaseProcessor.shutdown(self)
 
     @typing.override
@@ -211,11 +225,15 @@ class BaseEnergyProcessor(BaseProcessor[float]):
 
                 if self.input_mode:
                     energy = input - self.input
-                    if self.safe_minimum_power_cal <= energy / d_ts <= self.safe_maximum_power_cal:
+                    if (
+                        self.safe_minimum_power_cal
+                        <= energy / d_ts
+                        <= self.safe_maximum_power_cal
+                    ):
                         if self.warning_out_of_range.on:
                             self.warning_out_of_range.toggle()
                         self.output += energy
-                        for energy_listener in self.energy_listeners:
+                        for energy_listener in self._energy_listeners:
                             energy_listener(energy, time_ts)
                     else:
                         # assume an energy reset or out of range
@@ -229,7 +247,7 @@ class BaseEnergyProcessor(BaseProcessor[float]):
                             self.warning_out_of_range.toggle()
                         energy = self.input * d_ts / 3600
                         self.output += energy
-                        for energy_listener in self.energy_listeners:
+                        for energy_listener in self._energy_listeners:
                             energy_listener(energy, time_ts)
                     else:
                         # discard the out of range observation
@@ -252,11 +270,6 @@ class BaseEnergyProcessor(BaseProcessor[float]):
             self.time_ts = time_ts
             return None
         except AttributeError as error:
-            if error.name in ("time_ts", "input"):
-                # expected right at the first call..use this to initialize the state
-                self.input = input
-                self.time_ts = time_ts
-                return None
             if error.name == "input_mode":
                 raise Exception("configure() need to be called before process()")
             raise error
@@ -270,13 +283,11 @@ class BaseEnergyProcessor(BaseProcessor[float]):
 
     @typing.override
     def as_dict(self):
-        """Returns the full state info of the estimator as a dictionary.
-        Used for serialization to debug logs or so."""
         return {
-            "maximum_latency_minutes": (
+            "maximum_latency_seconds": (
                 None
                 if self.maximum_latency_ts is MAXIMUM_LATENCY_DISABLED
-                else self.maximum_latency_ts / 60
+                else self.maximum_latency_ts
             ),
             "safe_maximum_power_w": (
                 None
@@ -285,7 +296,7 @@ class BaseEnergyProcessor(BaseProcessor[float]):
             ),
             "safe_minimum_power_w": (
                 None
-                if self.safe_minimum_power == -SAFE_MAXIMUM_POWER_DISABLED
+                if self.safe_minimum_power is SAFE_MINIMUM_POWER_DISABLED
                 else self.safe_minimum_power
             ),
         }

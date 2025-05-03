@@ -81,7 +81,7 @@ CE_OFF_GRID_MANAGER = ConfigEntriesItem(
             "battery_capacity": 100,
             "pv_power_entity_id": OptionalString(EntityIdEnum.PV_POWER),
             "load_power_entity_id": OptionalString(EntityIdEnum.LOAD_POWER),
-            "maximum_latency_minutes": 5,
+            "maximum_latency_seconds": 10,
         },
     }
 )
@@ -93,7 +93,7 @@ CE_ENERGY_CALCULATOR = ConfigEntriesItem(
             "power_entity_id": EntityIdEnum.LOAD_POWER,
             "cycle_modes": list(metering.CycleMode),
             "integration_period_seconds": 5,
-            "maximum_latency_seconds": 60,
+            "maximum_latency_seconds": 10,
         },
     }
 )
@@ -107,7 +107,7 @@ CE_CONSUMPTION_ESTIMATOR = ConfigEntriesItem(
             "sampling_interval_minutes": 10,
             "observation_duration_minutes": 60,
             "history_duration_days": 1,
-            "maximum_latency_minutes": 5,
+            "maximum_latency_seconds": 10,
         },
     }
 )

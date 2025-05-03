@@ -87,12 +87,12 @@ class HeuristicConsumptionEstimator(EnergyEstimator):
 
     # interface: Estimator
     def as_dict(self):
-        return super().as_dict() | {"model": self.model}
+        return EnergyEstimator.as_dict(self) | {"model": self.model}
 
     def get_state_dict(self):
         """Returns a synthetic state string for the estimator.
         Used for debugging purposes."""
-        return super().get_state_dict() | {
+        return EnergyEstimator.get_state_dict(self) | {
             "observed_ratio": self.observed_ratio,
         }
 
