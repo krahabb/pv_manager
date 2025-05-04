@@ -138,7 +138,7 @@ class ManagerYieldConfig(pmc.EntityConfig, pmc.SubentryConfig):
     conversion_yield_actual: "NotRequired[str]"
 
 
-class ControllerConfig(typing.TypedDict):
+class BatteryConfig(typing.TypedDict):
     battery_voltage_entity_id: str
     battery_current_entity_id: str
     safe_maximum_battery_power_w: "NotRequired[float]"
@@ -146,13 +146,24 @@ class ControllerConfig(typing.TypedDict):
 
     battery_capacity: float
 
+
+class PVConfig(typing.TypedDict):
     pv_power_entity_id: "NotRequired[str]"
     safe_maximum_pv_power_w: "NotRequired[float]"
+
+
+class LoadConfig(typing.TypedDict):
     load_power_entity_id: "NotRequired[str]"
     safe_maximum_load_power_w: "NotRequired[float]"
 
-    maximum_latency_seconds: int
-    """Maximum time between source pv power/energy samples before considering an error in data sampling."""
+
+class ControllerConfig(typing.TypedDict):
+    battery: BatteryConfig
+    pv: PVConfig
+    load: LoadConfig
+
+    maximum_latency_seconds: "NotRequired[int]"
+    """Maximum time between source power/energy samples before considering an error in data sampling."""
 
 
 class EntryConfig(ControllerConfig, pmc.EntityConfig, pmc.EntryConfig):
@@ -227,36 +238,60 @@ class Controller(controller.Controller[EntryConfig]):
         if not config:
             config = {
                 "name": "Off grid Manager",
-                "battery_voltage_entity_id": "",
-                "battery_current_entity_id": "",
-                "battery_capacity": 100,
-                "maximum_latency_seconds": 10,
+                "battery": {
+                    "battery_voltage_entity_id": "",
+                    "battery_current_entity_id": "",
+                    "battery_capacity": 100,
+                },
+                "pv":{},
+                "load": {},
             }
         return hv.entity_schema(config) | {
-            hv.req_config("battery_voltage_entity_id", config): hv.sensor_selector(
-                device_class=Sensor.DeviceClass.VOLTAGE
+            hv.vol.Required("battery"): hv.section(
+                hv.vol.Schema(
+                    {
+                        hv.req_config(
+                            "battery_voltage_entity_id", config
+                        ): hv.sensor_selector(device_class=Sensor.DeviceClass.VOLTAGE),
+                        hv.req_config(
+                            "battery_current_entity_id", config
+                        ): hv.sensor_selector(device_class=Sensor.DeviceClass.CURRENT),
+                        hv.opt_config(
+                            "safe_maximum_battery_power_w", config
+                        ): hv.positive_number_selector(unit_of_measurement="W"),
+                        hv.req_config(
+                            "battery_capacity", config
+                        ): hv.positive_number_selector(unit_of_measurement="Ah"),
+                    }
+                ),
+                {"collapsed": True},
             ),
-            hv.req_config("battery_current_entity_id", config): hv.sensor_selector(
-                device_class=Sensor.DeviceClass.CURRENT
+            hv.vol.Required("pv"): hv.section(
+                hv.vol.Schema(
+                    {
+                        hv.opt_config("pv_power_entity_id", config): hv.sensor_selector(
+                            device_class=Sensor.DeviceClass.POWER
+                        ),
+                        hv.opt_config(
+                            "safe_maximum_pv_power_w", config
+                        ): hv.positive_number_selector(unit_of_measurement="W"),
+                    }
+                ),
+                {"collapsed": True},
             ),
-            hv.opt_config(
-                "safe_maximum_battery_power_w", config
-            ): hv.positive_number_selector(unit_of_measurement="W"),
-            hv.req_config("battery_capacity", config): hv.positive_number_selector(
-                unit_of_measurement="Ah"
+            hv.vol.Required("load"): hv.section(
+                hv.vol.Schema(
+                    {
+                        hv.opt_config(
+                            "load_power_entity_id", config
+                        ): hv.sensor_selector(device_class=Sensor.DeviceClass.POWER),
+                        hv.opt_config(
+                            "safe_maximum_load_power_w", config
+                        ): hv.positive_number_selector(unit_of_measurement="W"),
+                    }
+                ),
+                {"collapsed": True},
             ),
-            hv.opt_config("pv_power_entity_id", config): hv.sensor_selector(
-                device_class=Sensor.DeviceClass.POWER
-            ),
-            hv.opt_config(
-                "safe_maximum_pv_power_w", config
-            ): hv.positive_number_selector(unit_of_measurement="W"),
-            hv.opt_config("load_power_entity_id", config): hv.sensor_selector(
-                device_class=Sensor.DeviceClass.POWER
-            ),
-            hv.opt_config(
-                "safe_maximum_load_power_w", config
-            ): hv.positive_number_selector(unit_of_measurement="W"),
             hv.opt_config("maximum_latency_seconds", config): hv.time_period_selector(
                 unit_of_measurement=hac.UnitOfTime.SECONDS
             ),
@@ -321,17 +356,53 @@ class Controller(controller.Controller[EntryConfig]):
         return None
 
     def __init__(self, hass: "HomeAssistant", config_entry: "ConfigEntry"):
+        self.energy_meters = {}
         config: EntryConfig = config_entry.data  # type: ignore
-        self.battery_voltage_entity_id = config["battery_voltage_entity_id"]
-        self.battery_current_entity_id = config["battery_current_entity_id"]
-        self.battery_charge_entity_id = config.get("battery_charge_entity_id")
-        self.battery_capacity = config.get("battery_capacity", 0)
-        self.pv_power_entity_id = config.get("pv_power_entity_id")
-        self.load_power_entity_id = config.get("load_power_entity_id")
         maximum_latency_seconds = (
             config.get("maximum_latency_seconds") or MAXIMUM_LATENCY_INFINITE
         )
         self.maximum_latency_ts = maximum_latency_seconds
+
+        config_battery = config["battery"]
+        self.battery_voltage_entity_id = config_battery["battery_voltage_entity_id"]
+        self.battery_current_entity_id = config_battery["battery_current_entity_id"]
+        self.battery_charge_entity_id = config_battery.get("battery_charge_entity_id")
+        self.battery_capacity = config_battery.get("battery_capacity", 0)
+        _safe_maximum_battery_power_w = config_battery.get(
+            "safe_maximum_battery_power_w", SAFE_MAXIMUM_POWER_DISABLED
+        )
+        self.battery_meter = BatteryMeter(
+            self,
+            maximum_latency_seconds=maximum_latency_seconds,
+            safe_maximum_power_w=_safe_maximum_battery_power_w,
+            safe_minimum_power_w=(
+                SAFE_MINIMUM_POWER_DISABLED
+                if _safe_maximum_battery_power_w is SAFE_MAXIMUM_POWER_DISABLED
+                else -_safe_maximum_battery_power_w
+            ),
+        )
+
+        config_pv = config["pv"]
+        self.pv_power_entity_id = config_pv.get("pv_power_entity_id")
+        self.pv_meter = PvMeter(
+            self,
+            maximum_latency_seconds=maximum_latency_seconds,
+            safe_maximum_power_w=config_pv.get(
+                "safe_maximum_pv_power_w", SAFE_MAXIMUM_POWER_DISABLED
+            ),
+            safe_minimum_power_w=0,
+        )
+
+        config_load = config["load"]
+        self.load_power_entity_id = config_load.get("load_power_entity_id")
+        self.load_meter = LoadMeter(
+            self,
+            maximum_latency_seconds=maximum_latency_seconds,
+            safe_maximum_power_w=config_load.get(
+                "safe_maximum_load_power_w", SAFE_MAXIMUM_POWER_DISABLED
+            ),
+            safe_minimum_power_w=0,
+        )
 
         self._store = ControllerStore(hass, config_entry.entry_id)
         self.battery_voltage: float = 0
@@ -341,36 +412,7 @@ class Controller(controller.Controller[EntryConfig]):
         self.battery_charge_estimate: float = 0
         self.battery_capacity_estimate: float = self.battery_capacity
 
-        self.energy_meters = {}
-        safe_maximum_battery_power_w = config.get(
-            "safe_maximum_battery_power_w", SAFE_MAXIMUM_POWER_DISABLED
-        )
-        self.battery_meter = BatteryMeter(
-            self,
-            maximum_latency_seconds=maximum_latency_seconds,
-            safe_maximum_power_w=safe_maximum_battery_power_w,
-            safe_minimum_power_w=(
-                SAFE_MINIMUM_POWER_DISABLED
-                if safe_maximum_battery_power_w is SAFE_MAXIMUM_POWER_DISABLED
-                else -safe_maximum_battery_power_w
-            ),
-        )
-        self.pv_meter = PvMeter(
-            self,
-            maximum_latency_seconds=maximum_latency_seconds,
-            safe_maximum_power_w=config.get(
-                "safe_maximum_pv_power_w", SAFE_MAXIMUM_POWER_DISABLED
-            ),
-            safe_minimum_power_w=0,
-        )
-        self.load_meter = LoadMeter(
-            self,
-            maximum_latency_seconds=maximum_latency_seconds,
-            safe_maximum_power_w=config.get(
-                "safe_maximum_load_power_w", SAFE_MAXIMUM_POWER_DISABLED
-            ),
-            safe_minimum_power_w=0,
-        )
+
         self.losses_meter = None
 
         self.battery_charge_sensor: BatteryChargeSensor | None = None

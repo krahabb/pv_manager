@@ -15,7 +15,7 @@ if typing.TYPE_CHECKING:
     from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
     from .controller import Controller
-    from .controller._energy_meters import BaseMeter
+    from .controller.common import BaseEnergyProcessor
     from .helpers.entity import EntityArgs
 
     SensorStateType = sensor.StateType | sensor.date | sensor.datetime | sensor.Decimal
@@ -128,7 +128,7 @@ class EnergySensor(MeteringEntity, Sensor, he.RestoreEntity):
     CycleMode = CycleMode
 
     cycle_mode: "Final[CycleMode]"
-    energy_meter: "Final[BaseMeter]"
+    energy_processor: "Final[BaseEnergyProcessor]"
 
     _metering_cycle: "MeteringCycle"
 
@@ -143,7 +143,7 @@ class EnergySensor(MeteringEntity, Sensor, he.RestoreEntity):
 
     __slots__ = (
         "cycle_mode",
-        "energy_meter",
+        "energy_processor",
         "last_reset",  # HA property
         "_integral_value",
         "_meter_energy_unsub_",
@@ -156,11 +156,11 @@ class EnergySensor(MeteringEntity, Sensor, he.RestoreEntity):
         controller: "Controller",
         id: str,
         cycle_mode: CycleMode,
-        energy_meter: "BaseMeter",
+        energy_processor: "BaseEnergyProcessor",
         **kwargs: "Unpack[EntityArgs]",
     ):
         self.cycle_mode = cycle_mode
-        self.energy_meter = energy_meter
+        self.energy_processor = energy_processor
         self.last_reset = None
         self._integral_value = 0
         self._meter_energy_unsub_ = None
@@ -199,7 +199,7 @@ class EnergySensor(MeteringEntity, Sensor, he.RestoreEntity):
 
         self.native_value = int(self._integral_value)
         await super().async_added_to_hass()
-        self._meter_energy_unsub_ =  self.energy_meter.listen_energy(self.accumulate)
+        self._meter_energy_unsub_ =  self.energy_processor.listen_energy(self.accumulate)
 
     async def async_will_remove_from_hass(self):
         if self._meter_energy_unsub_:

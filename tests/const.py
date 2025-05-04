@@ -77,12 +77,18 @@ CE_OFF_GRID_MANAGER = ConfigEntriesItem(
         "type": pmc.ConfigEntryType.OFF_GRID_MANAGER,
         "data": {
             "name": "Off grid manager",
-            "battery_voltage_entity_id": EntityIdEnum.BATTERY_VOLTAGE,
-            "battery_current_entity_id": EntityIdEnum.BATTERY_CURRENT,
-            "battery_charge_entity_id": OptionalString(""),
-            "battery_capacity": 100,
-            "pv_power_entity_id": OptionalString(EntityIdEnum.PV_POWER),
-            "load_power_entity_id": OptionalString(EntityIdEnum.LOAD_POWER),
+            "battery": {
+                "battery_voltage_entity_id": EntityIdEnum.BATTERY_VOLTAGE,
+                "battery_current_entity_id": EntityIdEnum.BATTERY_CURRENT,
+                "battery_charge_entity_id": OptionalString(""),
+                "battery_capacity": 100,
+            },
+            "pv": {
+                "pv_power_entity_id": OptionalString(EntityIdEnum.PV_POWER),
+            },
+            "load": {
+                "load_power_entity_id": OptionalString(EntityIdEnum.LOAD_POWER),
+            },
             "maximum_latency_seconds": 10,
         },
     }

@@ -130,7 +130,6 @@ class Controller(EnergyEstimatorController[EntryConfig]):
         # configuration
         "weather_entity_id",
         # state
-        "weather_state",
     )
 
     # interface: EnergyEstimatorController
@@ -164,7 +163,6 @@ class Controller(EnergyEstimatorController[EntryConfig]):
             ),
         )
         self.weather_entity_id = self.config.get("weather_entity_id")
-        self.weather_state = None
 
     async def async_init(self):
         await super().async_init()
@@ -206,7 +204,6 @@ class Controller(EnergyEstimatorController[EntryConfig]):
 
     # interface: self
     async def _async_weather_update(self, weather_state: "State | None"):
-        self.weather_state = weather_state
         try:
             if weather_state:
                 self.estimator.add_weather(

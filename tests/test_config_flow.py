@@ -38,8 +38,14 @@ async def test_config_flow(hass: "HomeAssistant"):
             )
             user_input = {}
             for _key, _value in ce["data"].items():
-                if not isinstance(_value, tc.Optional):
-                    user_input[_key] = _value
+                if isinstance(_value, dict):# data_flow section
+                    user_input[_key] = _section = {}
+                    for _section_key, _section_value in _value.items():
+                        if not isinstance(_section_value, tc.Optional):
+                            _section[_section_key] = _section_value
+                else:
+                    if not isinstance(_value, tc.Optional):
+                        user_input[_key] = _value
 
             result = await config_flow.async_configure(
                 result["flow_id"],
@@ -60,7 +66,7 @@ async def test_config_flow(hass: "HomeAssistant"):
 async def test_options_flow(hass: "HomeAssistant"):
 
     helpers.ensure_registry_entries(hass)
-    
+
     options_flow = hass.config_entries.options
 
     for ce in tc.CONFIG_ENTRIES:
