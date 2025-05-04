@@ -10,7 +10,7 @@ if typing.TYPE_CHECKING:
     from typing import ClassVar, Final, NotRequired
 
     from .. import const as pmc
-    from ..controller import Controller
+    from ..controller import Controller, Device
     from ..controller.common.estimator import Estimator
 
     class EntityArgs(typing.TypedDict):
@@ -46,7 +46,7 @@ class Entity(Loggable, entity.Entity if typing.TYPE_CHECKING else object):
 
     is_diagnostic: typing.ClassVar[bool] = False
 
-    controller: "Final[Controller]"
+    device: "Final[Device]"
 
     _attr_parent_attr: ParentAttr | None = ParentAttr.REMOVE
     """By default our entities will automatically remove their reference from the controller
@@ -65,7 +65,7 @@ class Entity(Loggable, entity.Entity if typing.TYPE_CHECKING else object):
     should_poll: typing.Final
 
     __slots__ = (
-        "controller",
+        "device",
         "config_subentry_id",
         "assumed_state",
         "available",
@@ -83,15 +83,16 @@ class Entity(Loggable, entity.Entity if typing.TYPE_CHECKING else object):
 
     def __init__(
         self,
-        controller: "Controller",
+        device: "Device",
         id: str,
         **kwargs: "typing.Unpack[EntityArgs]",
     ):
-        self.controller = controller
+        controller = device.controller
+        self.device = device
         self.config_subentry_id = kwargs.pop("config_subentry_id", None)
         self.assumed_state = False
         self.available = True
-        self.device_info = controller.device_info
+        self.device_info = device.device_info
         self.entity_category = kwargs.pop("entity_category", self._attr_entity_category)
         self.extra_state_attributes = None
         self.force_update = False
@@ -103,15 +104,15 @@ class Entity(Loggable, entity.Entity if typing.TYPE_CHECKING else object):
         self._parent_attr = kwargs.pop("parent_attr", self._attr_parent_attr)
         for _attr_name, _attr_value in kwargs.items():
             setattr(self, _attr_name, _attr_value)
-        Loggable.__init__(self, id, logger=controller)
+        Loggable.__init__(self, id, logger=device)
 
         entities = controller.entries[self.config_subentry_id].entities
         assert id not in entities
         entities[id] = self
         if self._parent_attr is ParentAttr.STATIC:
-            setattr(controller, f"{id}_{self.PLATFORM}", self)
+            setattr(device, f"{id}_{self.PLATFORM}", self)
         elif self._parent_attr is ParentAttr.DYNAMIC:
-            setattr(controller, f"{id}_{self.PLATFORM}", None)
+            setattr(device, f"{id}_{self.PLATFORM}", None)
         try:
             if add_entities := controller.platforms[self.PLATFORM]:
                 add_entities((self,), config_subentry_id=self.config_subentry_id)
@@ -120,25 +121,25 @@ class Entity(Loggable, entity.Entity if typing.TYPE_CHECKING else object):
 
     async def async_shutdown(self, remove: bool):
         if self._parent_attr:
-            delattr(self.controller, f"{self.id}_{self.PLATFORM}")
-        self.controller.entries[self.config_subentry_id].entities.pop(self.id)
+            delattr(self.device, f"{self.id}_{self.PLATFORM}")
+        self.device.controller.entries[self.config_subentry_id].entities.pop(self.id)
         if remove:
             if self.added_to_hass:
                 await self.async_remove(force_remove=True)
             Manager.entity_registry.async_remove(self.entity_id)
-        self.controller = None  # type: ignore
+        self.device = None  # type: ignore
 
     async def async_added_to_hass(self):
         await super().async_added_to_hass()
         self.added_to_hass = True
         if self._parent_attr is ParentAttr.DYNAMIC:
-            setattr(self.controller, f"{self.id}_{self.PLATFORM}", self)
+            setattr(self.device, f"{self.id}_{self.PLATFORM}", self)
         self.log(self.DEBUG, "added to hass")
 
     async def async_will_remove_from_hass(self):
         self.added_to_hass = False
         if self._parent_attr is ParentAttr.DYNAMIC:
-            setattr(self.controller, f"{self.id}_{self.PLATFORM}", None)
+            setattr(self.device, f"{self.id}_{self.PLATFORM}", None)
         await super().async_will_remove_from_hass()
         self.log(self.DEBUG, "removed from hass")
 
@@ -183,13 +184,13 @@ class DiagnosticEntity(Entity if typing.TYPE_CHECKING else object):
     # HA core entity attributes:
     _attr_entity_category = entity.EntityCategory.DIAGNOSTIC
 
-    def __init__(self, controller: "Controller", id: str, *args, **kwargs):
-        super().__init__(controller, id, *args, **kwargs)
-        controller.diagnostic_entities[id] = self
+    def __init__(self, device: "Device", id: str, *args, **kwargs):
+        super().__init__(device, id, *args, **kwargs)
+        device.controller.diagnostic_entities[id] = self
 
     async def async_shutdown(self, remove: bool):
-        self.controller.diagnostic_entities.pop(self.id)
-        return await super().async_shutdown(remove)
+        self.device.controller.diagnostic_entities.pop(self.id)
+        await super().async_shutdown(remove)
 
 
 class EstimatorEntity(Entity if typing.TYPE_CHECKING else object):
@@ -207,7 +208,7 @@ class EstimatorEntity(Entity if typing.TYPE_CHECKING else object):
 
     def __init__(
         self,
-        controller: "Controller",
+        device: "Device",
         id: str,
         estimator: "Estimator",
         *args,
@@ -219,7 +220,7 @@ class EstimatorEntity(Entity if typing.TYPE_CHECKING else object):
         self.estimator = estimator
         self._estimator_update_unsub = None
         self._estimator_update_func = estimator_update_func
-        super().__init__(controller, id, *args, **kwargs)
+        super().__init__(device, id, *args, **kwargs)
 
     async def async_shutdown(self, remove: bool):
         if self._estimator_update_unsub:

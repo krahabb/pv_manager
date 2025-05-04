@@ -5,11 +5,9 @@ import typing
 from homeassistant import const as hac
 from homeassistant.components.recorder import get_instance as recorder_instance, history
 from homeassistant.core import callback
-from homeassistant.helpers import (
-    event,
-    json,
-)
-from homeassistant.util import dt as dt_util
+from homeassistant.helpers.json import save_json
+from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.util import dt as dt_util, slugify
 from homeassistant.util.unit_conversion import (
     EnergyConverter,
     PowerConverter,
@@ -17,7 +15,7 @@ from homeassistant.util.unit_conversion import (
 
 from .. import const as pmc, helpers
 from ..binary_sensor import ProcessorWarningBinarySensor
-from ..helpers import validation as hv
+from ..helpers import Loggable, validation as hv
 from ..helpers.entity import EstimatorEntity
 from ..manager import Manager
 from ..sensor import Sensor
@@ -31,12 +29,14 @@ if typing.TYPE_CHECKING:
     from homeassistant.core import Event, HomeAssistant, State
     from homeassistant.helpers.device_registry import DeviceInfo
     from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+    from homeassistant.helpers.event import EventStateChangedData
     import voluptuous as vol
 
     from ..helpers.entity import DiagnosticEntity, Entity, EntityArgs
 
 
 class EntryData[_ConfigT: pmc.EntryConfig | pmc.SubentryConfig]:
+    """Cached entry/subentry data."""
 
     subentry_id: "Final[str | None]"
     subentry_type: "Final[str | None]"
@@ -69,7 +69,123 @@ class EntryData[_ConfigT: pmc.EntryConfig | pmc.SubentryConfig]:
         return entry
 
 
-class Controller[_ConfigT: pmc.EntryConfig](helpers.Loggable):
+class Device(Loggable):
+
+    hass: "Final[HomeAssistant]"
+    device_info: "Final[DeviceInfo]"
+    controller: "Final[Controller]"
+    _callbacks_unsub: "Final[set[Callable[[], None]]]"
+    """Dict of callbacks to be unsubscribed when the device is shutdown."""
+
+    __slots__ = (
+        "hass",
+        "device_info",
+        "controller",
+        "_callbacks_unsub",
+    )
+
+    def __init__(self, controller: "Controller", id, *, name: str, model: str):
+        self.hass = controller.hass
+        entry_id = controller.config_entry.entry_id
+        if controller is self:
+            self.device_info = {"identifiers": {(pmc.DOMAIN, entry_id)}}
+            via_device = None
+        else:
+            self.device_info = {"identifiers": {(pmc.DOMAIN, f"{entry_id}.{id}")}}
+            via_device = controller.device_info["identifiers"]  # type: ignore
+        Manager.device_registry.async_get_or_create(
+            config_entry_id=entry_id,
+            name=name,
+            model=model,
+            via_device=via_device,
+            **self.device_info,  # type: ignore
+        )
+        self.controller = controller
+        self._callbacks_unsub = set()
+        Loggable.__init__(self, id, logger=controller)
+        controller.devices[id] = self
+
+    async def async_init(self):
+        pass
+
+    async def async_shutdown(self):
+        for unsub in self._callbacks_unsub:
+            unsub()
+
+        self.controller.devices.pop(self.id)
+
+    def schedule_async_callback(
+        self, delay: float, target: "Callable[..., Coroutine]", *args
+    ):
+        @callback
+        def _callback(_target, *_args):
+            self.async_create_task(_target(*_args), "._callback")
+
+        return self.hass.loop.call_later(delay, _callback, target, *args)
+
+    def schedule_callback(self, delay: float, target: "Callable", *args):
+        return self.hass.loop.call_later(delay, target, *args)
+
+    @callback
+    def async_create_task[_R](
+        self,
+        target: "Coroutine[Any, Any, _R]",
+        name: str,
+        eager_start: bool = True,
+    ):
+        return self.controller.config_entry.async_create_task(
+            self.hass, target, f"{self.logtag}{name}", eager_start
+        )
+
+    def track_state(
+        self,
+        entity_id: str,
+        action: "Callable[[Event[EventStateChangedData]], Any]",
+    ):
+        """Track a state change for the given entity_id."""
+        self._callbacks_unsub.add(
+            async_track_state_change_event(self.hass, entity_id, action)
+        )
+
+    def track_state_update(
+        self, entity_id: str, target: "Callable[[State | None], None]"
+    ):
+        """Start tracking state updates for the given entity_id and immediately call target with current state."""
+
+        @callback
+        def _track_state_callback(
+            event: "Event[EventStateChangedData]",
+        ):
+            target(event.data.get("new_state"))
+
+        self._callbacks_unsub.add(
+            async_track_state_change_event(self.hass, entity_id, _track_state_callback)
+        )
+        target(self.hass.states.get(entity_id))
+
+    async def async_track_state_update(
+        self,
+        entity_id: str,
+        target: "Callable[[State | None], Coroutine[Any, Any, Any]]",
+    ):
+        """Start tracking state updates for the given entity_id and immediately call target with current state."""
+
+        @callback
+        def _track_state_callback(
+            event: "Event[EventStateChangedData]",
+        ):
+            self.async_create_task(
+                target(event.data.get("new_state")),
+                f"_track_state_callback({entity_id})",
+            )
+
+        self._callbacks_unsub.add(
+            async_track_state_change_event(self.hass, entity_id, _track_state_callback)
+        )
+        await target(self.hass.states.get(entity_id))
+
+
+class Controller[_ConfigT: pmc.EntryConfig](Device):
     """Base controller class for managing ConfigEntry behavior."""
 
     TYPE: "ClassVar[pmc.ConfigEntryType]"
@@ -79,29 +195,23 @@ class Controller[_ConfigT: pmc.EntryConfig](helpers.Loggable):
     that we'll (at least) forward entry setup to these platforms (even if we've still not registered any entity for those).
     This in turn allows us to later create and register entities since we'll register the add_entities callback in our platforms."""
 
-    hass: "Final[HomeAssistant]"
-    device_info: "Final[DeviceInfo]"
-
     config: _ConfigT
     options: pmc.EntryOptionsConfig
     platforms: "Final[dict[str, AddConfigEntryEntitiesCallback | None]]"
     """Dict of add_entities callbacks."""
+    devices: "Final[dict[str, Device]]"
     entries: "Final[dict[str | None, EntryData]]"
     """Cached copy of subentries used to manage subentry add/remove/update."""
     diagnostic_entities: "Final[dict[str, DiagnosticEntity]]"
-    _callbacks_unsub: "Final[set[Callable[[], None]]]"
-    """Dict of callbacks to be unsubscribed when the entry is unloaded."""
 
     __slots__ = (
         "config_entry",
-        "hass",
-        "device_info",
         "config",
         "options",
         "platforms",
+        "devices",
         "entries",
         "diagnostic_entities",
-        "_callbacks_unsub",
     )
 
     @staticmethod
@@ -134,20 +244,15 @@ class Controller[_ConfigT: pmc.EntryConfig](helpers.Loggable):
 
     def __init__(self, hass: "HomeAssistant", config_entry: "ConfigEntry"):
         self.config_entry = config_entry
-        self.hass = hass
-        self.device_info = {"identifiers": {(pmc.DOMAIN, config_entry.entry_id)}}
         self.config = config_entry.data  # type: ignore
         self.options = config_entry.options  # type: ignore
         self.platforms = {platform: None for platform in self.PLATFORMS}
+        self.devices = {}
         entries = self.entries = {None: EntryData.Entry(config_entry)}
         self.diagnostic_entities = {}
-        self._callbacks_unsub = set()
-        helpers.Loggable.__init__(self, config_entry.title)
-        Manager.device_registry.async_get_or_create(
-            config_entry_id=config_entry.entry_id,
-            name=config_entry.title,
-            model=self.TYPE,
-            **self.device_info,  # type: ignore
+        self.hass = hass  # Device Device.__init__ will use this
+        Device.__init__(
+            self, self, config_entry.title, name=config_entry.title, model=self.TYPE
         )
 
         for subentry_id, subentry in config_entry.subentries.items():
@@ -164,7 +269,7 @@ class Controller[_ConfigT: pmc.EntryConfig](helpers.Loggable):
         """
         Configure a 'logger' and a 'logtag' based off current config for every ConfigEntry.
         """
-        self.logtag = f"{self.TYPE}({self.id})"
+        self.logtag = slugify(self.config_entry.title)
         # using helpers.getLogger (instead of logger.getChild) to 'wrap' the Logger class ..
         self.logger = helpers.getLogger(f"{helpers.LOGGER.name}.{self.logtag}")
         self.logger.setLevel(
@@ -182,6 +287,9 @@ class Controller[_ConfigT: pmc.EntryConfig](helpers.Loggable):
         self._callbacks_unsub.add(
             self.config_entry.add_update_listener(self._entry_update_listener)
         )
+        for device in self.devices.values():
+            if device is not self:
+                await device.async_init()
         # Here we're forwarding to all the platform registerd in self.entities.
         # This is by default preset in the constructor with a list of (default) PLATFORMS
         # for the controller class.
@@ -191,6 +299,24 @@ class Controller[_ConfigT: pmc.EntryConfig](helpers.Loggable):
         await self.hass.config_entries.async_forward_entry_setups(
             self.config_entry, self.platforms
         )
+
+    async def async_shutdown(self):
+        await Device.async_shutdown(self)
+        for device in list(self.devices.values()):
+            await device.async_shutdown()
+
+        if not await self.hass.config_entries.async_unload_platforms(
+            self.config_entry, self.platforms.keys()
+        ):
+            raise Exception("Failed to unload platforms")
+
+        # removing circular refs here
+        for subentry_id, entry_data in self.entries.items():
+            for entity in list(entry_data.entities.values()):
+                await entity.async_shutdown(False)
+            assert not entry_data.entities
+        assert not self.diagnostic_entities
+        self.platforms.clear()
 
     async def async_setup_entry_platform(
         self,
@@ -210,97 +336,6 @@ class Controller[_ConfigT: pmc.EntryConfig](helpers.Loggable):
             ]
             if entities:
                 add_entities(entities, config_subentry_id=subentry_id)
-
-    async def async_shutdown(self):
-        for unsub in self._callbacks_unsub:
-            unsub()
-
-        if not await self.hass.config_entries.async_unload_platforms(
-            self.config_entry, self.platforms.keys()
-        ):
-            raise Exception("Failed to unload platforms")
-
-        # removing circular refs here
-        for subentry_id, entry_data in self.entries.items():
-            for entity in list(entry_data.entities.values()):
-                await entity.async_shutdown(False)
-            assert not entry_data.entities
-        assert not self.diagnostic_entities
-        self.platforms.clear()
-
-    def schedule_async_callback(
-        self, delay: float, target: "Callable[..., Coroutine]", *args
-    ):
-        @callback
-        def _callback(_target, *_args):
-            self.async_create_task(_target(*_args), "._callback")
-
-        return self.hass.loop.call_later(delay, _callback, target, *args)
-
-    def schedule_callback(self, delay: float, target: "Callable", *args):
-        return self.hass.loop.call_later(delay, target, *args)
-
-    @callback
-    def async_create_task[_R](
-        self,
-        target: "Coroutine[Any, Any, _R]",
-        name: str,
-        eager_start: bool = True,
-    ):
-        return self.config_entry.async_create_task(
-            self.hass, target, f"{self.logtag}{name}", eager_start
-        )
-
-    def track_state(
-        self,
-        entity_id: str,
-        action: "Callable[[Event[event.EventStateChangedData]], Any]",
-    ):
-        """Track a state change for the given entity_id."""
-        self._callbacks_unsub.add(
-            event.async_track_state_change_event(self.hass, entity_id, action)
-        )
-
-    def track_state_update(
-        self, entity_id: str, target: "Callable[[State | None], None]"
-    ):
-        """Start tracking state updates for the given entity_id and immediately call target with current state."""
-
-        @callback
-        def _track_state_callback(
-            event: "Event[event.EventStateChangedData]",
-        ):
-            target(event.data.get("new_state"))
-
-        self._callbacks_unsub.add(
-            event.async_track_state_change_event(
-                self.hass, entity_id, _track_state_callback
-            )
-        )
-        target(self.hass.states.get(entity_id))
-
-    async def async_track_state_update(
-        self,
-        entity_id: str,
-        target: "Callable[[State | None], Coroutine[Any, Any, Any]]",
-    ):
-        """Start tracking state updates for the given entity_id and immediately call target with current state."""
-
-        @callback
-        def _track_state_callback(
-            event: "Event[event.EventStateChangedData]",
-        ):
-            self.async_create_task(
-                target(event.data.get("new_state")),
-                f"_track_state_callback({entity_id})",
-            )
-
-        self._callbacks_unsub.add(
-            event.async_track_state_change_event(
-                self.hass, entity_id, _track_state_callback
-            )
-        )
-        await target(self.hass.states.get(entity_id))
 
     async def _entry_update_listener(
         self, hass: "HomeAssistant", config_entry: "ConfigEntry"
@@ -699,7 +734,7 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
                 self.hass,
                 f"model_{self.observed_entity_id}_{self.config.get('name', self.TYPE).lower().replace(" ", "_")}.json",
             )
-            json.save_json(filepath, self.estimator.as_dict())
+            save_json(filepath, self.estimator.as_dict())
 
     def _state_convert_detect(
         self, value: float, from_unit: str | None, to_unit: str | None

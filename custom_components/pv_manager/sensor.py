@@ -14,7 +14,7 @@ if typing.TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
     from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-    from .controller import Controller
+    from .controller import Controller, Device
     from .controller.common import BaseEnergyProcessor
     from .helpers.entity import EntityArgs
 
@@ -68,7 +68,7 @@ class Sensor(he.Entity, sensor.SensorEntity):
 
     def __init__(
         self,
-        controller: "Controller",
+        device: "Device",
         id: str,
         **kwargs: "typing.Unpack[SensorArgs]",
     ):
@@ -81,7 +81,7 @@ class Sensor(he.Entity, sensor.SensorEntity):
             self.state_class = kwargs.pop("state_class")
         else:
             self.state_class = self.DEVICE_CLASS_TO_STATE_CLASS.get(self.device_class)
-        he.Entity.__init__(self, controller, id, **kwargs)
+        he.Entity.__init__(self, device, id, **kwargs)
 
     def update(self, native_value: "SensorStateType"):
         if self.native_value != native_value:
@@ -153,7 +153,7 @@ class EnergySensor(MeteringEntity, Sensor, he.RestoreEntity):
 
     def __init__(
         self,
-        controller: "Controller",
+        device: "Device",
         id: str,
         cycle_mode: CycleMode,
         energy_processor: "BaseEnergyProcessor",
@@ -173,14 +173,13 @@ class EnergySensor(MeteringEntity, Sensor, he.RestoreEntity):
 
         Sensor.__init__(
             self,
-            controller,
+            device,
             f"{id}_{cycle_mode}",
             state_class=self.StateClass.TOTAL,
             **kwargs,
         )
 
     async def async_added_to_hass(self):
-
         self._metering_cycle = metering_cycle = MeteringCycle.register(self)
         self._next_reset_ts = metering_cycle.next_reset_ts
         self.last_reset = metering_cycle.last_reset_dt
@@ -266,7 +265,7 @@ class BatteryChargeSensor(Sensor, he.RestoreEntity):
 
     def __init__(
         self,
-        controller: "Controller",
+        device: "Device",
         id: str,
         *,
         capacity: float,
@@ -278,7 +277,7 @@ class BatteryChargeSensor(Sensor, he.RestoreEntity):
         self._current = 0
         self._current_ts = None
         super().__init__(
-            controller,
+            device,
             id,
             native_value=native_value,
             **kwargs,

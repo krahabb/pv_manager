@@ -13,7 +13,7 @@ if typing.TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
     from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-    from .controller import Controller
+    from .controller import Controller, Device
     from .helpers.entity import EntityArgs
 
     class BinarySensorArgs(EntityArgs):
@@ -44,13 +44,13 @@ class BinarySensor(Entity, binary_sensor.BinarySensorEntity):
 
     def __init__(
         self,
-        controller: "Controller",
+        device: "Device",
         id: str,
         **kwargs: "typing.Unpack[BinarySensorArgs]",
     ):
         self.device_class = kwargs.pop("device_class", self._attr_device_class)
         self.is_on = kwargs.pop("is_on", None)
-        Entity.__init__(self, controller, id, **kwargs)
+        Entity.__init__(self, device, id, **kwargs)
 
     def update(self, is_on: bool | None):
         if self.is_on != is_on:
@@ -87,7 +87,7 @@ class ProcessorWarningBinarySensor(BinarySensor):
 
     def __init__(
         self,
-        controller,
+        device: "Device",
         id,
         processor_warning: "Iterable[ProcessorWarning] | ProcessorWarning",
         **kwargs: "typing.Unpack[BinarySensorArgs]",
@@ -99,7 +99,7 @@ class ProcessorWarningBinarySensor(BinarySensor):
             self._processor_warnings = processor_warning
         self._processor_warnings_unsub = ()
         super().__init__(
-            controller,
+            device,
             id,
             **kwargs,
         )
