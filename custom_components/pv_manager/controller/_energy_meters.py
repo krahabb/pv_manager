@@ -9,20 +9,15 @@ from homeassistant.util.unit_conversion import (
 )
 
 from .. import const as pmc
-from .common import BaseEnergyProcessor, EnergyInputMode, SourceType
-from .common.estimator_pvenergy_heuristic import HeuristicPVEnergyEstimator
+from ..processors import BaseEnergyProcessor, EnergyInputMode, SourceType
 
 if typing.TYPE_CHECKING:
-    from datetime import tzinfo
     from typing import Any, Final, NotRequired, Unpack
 
-    from astral import sun
     from homeassistant.core import State
 
     from . import Controller
     from ..helpers.entity import EntityArgs
-    from .common import EnergyProcessorConfig
-    from .common.estimator_pvenergy_heuristic import PVEnergyEstimatorConfig
     from .off_grid_manager import Controller as OffGridManager
 
 POWER_UNIT = hac.UnitOfPower.WATT
@@ -34,80 +29,33 @@ class MeterStoreType(typing.TypedDict):
     energy: float
 
 
-class BaseMeter(BaseEnergyProcessor if typing.TYPE_CHECKING else object):
-    """
-    This class acts as an interface built on top of BaseEnergyProcessor
-    but it has no concrete inheritance since we're using it as a
-    'virtual base class-like' in our hierarchy involving Estimator
-    which also is a (concrete) descendant of BaseEnergyProcessor.
+class BaseMeter(BaseEnergyProcessor):
 
-    For actual energy meters not implemented through Estimator
-    we'll then have to declare a concrete class (see _BaseMeter)
-    """
-
-    controller: "Final[Controller]"
+    controller: "Final[OffGridManager]"
     metering_source: "Final[SourceType]"
 
     _SLOTS_ = (
         "controller",
         "metering_source",
-        "_state_convert_func",
     )
 
-    def __init__(self, controller: "Controller", metering_source: SourceType):
+    def __init__(
+        self,
+        controller: "OffGridManager",
+        metering_source: SourceType,
+        config: "BaseEnergyProcessor.Config",
+    ):
         self.controller = controller
         self.metering_source = metering_source
-        self._state_convert_func = self._state_convert_detect
-        if metering_source is not SourceType.UNKNOWN:
-            controller.energy_meters[metering_source] = self  # type: ignore
-            setattr(self.controller, f"{self.metering_source}_meter", self)
+        super().__init__(metering_source, logger=controller, config=config)
+        controller.energy_meters[metering_source] = self
+        setattr(controller, f"{self.metering_source}_meter", self)
 
     def shutdown(self):
-        if self.metering_source is not SourceType.UNKNOWN:
-            self.controller.energy_meters.pop(self.metering_source)  # type: ignore
-            setattr(self.controller, f"{self.metering_source}_meter", None)
+        super().shutdown()
+        self.controller.energy_meters.pop(self.metering_source)  # type: ignore
+        setattr(self.controller, f"{self.metering_source}_meter", None)
         self.controller = None  # type: ignore
-        # TODO: unregister track_state?
-
-    def track_state(self, state: "State | None"):
-        try:
-            self.process(
-                self._state_convert_func(
-                    float(state.state),  # type: ignore
-                    state.attributes["unit_of_measurement"],  # type: ignore
-                    self.input_unit,
-                ),
-                state.last_updated_timestamp,  # type: ignore
-            )  # type: ignore
-        except Exception as e:
-            # this is expected and silently managed when state == None or 'unknown'
-            # TODO: put the BaseProcessor in warning like if it was a maximum_latency
-            # or set a new warning id like no_signal
-            self.process(0, TIME_TS())
-            if state and state.state not in (hac.STATE_UNKNOWN, hac.STATE_UNAVAILABLE):
-                self.controller.log_exception(
-                    self.controller.WARNING,
-                    e,
-                    "BaseMeter(%s).track_state (state:%s)",
-                    self.metering_source.name,
-                    state,
-                )
-
-    def _state_convert_detect(
-        self, value: float, from_unit: str | None, to_unit: str | None
-    ) -> float:
-        """Installed as _state_convert_func at init time this will detect the type of observed entity
-        by inspecting the unit and install the proper converter."""
-        if from_unit in hac.UnitOfPower:
-            self._state_convert_func = PowerConverter.convert
-            self.configure(EnergyInputMode.POWER)
-        elif from_unit in hac.UnitOfEnergy:
-            self._state_convert_func = EnergyConverter.convert
-            self.configure(EnergyInputMode.ENERGY)
-        else:
-            # TODO: raise issue?
-            raise ValueError(f"Unsupported unit of measurement '{from_unit}'")
-        return self._state_convert_func(value, from_unit, self.input_unit)
 
     def load(self, data: MeterStoreType):
         self.output = data["energy"]
@@ -121,39 +69,18 @@ class BaseMeter(BaseEnergyProcessor if typing.TYPE_CHECKING else object):
         )
 
 
-class EnergyMeter(BaseMeter, BaseEnergyProcessor):
-    """Concrete class for BaseMeter(s) not implemented through estimators."""
-
-    __slots__ = BaseMeter._SLOTS_
-
-    def __init__(
-        self,
-        controller: "Controller",
-        metering_source: SourceType,
-        **kwargs: "Unpack[EnergyProcessorConfig]",
-    ):
-        BaseEnergyProcessor.__init__(self, metering_source, **kwargs)
-        BaseMeter.__init__(self, controller, metering_source)
-
-    def shutdown(self):
-        BaseMeter.shutdown(self)
-        BaseEnergyProcessor.shutdown(self)
-
-
-class BatteryMeter(EnergyMeter):
+class BatteryMeter(BaseMeter):
 
     __slots__ = (
         "in_meter",
         "out_meter",
     )
 
-    def __init__(
-        self, controller: "Controller", **kwargs: "Unpack[EnergyProcessorConfig]"
-    ):
-        EnergyMeter.__init__(self, controller, SourceType.BATTERY, **kwargs)
+    def __init__(self, controller: "OffGridManager", config: "BaseMeter.Config"):
+        super().__init__(controller, SourceType.BATTERY, config)
         self.configure(EnergyInputMode.POWER)
-        self.in_meter = EnergyMeter(controller, SourceType.BATTERY_IN)
-        self.out_meter = EnergyMeter(controller, SourceType.BATTERY_OUT)
+        self.in_meter = BaseMeter(controller, SourceType.BATTERY_IN, {})
+        self.out_meter = BaseMeter(controller, SourceType.BATTERY_OUT, {})
         self._energy_listeners.add(self._energy_callback)
 
     def _energy_callback(self, energy: float, time_ts: float):
@@ -169,21 +96,17 @@ class BatteryMeter(EnergyMeter):
             listener(energy, time_ts)
 
 
-class PvMeter(EnergyMeter):
-    def __init__(
-        self, controller: "Controller", **kwargs: "Unpack[EnergyProcessorConfig]"
-    ):
-        EnergyMeter.__init__(self, controller, SourceType.PV, **kwargs)
+class PvMeter(BaseMeter):
+    def __init__(self, controller: "OffGridManager", config: "BaseMeter.Config"):
+        super().__init__(controller, SourceType.PV, config)
 
 
-class LoadMeter(EnergyMeter):
-    def __init__(
-        self, controller: "Controller", **kwargs: "Unpack[EnergyProcessorConfig]"
-    ):
-        EnergyMeter.__init__(self, controller, SourceType.LOAD, **kwargs)
+class LoadMeter(BaseMeter):
+    def __init__(self, controller: "OffGridManager", config: "BaseMeter.Config"):
+        super().__init__(controller, SourceType.LOAD, config)
 
 
-class LossesMeter(EnergyMeter):
+class LossesMeter(BaseMeter):
 
     controller: "OffGridManager"
 
@@ -193,35 +116,23 @@ class LossesMeter(EnergyMeter):
         "battery_out_energy",
         "load_energy",
         "pv_energy",
-        "_callback_interval_ts",
-        "_callback_unsub",
     )
 
-    def __init__(self, controller: "OffGridManager", callback_interval_ts: float):
-        self._callback_interval_ts = callback_interval_ts
-        self._callback_unsub = None
-        EnergyMeter.__init__(self, controller, SourceType.LOSSES)
+    def __init__(self, controller: "OffGridManager", update_period_seconds: float):
+        super().__init__(
+            controller,
+            SourceType.LOSSES,
+            {"update_period_seconds": update_period_seconds},
+        )
 
-    def start(self):
-        """Called after restoring data in the controller so to initialize incremental counters."""
+    async def async_start(self):
         self._losses_compute()
         self.time_ts = TIME_TS()
-        self._callback_unsub = self.controller.schedule_callback(
-            self._callback_interval_ts, self._losses_callback
-        )
+        await super().async_start()
 
-    def stop(self):
-        if self._callback_unsub:
-            self._callback_unsub.cancel()
-            self._callback_unsub = None
-
-    @callback
-    def _losses_callback(self):
+    def _update_callback(self):
         time_ts = TIME_TS()
         controller = self.controller
-        self._callback_unsub = controller.schedule_callback(
-            self._callback_interval_ts, self._losses_callback
-        )
         battery_old = self.battery_energy
         battery_in_old = self.battery_in_energy
         battery_out_old = self.battery_out_energy
@@ -229,9 +140,9 @@ class LossesMeter(EnergyMeter):
         pv_old = self.pv_energy
         losses_old = self.output
         # get the 'new' total
-        controller.battery_meter.interpolate(time_ts)
-        controller.load_meter.interpolate(time_ts)
-        controller.pv_meter.interpolate(time_ts)
+        controller.battery_meter.update(time_ts)
+        controller.load_meter.update(time_ts)
+        controller.pv_meter.update(time_ts)
         self._losses_compute()
         # compute delta to get the average power in the sampling period
         # we don't check maximum_latency here since it has already been
@@ -308,28 +219,3 @@ class LossesMeter(EnergyMeter):
                     controller.system_yield_sensor.update(None)
             except:
                 controller.system_yield_sensor.update(None)
-
-
-class EstimatorMeter(BaseMeter):
-    pass
-
-
-class HeuristicPVEnergyEstimatorMeter(EstimatorMeter, HeuristicPVEnergyEstimator):
-
-    __slots__ = EstimatorMeter._SLOTS_
-
-    def __init__(
-        self,
-        controller,
-        astral_observer: "sun.Observer",
-        tzinfo: "tzinfo",
-        **kwargs: "Unpack[PVEnergyEstimatorConfig]",
-    ):
-        BaseMeter.__init__(self, controller, SourceType.PV)
-        HeuristicPVEnergyEstimator.__init__(
-            self,
-            SourceType.PV,
-            astral_observer=astral_observer,
-            tzinfo=tzinfo,
-            **kwargs,
-        )

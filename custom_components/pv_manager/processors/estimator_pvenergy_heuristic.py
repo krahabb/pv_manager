@@ -7,13 +7,12 @@ import typing
 
 from astral import sun
 
-from ...helpers import datetime_from_epoch
+from ..helpers import datetime_from_epoch
 from .estimator_pvenergy import ObservedPVEnergy, PVEnergyEstimator, WeatherModel
 
 if typing.TYPE_CHECKING:
-    import datetime as dt
+    pass
 
-    from .estimator_pvenergy import PVEnergyEstimatorConfig
 
 
 class TimeSpanEnergyModel:
@@ -105,10 +104,16 @@ class HeuristicPVEnergyEstimator(PVEnergyEstimator):
     the forecasts for the time ahead.
     """
 
+    if typing.TYPE_CHECKING:
+        class Config(PVEnergyEstimator.Config):
+            pass
+        class Args(PVEnergyEstimator.Args):
+            pass
+
     history_samples: typing.Final[deque[ObservedPVEnergy]]
     energy_model: typing.Final[dict[int, TimeSpanEnergyModel]]
 
-    __slots__ = (
+    _SLOTS_ = (
         "history_samples",
         "energy_model",
         "observed_ratio",
@@ -118,10 +123,7 @@ class HeuristicPVEnergyEstimator(PVEnergyEstimator):
     def __init__(
         self,
         id,
-        *,
-        astral_observer: sun.Observer,
-        tzinfo: "dt.tzinfo",
-        **kwargs: "typing.Unpack[PVEnergyEstimatorConfig]",
+        **kwargs: "typing.Unpack[Args]",
     ):
         self.history_samples = deque()
         self.energy_model = {}
@@ -132,29 +134,24 @@ class HeuristicPVEnergyEstimator(PVEnergyEstimator):
         so it represents the 'peak' of the discrete function represented by 'model' and, depending
         on plant orientation it should more or less happen at noon in the model
         """
-        PVEnergyEstimator.__init__(
-            self,
-            id,
-            astral_observer=astral_observer,
-            tzinfo=tzinfo,
-            **kwargs,
-        )
+        super().__init__(id, **kwargs)
 
     # interface: PVEnergyEstimator
     def as_dict(self):
-        return PVEnergyEstimator.as_dict(self) | {
+        return super().as_dict() | {
             "energy_model": self.energy_model,
         }
 
     def get_state_dict(self):
         """Returns a synthetic state string for the estimator.
         Used for debugging purposes."""
-        return PVEnergyEstimator.get_state_dict(self) | {
+        return super().get_state_dict() | {
             "history_samples": len(self.history_samples),
             "model_energy_max": self._model_energy_max,
             "observed_ratio": self.observed_ratio,
         }
 
+    @typing.override
     def update_estimate(self):
         """Process a new sample trying to update the forecast of energy production."""
 
@@ -197,6 +194,7 @@ class HeuristicPVEnergyEstimator(PVEnergyEstimator):
         for listener in self._update_listeners:
             listener(self)
 
+    @typing.override
     def get_estimated_energy(
         self, time_begin_ts: float | int, time_end_ts: float | int
     ) -> float:
@@ -279,6 +277,7 @@ class HeuristicPVEnergyEstimator(PVEnergyEstimator):
                 * self.observed_ratio
             )
 
+    @typing.override
     def get_estimated_energy_max(
         self, time_begin_ts: float | int, time_end_ts: float | int
     ):
@@ -305,11 +304,13 @@ class HeuristicPVEnergyEstimator(PVEnergyEstimator):
 
         return energy / self.sampling_interval_ts
 
+    @typing.override
     def get_estimated_energy_min(
         self, time_begin_ts: float | int, time_end_ts: float | int
     ):
         return 0
 
+    @typing.override
     def _observed_energy_history_add(self, history_sample: ObservedPVEnergy):
 
         if history_sample.energy:

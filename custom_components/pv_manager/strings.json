@@ -19,9 +19,9 @@
                 "description": "Compute the energy of a power source",
                 "data": {
                     "name": "Entity name(s)",
-                    "power_entity_id": "Source entity",
+                    "source_entity_id": "Source entity",
                     "cycle_modes": "Set of 'metering' entities to create",
-                    "integration_period_seconds": "Integration period",
+                    "update_period_seconds": "Integration period",
                     "maximum_latency_seconds": "Maximum latency"
                 }
             },
@@ -36,7 +36,7 @@
                     "sampling_interval_minutes": "Sampling interval",
                     "observation_duration_minutes": "Observation period",
                     "history_duration_days": "History length",
-                    "refresh_period_minutes": "Refresh interval",
+                    "update_period_seconds": "Refresh interval",
                     "maximum_latency_seconds": "Maximum latency"
                 }
             },

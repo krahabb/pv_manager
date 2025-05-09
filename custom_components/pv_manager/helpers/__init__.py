@@ -20,10 +20,10 @@ from .. import const as pmc
 if typing.TYPE_CHECKING:
     from datetime import tzinfo
     from types import MappingProxyType
-    from typing import Any, Callable, Coroutine
+    from typing import Any, Callable, Coroutine, NotRequired, TypedDict, Unpack
 
     from homeassistant.config_entries import ConfigEntry
-    from homeassistant.core import HomeAssistant
+    from homeassistant.core import CALLBACK_TYPE, HomeAssistant
 
 
 def clamp(_value, _min, _max):
@@ -214,6 +214,11 @@ class Loggable(abc.ABC):
     - custom way by overriding 'log'.
     """
 
+    if typing.TYPE_CHECKING:
+
+        class Args(TypedDict):
+            logger: "NotRequired[Loggable | logging.Logger]"
+
     hac = hac
 
     DEFAULT = logging.NOTSET
@@ -233,16 +238,20 @@ class Loggable(abc.ABC):
     def __init__(
         self,
         id,
-        *,
-        logger: "Loggable | logging.Logger" = LOGGER,
+        **kwargs: "Unpack[Args]",
     ):
         self.id: typing.Final = id
-        self.logger = logger
-        self.configure_logger()
-        self.log(self.DEBUG, "init")
-
-    def configure_logger(self):
+        self.logger = kwargs.get("logger", LOGGER)
         self.logtag = f"{self.__class__.__name__}({self.id})"
+        self.log(self.DEBUG, "init")
+        self._on_init()
+
+    def _on_init(self):
+        """Called when the base of the hierarchy has been fully initialized.
+        This is a chance to 'twist' part of initialization in descendants.
+        Also it is useful for when a descendant __init__ need to
+        proceed only when the logger is in place."""
+        pass
 
     def isEnabledFor(self, level: int):
         return self.logger.isEnabledFor(level)

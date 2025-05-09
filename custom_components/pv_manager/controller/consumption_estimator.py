@@ -1,43 +1,33 @@
 import typing
 
 from .. import const as pmc
-from ..controller import EnergyEstimatorController, EnergyEstimatorControllerConfig
+from ..controller import EnergyEstimatorController
 from ..helpers import validation as hv
-from .common.estimator_consumption_heuristic import (
+from ..processors.estimator_consumption_heuristic import (
     HeuristicConsumptionEstimator,
 )
 
 if typing.TYPE_CHECKING:
+    from typing import Unpack
 
     from homeassistant.config_entries import ConfigEntry
-    from homeassistant.core import HomeAssistant
 
-
-class ControllerConfig(EnergyEstimatorControllerConfig):
-    pass
-
-
-class EntryConfig(ControllerConfig, pmc.EntityConfig):
-    pass
-
-
-class Controller(EnergyEstimatorController[EntryConfig]):
+class Controller(EnergyEstimatorController["Controller.Config"]):  # type: ignore
     """Base controller class for managing ConfigEntry behavior."""
+
+    if typing.TYPE_CHECKING:
+
+        class Config(EnergyEstimatorController.Config):
+            pass
 
     TYPE = pmc.ConfigEntryType.CONSUMPTION_ESTIMATOR
 
-    __slots__ = ()
-
     # interface: EnergyEstimatorController
     @staticmethod
-    def get_config_entry_schema(config: EntryConfig | None) -> pmc.ConfigSchema:
+    def get_config_entry_schema(config: "Config | None") -> pmc.ConfigSchema:
         return hv.entity_schema(
             config or {"name": "Consumption estimation"},
         ) | EnergyEstimatorController.get_config_entry_schema(config)
 
-    def __init__(self, hass: "HomeAssistant", config_entry: "ConfigEntry"):
-        super().__init__(
-            hass,
-            config_entry,
-            HeuristicConsumptionEstimator,
-        )
+    def __init__(self, config_entry: "ConfigEntry"):
+        super().__init__(config_entry, HeuristicConsumptionEstimator)

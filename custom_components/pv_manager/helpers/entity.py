@@ -11,7 +11,7 @@ if typing.TYPE_CHECKING:
 
     from .. import const as pmc
     from ..controller import Controller, Device
-    from ..controller.common.estimator import Estimator
+    from ..processors.estimator import Estimator
 
     class EntityArgs(typing.TypedDict):
         config_subentry_id: NotRequired[str]

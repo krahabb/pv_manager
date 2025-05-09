@@ -10,15 +10,16 @@ from homeassistant.util.unit_conversion import (
     ElectricPotentialConverter,
 )
 
-from custom_components.pv_manager.controller.common import (
+from .. import const as pmc, controller
+from ..binary_sensor import ProcessorWarningBinarySensor
+from ..helpers import validation as hv
+from ..manager import Manager
+from ..processors import (
+    MAXIMUM_LATENCY_DISABLED,
     SAFE_MAXIMUM_POWER_DISABLED,
     SAFE_MINIMUM_POWER_DISABLED,
 )
-
-from .. import const as pmc, controller
-from ..binary_sensor import ProcessorWarningBinarySensor
-from ..controller.common.battery_estimator import BatteryEstimator
-from ..helpers import validation as hv
+from ..processors.battery_estimator import BatteryEstimator
 from ..sensor import BatteryChargeSensor, EnergySensor, PowerSensor, Sensor
 from ._energy_meters import (
     TIME_TS,
@@ -32,17 +33,16 @@ from ._energy_meters import (
 )
 
 if typing.TYPE_CHECKING:
-    from typing import Any, Final, NotRequired, Unpack
+    from typing import Any, Final, NotRequired, TypedDict, Unpack
 
-    from homeassistant.config_entries import ConfigEntry, ConfigSubentry
-    from homeassistant.core import Event, HomeAssistant, State
+    from homeassistant.config_entries import ConfigEntry
+    from homeassistant.core import Event, EventStateChangedData, State
 
     from ..controller import EntryData
-    from ..controller.common import ProcessorWarning
     from ..helpers.entity import EntityArgs
+    from ..processors import ProcessorWarning
 
 
-MAXIMUM_LATENCY_INFINITE = 1e6
 VOLTAGE_UNIT = hac.UnitOfElectricPotential.VOLT
 CURRENT_UNIT = hac.UnitOfElectricCurrent.AMPERE
 
@@ -64,9 +64,9 @@ class ControllerStoreType(typing.TypedDict):
 class ControllerStore(storage.Store[ControllerStoreType]):
     VERSION = 1
 
-    def __init__(self, hass: "HomeAssistant", entry_id: str):
+    def __init__(self, entry_id: str):
         super().__init__(
-            hass,
+            Manager.hass,
             self.VERSION,
             f"{pmc.DOMAIN}.{Controller.TYPE}.{entry_id}",
         )
@@ -138,46 +138,40 @@ class ManagerYieldConfig(pmc.EntityConfig, pmc.SubentryConfig):
     conversion_yield_actual: "NotRequired[str]"
 
 
-class BatteryConfig(typing.TypedDict):
-    battery_voltage_entity_id: str
-    battery_current_entity_id: str
-    safe_maximum_battery_power_w: "NotRequired[float]"
-    battery_charge_entity_id: "NotRequired[str]"
-
-    battery_capacity: float
-
-
-class PVConfig(typing.TypedDict):
-    pv_power_entity_id: "NotRequired[str]"
-    safe_maximum_pv_power_w: "NotRequired[float]"
-
-
-class LoadConfig(typing.TypedDict):
-    load_power_entity_id: "NotRequired[str]"
-    safe_maximum_load_power_w: "NotRequired[float]"
-
-
-class ControllerConfig(typing.TypedDict):
-    battery: BatteryConfig
-    pv: PVConfig
-    load: LoadConfig
-
-    maximum_latency_seconds: "NotRequired[int]"
-    """Maximum time between source power/energy samples before considering an error in data sampling."""
-
-
-class EntryConfig(ControllerConfig, pmc.EntityConfig, pmc.EntryConfig):
-    """TypedDict for ConfigEntry data"""
-
-
-class Controller(controller.Controller[EntryConfig]):
+class Controller(controller.Controller["Controller.Config"]):  # type: ignore
     """Off-grid plant manager: a collection of integrated helpers for a basic off-grid system
     with PV BATTERY and LOAD."""
+
+    if typing.TYPE_CHECKING:
+
+        class BatteryConfig(TypedDict):
+            battery_voltage_entity_id: str
+            battery_current_entity_id: str
+            safe_maximum_battery_power_w: NotRequired[float]
+            battery_charge_entity_id: NotRequired[str]
+            battery_capacity: float
+
+        class PVConfig(TypedDict):
+            pv_power_entity_id: NotRequired[str]
+            safe_maximum_pv_power_w: NotRequired[float]
+
+        class LoadConfig(TypedDict):
+            load_power_entity_id: NotRequired[str]
+            safe_maximum_load_power_w: NotRequired[float]
+
+        class Config(pmc.EntityConfig, controller.Controller.Config):
+            battery: "Controller.BatteryConfig"
+            pv: "Controller.PVConfig"
+            load: "Controller.LoadConfig"
+            maximum_latency_seconds: NotRequired[int]
+            """Maximum time between source power/energy samples before considering an error in data sampling."""
 
     TYPE = pmc.ConfigEntryType.OFF_GRID_MANAGER
     PLATFORMS = {Sensor.PLATFORM}
 
     STORE_SAVE_PERIOD = 3600
+
+    config: "Config"
 
     energy_meters: "Final[dict[SourceType, BaseMeter]]"
     battery_meter: BatteryMeter
@@ -202,8 +196,6 @@ class Controller(controller.Controller[EntryConfig]):
         "battery_current_entity_id",
         "battery_charge_entity_id",
         "battery_capacity",
-        "pv_power_entity_id",
-        "load_power_entity_id",
         "maximum_latency_ts",
         # state
         "_store",
@@ -229,12 +221,11 @@ class Controller(controller.Controller[EntryConfig]):
         "conversion_yield_sensor",
         "conversion_yield_actual_sensor",
         # callbacks
-        "_store_save_callback_unsub",
         "_final_write_unsub",
     )
 
     @staticmethod
-    def get_config_entry_schema(config: EntryConfig | None) -> pmc.ConfigSchema:
+    def get_config_entry_schema(config: "Config | None") -> pmc.ConfigSchema:
         if not config:
             config = {
                 "name": "Off grid Manager",
@@ -243,7 +234,7 @@ class Controller(controller.Controller[EntryConfig]):
                     "battery_current_entity_id": "",
                     "battery_capacity": 100,
                 },
-                "pv":{},
+                "pv": {},
                 "load": {},
             }
         return hv.entity_schema(config) | {
@@ -355,93 +346,22 @@ class Controller(controller.Controller[EntryConfig]):
                 return pmc.ConfigSubentryType.MANAGER_YIELD
         return None
 
-    def __init__(self, hass: "HomeAssistant", config_entry: "ConfigEntry"):
+    def __init__(self, config_entry: "ConfigEntry"):
         self.energy_meters = {}
-        config: EntryConfig = config_entry.data  # type: ignore
-        maximum_latency_seconds = (
-            config.get("maximum_latency_seconds") or MAXIMUM_LATENCY_INFINITE
-        )
-        self.maximum_latency_ts = maximum_latency_seconds
-
-        config_battery = config["battery"]
-        self.battery_voltage_entity_id = config_battery["battery_voltage_entity_id"]
-        self.battery_current_entity_id = config_battery["battery_current_entity_id"]
-        self.battery_charge_entity_id = config_battery.get("battery_charge_entity_id")
-        self.battery_capacity = config_battery.get("battery_capacity", 0)
-        _safe_maximum_battery_power_w = config_battery.get(
-            "safe_maximum_battery_power_w", SAFE_MAXIMUM_POWER_DISABLED
-        )
-        self.battery_meter = BatteryMeter(
-            self,
-            maximum_latency_seconds=maximum_latency_seconds,
-            safe_maximum_power_w=_safe_maximum_battery_power_w,
-            safe_minimum_power_w=(
-                SAFE_MINIMUM_POWER_DISABLED
-                if _safe_maximum_battery_power_w is SAFE_MAXIMUM_POWER_DISABLED
-                else -_safe_maximum_battery_power_w
-            ),
-        )
-
-        config_pv = config["pv"]
-        self.pv_power_entity_id = config_pv.get("pv_power_entity_id")
-        self.pv_meter = PvMeter(
-            self,
-            maximum_latency_seconds=maximum_latency_seconds,
-            safe_maximum_power_w=config_pv.get(
-                "safe_maximum_pv_power_w", SAFE_MAXIMUM_POWER_DISABLED
-            ),
-            safe_minimum_power_w=0,
-        )
-
-        config_load = config["load"]
-        self.load_power_entity_id = config_load.get("load_power_entity_id")
-        self.load_meter = LoadMeter(
-            self,
-            maximum_latency_seconds=maximum_latency_seconds,
-            safe_maximum_power_w=config_load.get(
-                "safe_maximum_load_power_w", SAFE_MAXIMUM_POWER_DISABLED
-            ),
-            safe_minimum_power_w=0,
-        )
-
-        self._store = ControllerStore(hass, config_entry.entry_id)
+        self._store = ControllerStore(config_entry.entry_id)
         self.battery_voltage: float = 0
         self.battery_current: float = 0
         self._battery_current_last_ts: float = 0
         self.battery_charge: float = 0
         self.battery_charge_estimate: float = 0
-        self.battery_capacity_estimate: float = self.battery_capacity
-
+        self.battery_capacity_estimate: float = 0
 
         self.losses_meter = None
 
         self.battery_charge_sensor: BatteryChargeSensor | None = None
-        self._store_save_callback_unsub = None
         self._final_write_unsub = None
 
-        super().__init__(hass, config_entry)
-
-    async def async_init(self):
-
-        if store_data := await self._store.async_load():
-
-            for meter in self.energy_meters.values():
-                with self.exception_warning(
-                    "loading %s meter data", meter.metering_source.value
-                ):
-                    meter.load(store_data[meter.metering_source.value])
-            with self.exception_warning("loading battery_charge_estimate"):
-                self.battery_charge_estimate = store_data["battery_charge_estimate"]
-            with self.exception_warning("loading battery_capacity_estimate"):
-                self.battery_capacity_estimate = store_data["battery_capacity_estimate"]
-
-        self._store_save_callback_unsub = self.schedule_async_callback(
-            self.STORE_SAVE_PERIOD, self._async_store_save
-        )
-        self._final_write_unsub = self.hass.bus.async_listen_once(
-            hac.EVENT_HOMEASSISTANT_FINAL_WRITE,
-            self._async_store_save,
-        )
+        super().__init__(config_entry)
 
         # TODO: setup according to some sort of configuration
         BatteryChargeSensor(
@@ -469,37 +389,112 @@ class Controller(controller.Controller[EntryConfig]):
                 self, f"{_warning_id}_warning", _warning_processors
             )
 
-        self.track_state_update(
-            self.battery_voltage_entity_id, self._battery_voltage_callback
+
+    def _on_init(self):
+        config: "Controller.Config" = self.config # type: ignore
+        maximum_latency_seconds = (
+            config.get("maximum_latency_seconds") or MAXIMUM_LATENCY_DISABLED
         )
-        self.track_state_update(
-            self.battery_current_entity_id, self._battery_current_callback
+        self.maximum_latency_ts = maximum_latency_seconds
+
+        config_battery = config["battery"]
+        self.battery_voltage_entity_id = config_battery["battery_voltage_entity_id"]
+        self.battery_current_entity_id = config_battery["battery_current_entity_id"]
+        self.battery_charge_entity_id = config_battery.get("battery_charge_entity_id")
+        self.battery_capacity = config_battery.get("battery_capacity", 0)
+        _safe_maximum_battery_power_w = config_battery.get(
+            "safe_maximum_battery_power_w", SAFE_MAXIMUM_POWER_DISABLED
+        )
+        self.battery_meter = BatteryMeter(
+            self,
+            {
+                "maximum_latency_seconds": maximum_latency_seconds,
+                "safe_maximum_power_w": _safe_maximum_battery_power_w,
+                "safe_minimum_power_w": (
+                    SAFE_MINIMUM_POWER_DISABLED
+                    if _safe_maximum_battery_power_w is SAFE_MAXIMUM_POWER_DISABLED
+                    else -_safe_maximum_battery_power_w
+                ),
+            },
+        )
+
+        config_pv = config["pv"]
+        self.pv_meter = PvMeter(
+            self,
+            {
+                "source_entity_id": config_pv.get("pv_power_entity_id"),
+                "maximum_latency_seconds": maximum_latency_seconds,
+                "safe_maximum_power_w": config_pv.get(
+                    "safe_maximum_pv_power_w", SAFE_MAXIMUM_POWER_DISABLED
+                ),
+                "safe_minimum_power_w": 0,
+            },
+        )
+
+        config_load = config["load"]
+        self.load_meter = LoadMeter(
+            self,
+            {
+                "source_entity_id": config_load.get("load_power_entity_id"),
+                "maximum_latency_seconds": maximum_latency_seconds,
+                "safe_maximum_power_w": config_load.get(
+                    "safe_maximum_load_power_w", SAFE_MAXIMUM_POWER_DISABLED
+                ),
+                "safe_minimum_power_w": 0,
+            },
+        )
+
+        return super()._on_init()
+
+    async def async_setup(self):
+
+        if store_data := await self._store.async_load():
+
+            for meter in self.energy_meters.values():
+                with self.exception_warning(
+                    "loading %s meter data", meter.metering_source.value
+                ):
+                    meter.load(store_data[meter.metering_source.value])
+            with self.exception_warning("loading battery_charge_estimate"):
+                self.battery_charge_estimate = store_data["battery_charge_estimate"]
+            with self.exception_warning("loading battery_capacity_estimate"):
+                self.battery_capacity_estimate = store_data["battery_capacity_estimate"]
+
+        self.track_timer(self.STORE_SAVE_PERIOD, self._async_store_save)
+        self._final_write_unsub = Manager.hass.bus.async_listen_once(
+            hac.EVENT_HOMEASSISTANT_FINAL_WRITE,
+            self._async_store_save,
+        )
+
+        self.track_state(
+            self.battery_voltage_entity_id,
+            self._battery_voltage_callback,
+            Controller.HassJobType.Callback,
+        )
+        self.track_state(
+            self.battery_current_entity_id,
+            self._battery_current_callback,
+            Controller.HassJobType.Callback,
         )
         if self.battery_charge_entity_id:
-            self.track_state_update(
-                self.battery_charge_entity_id, self._battery_charge_callback
-            )
-        if self.pv_power_entity_id:
-            self.track_state_update(self.pv_power_entity_id, self.pv_meter.track_state)
-        if self.load_power_entity_id:
-            self.track_state_update(
-                self.load_power_entity_id, self.load_meter.track_state
+            self.track_state(
+                self.battery_charge_entity_id,
+                self._battery_charge_callback,
+                Controller.HassJobType.Callback,
             )
 
-        await super().async_init()
+        await self.pv_meter.async_start()
+        await self.load_meter.async_start()
+
+        await super().async_setup()
         # trigger now after adding entities to hass
         if self.losses_meter:
-            self.losses_meter.start()
+            await self.losses_meter.async_start()
 
     async def async_shutdown(self):
         if self._final_write_unsub:
             self._final_write_unsub()
             self._final_write_unsub = None
-        if self._store_save_callback_unsub:
-            self._store_save_callback_unsub.cancel()
-            self._store_save_callback_unsub = None
-        if self.losses_meter:
-            self.losses_meter.stop()
 
         await self._async_store_save(0)
 
@@ -560,7 +555,9 @@ class Controller(controller.Controller[EntryConfig]):
                             name=name,
                         )
                 if self.config_entry.state == ConfigEntryState.LOADED:
-                    losses_meter.start()
+                    self.async_create_task(
+                        losses_meter.async_start(), "LossesMeter.async_start"
+                    )
 
     async def _async_subentry_update(self, subentry_id: str, entry_data: "EntryData"):
         match entry_data.subentry_type:
@@ -600,7 +597,8 @@ class Controller(controller.Controller[EntryConfig]):
                 assert losses_meter
                 yield_config: ManagerYieldConfig = entry_data.config  # type: ignore
                 name = yield_config["name"]
-                losses_meter._callback_interval_ts = yield_config[
+                # TODO: retrigger the track_timer
+                losses_meter.update_period_ts = yield_config[
                     "sampling_interval_seconds"
                 ]
                 entities = entry_data.entities
@@ -666,39 +664,42 @@ class Controller(controller.Controller[EntryConfig]):
                 pass
             case pmc.ConfigSubentryType.MANAGER_YIELD:
                 assert self.losses_meter
-                self.losses_meter.stop()
                 self.losses_meter.shutdown()
 
     # interface: self
-    def _battery_voltage_callback(self, state: "State | None"):
+    def _battery_voltage_callback(
+        self, event: "Event[EventStateChangedData] | Controller.Event"
+    ):
         try:
+            state = event.data["new_state"]
             self.battery_voltage = ElectricPotentialConverter.convert(
                 float(state.state),  # type: ignore
                 state.attributes["unit_of_measurement"],  # type: ignore
                 VOLTAGE_UNIT,
             )
             self.battery_meter.process(
-                self.battery_voltage * self.battery_current,
-                state.last_updated_timestamp,  # type: ignore
+                self.battery_voltage * self.battery_current, event.time_fired_timestamp
             )
         except Exception as e:
             self.battery_voltage = 0
-            self.battery_meter.process(0, TIME_TS())
+            self.battery_meter.process(None, event.time_fired_timestamp)
             if state and state.state not in (hac.STATE_UNKNOWN, hac.STATE_UNAVAILABLE):
                 self.log_exception(
                     self.WARNING, e, "_battery_voltage_update(state:%s)", state
                 )
 
-    def _battery_current_callback(self, state: "State | None"):
+    def _battery_current_callback(
+        self, event: "Event[EventStateChangedData] | Controller.Event"
+    ):
+        time_ts = event.time_fired_timestamp
         try:
-            time_ts = state.last_updated_timestamp  # type: ignore
+            state = event.data["new_state"]
             battery_current = ElectricCurrentConverter.convert(
                 float(state.state),  # type: ignore
                 state.attributes["unit_of_measurement"],  # type: ignore
                 CURRENT_UNIT,
             )
         except Exception as e:
-            time_ts = TIME_TS()
             battery_current = 0
             if state and state.state not in (hac.STATE_UNKNOWN, hac.STATE_UNAVAILABLE):
                 self.log_exception(
@@ -725,7 +726,9 @@ class Controller(controller.Controller[EntryConfig]):
 
         self.battery_meter.process(self.battery_current * self.battery_voltage, time_ts)
 
-    def _battery_charge_callback(self, state: "State | None"):
+    def _battery_charge_callback(
+        self, event: "Event[EventStateChangedData] | Controller.Event"
+    ):
         pass
 
     async def _async_store_save(self, *args):
@@ -733,12 +736,9 @@ class Controller(controller.Controller[EntryConfig]):
         # no args means we're being called by the loop scheduler i.e. periodic save
         # args[0] == event means we're in the final write stage of HA shutting down
         # args[0] == 0 means we're unloading the controller
-        if not args:
-            self._store_save_callback_unsub = self.schedule_async_callback(
-                self.STORE_SAVE_PERIOD, self._async_store_save
-            )
-        elif args[0]:
-            self._final_write_unsub = None
+        if args:
+            if args[0]:
+                self._final_write_unsub = None
 
         now = dt_util.now()
         data = ControllerStoreType(

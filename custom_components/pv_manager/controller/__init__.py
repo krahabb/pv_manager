@@ -1,36 +1,23 @@
-import datetime as dt
-import time
 import typing
 
 from homeassistant import const as hac
-from homeassistant.components.recorder import get_instance as recorder_instance, history
-from homeassistant.core import callback
-from homeassistant.helpers.json import save_json
-from homeassistant.helpers.event import async_track_state_change_event
-from homeassistant.util import dt as dt_util, slugify
-from homeassistant.util.unit_conversion import (
-    EnergyConverter,
-    PowerConverter,
-)
+from homeassistant.util import slugify
 
 from .. import const as pmc, helpers
 from ..binary_sensor import ProcessorWarningBinarySensor
-from ..helpers import Loggable, validation as hv
+from ..helpers import validation as hv
 from ..helpers.entity import EstimatorEntity
 from ..manager import Manager
+from ..processors.estimator import EnergyEstimator
 from ..sensor import Sensor
-from .common import EnergyInputMode
-from .common.estimator import EnergyEstimator, EnergyEstimatorConfig
+from .devices import Device
 
 if typing.TYPE_CHECKING:
-    from typing import Any, Callable, ClassVar, Coroutine, Final, Unpack
+    from typing import Any, Callable, ClassVar, Coroutine, Final, TypedDict, Unpack
 
     from homeassistant.config_entries import ConfigEntry, ConfigSubentry
-    from homeassistant.core import Event, HomeAssistant, State
-    from homeassistant.helpers.device_registry import DeviceInfo
+    from homeassistant.core import HomeAssistant, State
     from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
-    from homeassistant.helpers.event import EventStateChangedData
-    import voluptuous as vol
 
     from ..helpers.entity import DiagnosticEntity, Entity, EntityArgs
 
@@ -69,124 +56,16 @@ class EntryData[_ConfigT: pmc.EntryConfig | pmc.SubentryConfig]:
         return entry
 
 
-class Device(Loggable):
-
-    hass: "Final[HomeAssistant]"
-    device_info: "Final[DeviceInfo]"
-    controller: "Final[Controller]"
-    _callbacks_unsub: "Final[set[Callable[[], None]]]"
-    """Dict of callbacks to be unsubscribed when the device is shutdown."""
-
-    __slots__ = (
-        "hass",
-        "device_info",
-        "controller",
-        "_callbacks_unsub",
-    )
-
-    def __init__(self, controller: "Controller", id, *, name: str, model: str):
-        self.hass = controller.hass
-        entry_id = controller.config_entry.entry_id
-        if controller is self:
-            self.device_info = {"identifiers": {(pmc.DOMAIN, entry_id)}}
-            via_device = None
-        else:
-            self.device_info = {"identifiers": {(pmc.DOMAIN, f"{entry_id}.{id}")}}
-            via_device = controller.device_info["identifiers"]  # type: ignore
-        Manager.device_registry.async_get_or_create(
-            config_entry_id=entry_id,
-            name=name,
-            model=model,
-            via_device=via_device,
-            **self.device_info,  # type: ignore
-        )
-        self.controller = controller
-        self._callbacks_unsub = set()
-        Loggable.__init__(self, id, logger=controller)
-        controller.devices[id] = self
-
-    async def async_init(self):
-        pass
-
-    async def async_shutdown(self):
-        for unsub in self._callbacks_unsub:
-            unsub()
-
-        self.controller.devices.pop(self.id)
-
-    def schedule_async_callback(
-        self, delay: float, target: "Callable[..., Coroutine]", *args
-    ):
-        @callback
-        def _callback(_target, *_args):
-            self.async_create_task(_target(*_args), "._callback")
-
-        return self.hass.loop.call_later(delay, _callback, target, *args)
-
-    def schedule_callback(self, delay: float, target: "Callable", *args):
-        return self.hass.loop.call_later(delay, target, *args)
-
-    @callback
-    def async_create_task[_R](
-        self,
-        target: "Coroutine[Any, Any, _R]",
-        name: str,
-        eager_start: bool = True,
-    ):
-        return self.controller.config_entry.async_create_task(
-            self.hass, target, f"{self.logtag}{name}", eager_start
-        )
-
-    def track_state(
-        self,
-        entity_id: str,
-        action: "Callable[[Event[EventStateChangedData]], Any]",
-    ):
-        """Track a state change for the given entity_id."""
-        self._callbacks_unsub.add(
-            async_track_state_change_event(self.hass, entity_id, action)
-        )
-
-    def track_state_update(
-        self, entity_id: str, target: "Callable[[State | None], None]"
-    ):
-        """Start tracking state updates for the given entity_id and immediately call target with current state."""
-
-        @callback
-        def _track_state_callback(
-            event: "Event[EventStateChangedData]",
-        ):
-            target(event.data.get("new_state"))
-
-        self._callbacks_unsub.add(
-            async_track_state_change_event(self.hass, entity_id, _track_state_callback)
-        )
-        target(self.hass.states.get(entity_id))
-
-    async def async_track_state_update(
-        self,
-        entity_id: str,
-        target: "Callable[[State | None], Coroutine[Any, Any, Any]]",
-    ):
-        """Start tracking state updates for the given entity_id and immediately call target with current state."""
-
-        @callback
-        def _track_state_callback(
-            event: "Event[EventStateChangedData]",
-        ):
-            self.async_create_task(
-                target(event.data.get("new_state")),
-                f"_track_state_callback({entity_id})",
-            )
-
-        self._callbacks_unsub.add(
-            async_track_state_change_event(self.hass, entity_id, _track_state_callback)
-        )
-        await target(self.hass.states.get(entity_id))
-
-
 class Controller[_ConfigT: pmc.EntryConfig](Device):
     """Base controller class for managing ConfigEntry behavior."""
+
+    if typing.TYPE_CHECKING:
+
+        class Config(pmc.EntryConfig):
+            pass
+
+        class Args(TypedDict):
+            pass
 
     TYPE: "ClassVar[pmc.ConfigEntryType]"
 
@@ -194,6 +73,8 @@ class Controller[_ConfigT: pmc.EntryConfig](Device):
     """Default entity platforms used by the controller. This is used to prepopulate the entities dict so
     that we'll (at least) forward entry setup to these platforms (even if we've still not registered any entity for those).
     This in turn allows us to later create and register entities since we'll register the add_entities callback in our platforms."""
+
+    logger: helpers.logging.Logger
 
     config: _ConfigT
     options: pmc.EntryOptionsConfig
@@ -242,70 +123,50 @@ class Controller[_ConfigT: pmc.EntryConfig](Device):
         # to be overriden
         return None
 
-    def __init__(self, hass: "HomeAssistant", config_entry: "ConfigEntry"):
+    def __init__(self, config_entry: "ConfigEntry"):
         self.config_entry = config_entry
         self.config = config_entry.data  # type: ignore
         self.options = config_entry.options  # type: ignore
         self.platforms = {platform: None for platform in self.PLATFORMS}
         self.devices = {}
-        entries = self.entries = {None: EntryData.Entry(config_entry)}
+        self.entries = {None: EntryData.Entry(config_entry)}
         self.diagnostic_entities = {}
-        self.hass = hass  # Device Device.__init__ will use this
-        Device.__init__(
-            self, self, config_entry.title, name=config_entry.title, model=self.TYPE
-        )
 
-        for subentry_id, subentry in config_entry.subentries.items():
+        logger = helpers.getLogger(f"{helpers.LOGGER.name}.{slugify(config_entry.title)}")
+        logger.setLevel(
+            pmc.CONF_LOGGING_LEVEL_OPTIONS.get(
+                self.options.get("logging_level", "default"), self.DEFAULT
+            )
+        )
+        super().__init__(config_entry.entry_id, controller=self, logger=logger, config=self.config)
+        
+        entries = self.entries
+        for subentry_id, subentry in self.config_entry.subentries.items():
             entries[subentry_id] = entry_data = EntryData.SubEntry(subentry)
             self._subentry_add(subentry_id, entry_data)
 
         if self.options.get("create_diagnostic_entities"):
             self._create_diagnostic_entities()
 
-        config_entry.runtime_data = self
-
     # interface: Loggable
-    def configure_logger(self):
-        """
-        Configure a 'logger' and a 'logtag' based off current config for every ConfigEntry.
-        """
-        self.logtag = slugify(self.config_entry.title)
-        # using helpers.getLogger (instead of logger.getChild) to 'wrap' the Logger class ..
-        self.logger = helpers.getLogger(f"{helpers.LOGGER.name}.{self.logtag}")
-        self.logger.setLevel(
-            pmc.CONF_LOGGING_LEVEL_OPTIONS.get(
-                self.options.get("logging_level", "default"), self.DEFAULT
-            )
-        )
-
     def log(self, level: int, msg: str, *args, **kwargs):
         if (logger := self.logger).isEnabledFor(level):
             logger._log(level, msg, args, **kwargs)
 
     # interface: self
-    async def async_init(self):
-        self._callbacks_unsub.add(
-            self.config_entry.add_update_listener(self._entry_update_listener)
+    async def async_setup(self):
+        self.track_callback(
+            "_entry_update_listener",
+            self.config_entry.add_update_listener(self._entry_update_listener),
         )
         for device in self.devices.values():
-            if device is not self:
-                await device.async_init()
-        # Here we're forwarding to all the platform registerd in self.entities.
-        # This is by default preset in the constructor with a list of (default) PLATFORMS
-        # for the controller class.
-        # The list of 'actual' entities could also be enriched by instantiating entities
-        # in the (derived) contructor since async_init will be called at loading time right after
-        # class instance initialization.
-        await self.hass.config_entries.async_forward_entry_setups(
+            await device.async_start()
+        await Manager.hass.config_entries.async_forward_entry_setups(
             self.config_entry, self.platforms
         )
 
     async def async_shutdown(self):
-        await Device.async_shutdown(self)
-        for device in list(self.devices.values()):
-            await device.async_shutdown()
-
-        if not await self.hass.config_entries.async_unload_platforms(
+        if not await Manager.hass.config_entries.async_unload_platforms(
             self.config_entry, self.platforms.keys()
         ):
             raise Exception("Failed to unload platforms")
@@ -317,6 +178,10 @@ class Controller[_ConfigT: pmc.EntryConfig](Device):
             assert not entry_data.entities
         assert not self.diagnostic_entities
         self.platforms.clear()
+
+        for device in self.devices.values():
+            device.shutdown()
+        self.devices.clear()
 
     async def async_setup_entry_platform(
         self,
@@ -478,17 +343,14 @@ class TomorrowEnergyEstimatorSensor(EnergyEstimatorSensor):
             self._async_write_ha_state()
 
 
-class EnergyEstimatorControllerConfig(pmc.EntryConfig, EnergyEstimatorConfig):
-
-    observed_entity_id: str
-    """Entity ID of the energy/power observed entity"""
-    refresh_period_minutes: typing.NotRequired[int]
-    """Time between model updates (polling of input pv sensor) beside listening to state changes"""
-
-
-class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
+class EnergyEstimatorController[_ConfigT: "EnergyEstimatorController.Config"](  # type: ignore
     Controller[_ConfigT]
 ):
+
+    if typing.TYPE_CHECKING:
+
+        class Config(EnergyEstimator.Config, Controller.Config):
+            pass
 
     PLATFORMS = {Sensor.PLATFORM}
 
@@ -496,31 +358,24 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
 
     __slots__ = (
         # configuration
-        "observed_entity_id",
-        "refresh_period_ts",
         # state
         "estimator",
-        "_state_convert_func",
-        "_state_convert_unit",
-        "_refresh_callback_unsub",
-        "_restore_history_task",
-        "_restore_history_exit",
     )
 
     @staticmethod
     def get_config_entry_schema(
-        config: EnergyEstimatorControllerConfig | None,
+        config: "Config | None",
     ) -> pmc.ConfigSchema:
         if not config:
             config = {
-                "observed_entity_id": "",
+                "source_entity_id": "",
                 "sampling_interval_minutes": 10,
                 "observation_duration_minutes": 20,
                 "history_duration_days": 7,
                 "maximum_latency_seconds": 60,
             }
         return {
-            hv.req_config("observed_entity_id", config): hv.sensor_selector(
+            hv.req_config("source_entity_id", config): hv.sensor_selector(
                 device_class=[Sensor.DeviceClass.POWER, Sensor.DeviceClass.ENERGY]
             ),
             hv.req_config(
@@ -533,8 +388,8 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
             hv.req_config("history_duration_days", config): hv.time_period_selector(
                 unit_of_measurement=hac.UnitOfTime.DAYS, max=30
             ),
-            hv.opt_config("refresh_period_minutes", config): hv.time_period_selector(
-                unit_of_measurement=hac.UnitOfTime.MINUTES
+            hv.opt_config("update_period_seconds", config): hv.time_period_selector(
+                unit_of_measurement=hac.UnitOfTime.SECONDS
             ),
             hv.opt_config("maximum_latency_seconds", config): hv.time_period_selector(
                 unit_of_measurement=hac.UnitOfTime.SECONDS
@@ -568,74 +423,36 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
         return {}
 
     def __init__(
-        self,
-        hass: "HomeAssistant",
-        config_entry: "ConfigEntry",
-        estimator_class: type[EnergyEstimator],
-        **estimator_kwargs,
+        self, config_entry: "ConfigEntry", estimator_class: type[EnergyEstimator]
     ):
-        config = config_entry.data
-        self.observed_entity_id = config["observed_entity_id"]
-        self.refresh_period_ts = config.get("refresh_period_minutes", 0) * 60
-        self.estimator = estimator_class(
-            self.observed_entity_id,
-            tzinfo=dt_util.get_default_time_zone(),
-            safe_minimum_power_w=0,
-            **(estimator_kwargs | config),  # type: ignore
-        )
-        self._state_convert_func = self._state_convert_detect
-        self._state_convert_unit = None
-        self._refresh_callback_unsub = None
-        self._restore_history_task = None
-        self._restore_history_exit = False
 
-        super().__init__(hass, config_entry)
+        self.estimator = estimator_class(
+            self.TYPE,
+            config=config_entry.data,  # type: ignore
+        )
+
+        super().__init__(config_entry)
+
+        for warning in self.estimator.warnings:
+            ProcessorWarningBinarySensor(self, f"{warning.id}_warning", warning)
 
         TodayEnergyEstimatorSensor(
             self,
             "today_energy_estimate",
-            name=f"{config.get("name", "Estimated energy")} (today)",
+            name=f"{self.config.get("name", "Estimated energy")} (today)",
         )
         TomorrowEnergyEstimatorSensor(
             self,
             "tomorrow_energy_estimate",
-            name=f"{config.get("name", "Estimated energy")} (tomorrow)",
+            name=f"{self.config.get("name", "Estimated energy")} (tomorrow)",
         )
 
     # interface: Controller
-    async def async_init(self):
-        self._restore_history_task = recorder_instance(
-            self.hass
-        ).async_add_executor_job(
-            self._restore_history,
-            helpers.datetime_from_epoch(
-                time.time() - self.estimator.history_duration_ts
-            ),
-        )
-        await self._restore_history_task
-        self._restore_history_task = None
-
-        if self.refresh_period_ts:
-            self._refresh_callback_unsub = self.schedule_callback(
-                self.refresh_period_ts, self._refresh_callback
-            )
-        estimator = self.estimator
-        estimator.update_estimate()
-        self.track_state_update(self.observed_entity_id, self._process_observation)
-        for warning in self.estimator.warnings:
-            ProcessorWarningBinarySensor(self, f"{warning.id}_warning", warning)
-
-        await super().async_init()
+    async def async_setup(self):
+        await self.estimator.async_start()
+        await super().async_setup()
 
     async def async_shutdown(self):
-        if self._restore_history_task:
-            if not self._restore_history_task.done():
-                self._restore_history_exit = True
-                await self._restore_history_task
-            self._restore_history_task = None
-        if self._refresh_callback_unsub:
-            self._refresh_callback_unsub.cancel()
-            self._refresh_callback_unsub = None
         self.estimator.shutdown()
         self.estimator = None  # type: ignore
         await super().async_shutdown()
@@ -672,85 +489,3 @@ class EnergyEstimatorController[_ConfigT: EnergyEstimatorControllerConfig](
                     entity.on_estimator_update(self.estimator)
 
     # interface: self
-    def _refresh_callback(self):
-        self._refresh_callback_unsub = self.schedule_callback(
-            self.refresh_period_ts, self._refresh_callback
-        )
-        self._process_observation(self.hass.states.get(self.observed_entity_id))
-
-    def _process_observation(self, state: "State | None"):
-        try:
-            self.estimator.process(
-                self._state_convert_func(
-                    float(state.state),  # type: ignore
-                    state.attributes["unit_of_measurement"],  # type: ignore
-                    self._state_convert_unit,
-                ),
-                time.time(),
-            )
-        except Exception as e:
-            if state and state.state not in (hac.STATE_UNKNOWN, hac.STATE_UNAVAILABLE):
-                self.log_exception(self.WARNING, e, "updating estimate", timeout=3600)
-
-    def _restore_history(self, history_start_time: dt.datetime):
-        if self._restore_history_exit:
-            return
-
-        observed_entity_states = history.state_changes_during_period(
-            self.hass,
-            history_start_time,
-            None,
-            self.observed_entity_id,
-            no_attributes=False,
-        )
-
-        if not observed_entity_states:
-            self.log(
-                self.WARNING,
-                "Loading history for entity '%s' did not return any data. Is the entity correct?",
-                self.observed_entity_id,
-            )
-            return
-
-        for state in observed_entity_states[self.observed_entity_id]:
-            if self._restore_history_exit:
-                return
-            try:
-                self.estimator.process(
-                    self._state_convert_func(
-                        float(state.state),
-                        state.attributes["unit_of_measurement"],
-                        self._state_convert_unit,
-                    ),
-                    state.last_updated_timestamp,
-                )
-            except:
-                # in case the state doesn't represent a proper value
-                # just discard it
-                pass
-
-        if pmc.DEBUG:
-            filepath = pmc.DEBUG.get_debug_output_filename(
-                self.hass,
-                f"model_{self.observed_entity_id}_{self.config.get('name', self.TYPE).lower().replace(" ", "_")}.json",
-            )
-            save_json(filepath, self.estimator.as_dict())
-
-    def _state_convert_detect(
-        self, value: float, from_unit: str | None, to_unit: str | None
-    ) -> float:
-        """Installed as _state_convert_func at init time this will detect the type of observed entity
-        by inspecting the unit and install the proper converter."""
-        if from_unit in hac.UnitOfPower:
-            self.estimator.configure(EnergyInputMode.POWER)
-            self._state_convert_func = PowerConverter.convert
-        elif from_unit in hac.UnitOfEnergy:
-            self.estimator.configure(EnergyInputMode.ENERGY)
-            self._state_convert_func = EnergyConverter.convert
-        else:
-            # TODO: raise issue?
-            raise ValueError(
-                f"Unsupported unit of measurement '{from_unit}' for observed entity: '{self.observed_entity_id}'"
-            )
-        self._state_convert_unit = self.estimator.input_unit
-        return self._state_convert_func(value, from_unit, self._state_convert_unit)

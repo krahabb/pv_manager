@@ -4,11 +4,39 @@ import datetime as dt
 import typing
 
 from astral import sun
+from homeassistant.components import weather
+from homeassistant.components.recorder.history import state_changes_during_period
+from homeassistant.helpers import sun as sun_helpers
+from homeassistant.util import dt as dt_util
 
-from .estimator import EnergyEstimator, EnergyEstimatorConfig, ObservedEnergy
+from ..helpers import datetime_from_epoch
+from ..manager import Manager
+from .estimator import EnergyEstimator, ObservedEnergy
 
 if typing.TYPE_CHECKING:
-    pass
+    from typing import NotRequired, Unpack
+
+    from homeassistant.core import Event, EventStateChangedData, State
+
+
+_WEATHER_CONDITION_TO_CLOUD: typing.Final[dict[str | None, float | None]] = {
+    None: None,
+    weather.ATTR_CONDITION_CLEAR_NIGHT: 0,
+    weather.ATTR_CONDITION_CLOUDY: 1,
+    weather.ATTR_CONDITION_EXCEPTIONAL: 0.8,
+    weather.ATTR_CONDITION_FOG: 0.8,
+    weather.ATTR_CONDITION_HAIL: 0.8,
+    weather.ATTR_CONDITION_LIGHTNING: 0.7,
+    weather.ATTR_CONDITION_LIGHTNING_RAINY: 0.7,
+    weather.ATTR_CONDITION_PARTLYCLOUDY: 0.5,
+    weather.ATTR_CONDITION_POURING: 0.8,
+    weather.ATTR_CONDITION_RAINY: 0.6,
+    weather.ATTR_CONDITION_SNOWY: 1,
+    weather.ATTR_CONDITION_SNOWY_RAINY: 1,
+    weather.ATTR_CONDITION_SUNNY: 0,
+    weather.ATTR_CONDITION_WINDY: 0,
+    weather.ATTR_CONDITION_WINDY_VARIANT: 0,
+}
 
 
 @dataclass(slots=True)
@@ -18,6 +46,41 @@ class WeatherSample:
     condition: str | None
     cloud_coverage: float | None  #  0 -> 1 (100% cloud coverage)
     next: "WeatherSample | None" = None
+
+    @staticmethod
+    def from_state(weather_state: "State"):
+        attributes = weather_state.attributes
+
+        condition = weather_state.state
+        if "cloud_coverage" in attributes:
+            cloud_coverage = attributes["cloud_coverage"] / 100
+        else:
+            cloud_coverage = _WEATHER_CONDITION_TO_CLOUD.get(condition)
+
+        return WeatherSample(
+            time=weather_state.last_updated,
+            time_ts=weather_state.last_updated_timestamp,
+            condition=condition,
+            cloud_coverage=cloud_coverage,
+        )
+
+    @staticmethod
+    def from_forecast(forecast: dict):
+        time = dt_util.as_utc(dt_util.parse_datetime(forecast["datetime"]))  # type: ignore
+        time_ts = time.timestamp()
+
+        condition = forecast.get("condition")
+        if "cloud_coverage" in forecast:
+            cloud_coverage = forecast["cloud_coverage"] / 100
+        else:
+            cloud_coverage = _WEATHER_CONDITION_TO_CLOUD.get(condition)
+
+        return WeatherSample(
+            time=time,
+            time_ts=time_ts,
+            condition=condition,
+            cloud_coverage=cloud_coverage,
+        )
 
     def as_dict(self):
         return {
@@ -200,10 +263,6 @@ WEATHER_MODELS: dict[str | None, type[WeatherModel]] = {
 }
 
 
-class PVEnergyEstimatorConfig(EnergyEstimatorConfig):
-    weather_model: typing.NotRequired[str]
-
-
 class PVEnergyEstimator(EnergyEstimator):
     """
     Base class for estimator implementations based off different approaches.
@@ -211,12 +270,23 @@ class PVEnergyEstimator(EnergyEstimator):
     At the time, lacking any real specialization, the generalization of this class is pretty basic and likely unstable.
     """
 
+    if typing.TYPE_CHECKING:
+
+        class Config(EnergyEstimator.Config):
+            weather_entity_id: NotRequired[str]
+            weather_model: NotRequired[str]
+
+        class Args(EnergyEstimator.Args):
+            config: "PVEnergyEstimator.Config"
+
+    weather_entity_id: str
     weather_model: typing.Final[WeatherModel]
     weather_history: typing.Final[deque[WeatherSample]]
     weather_forecasts: list[WeatherSample]
 
-    __slots__ = (
+    _SLOTS_ = (
         "astral_observer",
+        "weather_entity_id",
         "weather_model",
         "weather_history",
         "weather_forecasts",
@@ -228,28 +298,35 @@ class PVEnergyEstimator(EnergyEstimator):
     def __init__(
         self,
         id,
-        *,
-        astral_observer: "sun.Observer",
-        tzinfo: dt.tzinfo,
-        **kwargs: "typing.Unpack[PVEnergyEstimatorConfig]",
+        **kwargs: "Unpack[Args]",
     ):
-        self.astral_observer = astral_observer
-        self.weather_model = WeatherModel.build(kwargs.pop("weather_model", None))
+        location, elevation = sun_helpers.get_astral_location(Manager.hass)
+        self.astral_observer = sun.Observer(
+            location.latitude, location.longitude, elevation
+        )
+        config = kwargs["config"]
+        self.weather_entity_id = config.get("weather_entity_id", "")
+        self.weather_model = WeatherModel.build(config.get("weather_model", None))
         self.weather_history = deque()
         self.weather_forecasts = []
         self._noon_ts: int = 0
         self._sunrise_ts: int = 0
         self._sunset_ts: int = 0
-        EnergyEstimator.__init__(
-            self,
-            id,
-            tzinfo=tzinfo,
-            **kwargs,
-        )
+        super().__init__(id, **kwargs)
 
     # interface: Estimator
+    async def async_start(self):
+        await super().async_start()
+        if self.weather_entity_id:
+            self.track_state(
+                self.weather_entity_id,
+                self._async_weather_update,
+                PVEnergyEstimator.HassJobType.Coroutinefunction,
+            )
+
     def as_dict(self):
-        return EnergyEstimator.as_dict(self) | {
+        return super().as_dict() | {
+            "weather_entity_id": self.weather_entity_id,
             "weather_model": self.weather_model.as_dict(),
             "weather_history": list(self.weather_history),
             "weather_forecasts": self.weather_forecasts,
@@ -258,7 +335,7 @@ class PVEnergyEstimator(EnergyEstimator):
     def get_state_dict(self):
         """Returns a synthetic state string for the estimator.
         Used for debugging purposes."""
-        return EnergyEstimator.get_state_dict(self) | {
+        return super().get_state_dict() | {
             "weather_model": self.weather_model.as_dict(),
             "weather": self.get_weather_at(self.observed_time_ts),
         }
@@ -280,6 +357,37 @@ class PVEnergyEstimator(EnergyEstimator):
         self._sunrise_ts = int(sun.time_of_transit(self.astral_observer, today, 90.0 + sun.SUN_APPARENT_RADIUS, sun.SunDirection.RISING).timestamp())
         self._sunset_ts = int(sun.time_of_transit(self.astral_observer, today, 90.0 + sun.SUN_APPARENT_RADIUS, sun.SunDirection.SETTING).timestamp())
     """
+
+    @typing.override
+    def _restore_history(self, history_start_time: dt.datetime):
+        if self._restore_history_exit:
+            return
+
+        if self.weather_entity_id:
+            weather_states = state_changes_during_period(
+                Manager.hass,
+                history_start_time,
+                None,
+                self.weather_entity_id,
+                no_attributes=False,
+            )
+
+            if weather_states:
+                for weather_state in weather_states[self.weather_entity_id]:
+                    if self._restore_history_exit:
+                        return
+                    try:
+                        self.add_weather(WeatherSample.from_state(weather_state))
+                    except:
+                        pass
+            else:
+                self.log(
+                    self.WARNING,
+                    "Loading weather history for entity '%s' did not return any data. Is the entity correct?",
+                    self.weather_entity_id,
+                )
+
+        super()._restore_history(history_start_time)
 
     # interface: self
     def add_weather(self, weather: WeatherSample):
@@ -328,3 +436,92 @@ class PVEnergyEstimator(EnergyEstimator):
             except IndexError:
                 # we should almost always have one (or not?)
                 return None
+
+    async def _async_weather_update(
+        self, event: "Event[EventStateChangedData] | PVEnergyEstimator.Event"
+    ):
+        try:
+            self.add_weather(WeatherSample.from_state(event.data["new_state"]))  # type: ignore
+            forecasts: list[WeatherSample] = []
+            try:
+                response = await Manager.hass.services.async_call(
+                    "weather",
+                    "get_forecasts",
+                    service_data={
+                        "type": "hourly",
+                        "entity_id": self.weather_entity_id,
+                    },
+                    blocking=True,
+                    return_response=True,
+                )
+                forecasts = [
+                    WeatherSample.from_forecast(f)
+                    for f in response[self.weather_entity_id][  # type:ignore
+                        "forecast"
+                    ]
+                ]
+
+            except Exception as e:
+                self.log_exception(self.DEBUG, e, "requesting hourly weather forecasts")
+
+            try:
+                response = await Manager.hass.services.async_call(
+                    "weather",
+                    "get_forecasts",
+                    service_data={
+                        "type": "daily",
+                        "entity_id": self.weather_entity_id,
+                    },
+                    blocking=True,
+                    return_response=True,
+                )
+                daily_weather_forecasts = [
+                    WeatherSample.from_forecast(f)
+                    for f in response[self.weather_entity_id][  # type:ignore
+                        "forecast"
+                    ]
+                ]
+                if daily_weather_forecasts:
+                    if forecasts:
+                        # We're adding daily forecasts at the end of our (eventual) hourly forecasts
+                        # When doing so, we take special care as to not overlap the end of the hourly
+                        # list with the beginning of the daily list
+                        last_hourly_forecast = forecasts[-1]
+                        last_hourly_forecast_end_ts = (
+                            last_hourly_forecast.time_ts + 3600
+                        )
+                        index = 0
+                        for daily_forecast in daily_weather_forecasts:
+
+                            if daily_forecast.time_ts < last_hourly_forecast_end_ts:
+                                index += 1
+                                continue
+
+                            if (
+                                daily_forecast.time_ts > last_hourly_forecast_end_ts
+                            ) and index:
+                                # this is not the first daily so we add an 'interpolation' between
+                                # the end of the hourly list with the beginning of the daily one
+                                daily_forecast_prev = daily_weather_forecasts[index - 1]
+                                daily_forecast_prev.time_ts = (
+                                    last_hourly_forecast_end_ts
+                                )
+                                daily_forecast_prev.time = datetime_from_epoch(
+                                    last_hourly_forecast_end_ts
+                                )
+                                forecasts.append(daily_forecast_prev)
+
+                            forecasts += daily_weather_forecasts[index:]
+                            break
+
+                    else:
+                        forecasts = daily_weather_forecasts
+
+            except Exception as e:
+                self.log_exception(self.DEBUG, e, "requesting daily weather forecasts")
+
+            if forecasts:
+                self.set_weather_forecasts(forecasts)
+
+        except Exception as e:
+            self.log_exception(self.WARNING, e, "_async_weather_update")

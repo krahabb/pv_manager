@@ -3,8 +3,8 @@ import typing
 from homeassistant.components import binary_sensor
 
 from . import const as pmc, helpers
-from .controller.common import ProcessorWarning
 from .helpers.entity import Entity
+from .processors import ProcessorWarning
 
 if typing.TYPE_CHECKING:
     from typing import Callable, Iterable

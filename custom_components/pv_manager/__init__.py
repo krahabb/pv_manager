@@ -31,12 +31,8 @@ async def async_setup_entry(
         controller_class = await Controller.get_controller_class(
             hass, pmc.ConfigEntryType.get_from_entry(config_entry)
         )
-    except Exception as e:
-        raise ConfigEntryError(f"Error loading Controller class: {str(e)}") from e
-
-    try:
-        cntrl = controller_class(hass, config_entry)
-        await cntrl.async_init()
+        config_entry.runtime_data = cntrl = controller_class(config_entry)
+        await cntrl.async_setup()
         return True
     except Exception as e:
         if hasattr(config_entry, "runtime_data"):

@@ -15,6 +15,7 @@
 #
 # See here for more info: https://docs.pytest.org/en/latest/fixture.html (note that
 # pytest includes fixtures OOB which you can use as defined on this page)
+import logging
 from unittest.mock import patch
 
 import pytest
@@ -25,6 +26,8 @@ from . import helpers
 
 pytest_plugins = "pytest_homeassistant_custom_component"
 
+# This is the only damn way I can get to disable the sqlalchemy engine logs...
+logging.disable()
 
 # Test initialization must ensure custom_components are enabled
 # but we can't autouse a simple fixture for that since the recorder
@@ -47,7 +50,6 @@ def auto_enable(recorder_mock, hass, enable_custom_integrations):
     hass = request.getfixturevalue("hass")
     hass.data.pop("custom_components")
     """
-    yield
 
 
 # This fixture is used to prevent HomeAssistant from attempting to create and dismiss persistent

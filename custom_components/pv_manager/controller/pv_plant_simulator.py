@@ -16,37 +16,41 @@ from homeassistant.util.unit_conversion import DistanceConverter, TemperatureCon
 
 from .. import const as pmc, controller, helpers
 from ..helpers import validation as hv
+from ..manager import Manager
 from ..sensor import BatteryChargeSensor, PowerSensor, Sensor
 
 if typing.TYPE_CHECKING:
+    from typing import NotRequired, Unpack
+
     from homeassistant.config_entries import ConfigEntry
-    from homeassistant.core import Event, HomeAssistant, State
-    from homeassistant.helpers.event import EventStateChangedData
+    from homeassistant.core import Event, EventStateChangedData, State
 
-    from ..sensor import SensorArgs
+    class EntryConfig(pmc.SensorConfig, controller.Controller.Config):
+        """TypedDict for ConfigEntry data"""
 
+        peak_power: float
+        """The peak power of the pv system"""
+        weather_entity_id: NotRequired[str]
+        """The weather entity used to 'modulate' pv power"""
 
-class EntryConfig(pmc.SensorConfig, pmc.EntryConfig):
-    """TypedDict for ConfigEntry data"""
+        battery_voltage: NotRequired[int]
+        battery_capacity: NotRequired[int]
 
-    peak_power: float
-    """The peak power of the pv system"""
-    weather_entity_id: typing.NotRequired[str]
-    """The weather entity used to 'modulate' pv power"""
+        consumption_baseload_power_w: NotRequired[float]
+        consumption_daily_extra_power_w: NotRequired[float]
+        consumption_daily_fill_factor: NotRequired[float]
 
-    battery_voltage: typing.NotRequired[int]
-    battery_capacity: typing.NotRequired[int]
-
-    consumption_baseload_power_w: typing.NotRequired[float]
-    consumption_daily_extra_power_w: typing.NotRequired[float]
-    consumption_daily_fill_factor: typing.NotRequired[float]
-
-    inverter_zeroload_power_w: typing.NotRequired[float]
-    inverter_efficiency: typing.NotRequired[float]
+        inverter_zeroload_power_w: NotRequired[float]
+        inverter_efficiency: NotRequired[float]
 
 
-class Controller(controller.Controller[EntryConfig]):
+class Controller(controller.Controller["EntryConfig"]):
     """Base controller class for managing ConfigEntry behavior."""
+
+    if typing.TYPE_CHECKING:
+
+        class Config(EntryConfig):
+            pass
 
     TYPE = pmc.ConfigEntryType.PV_PLANT_SIMULATOR
 
@@ -74,11 +78,10 @@ class Controller(controller.Controller[EntryConfig]):
         "_weather_cloud_coverage",
         "_weather_temperature",
         "_weather_visibility",
-        "_timer_callback_unsub",
     )
 
     @staticmethod
-    def get_config_entry_schema(config: EntryConfig | None) -> pmc.ConfigSchema:
+    def get_config_entry_schema(config: "Config | None") -> pmc.ConfigSchema:
         if not config:
             config = {
                 "name": "PV simulator",
@@ -114,16 +117,17 @@ class Controller(controller.Controller[EntryConfig]):
             ),
         }
 
-    def __init__(self, hass: "HomeAssistant", config_entry: "ConfigEntry"):
-        super().__init__(hass, config_entry)
+    def __init__(self, config_entry: "ConfigEntry"):
+        super().__init__(config_entry)
 
-        location, elevation = sun_helpers.get_astral_location(hass)
+        location, elevation = sun_helpers.get_astral_location(Manager.hass)
         self.astral_observer = sun.Observer(
             location.latitude, location.longitude, elevation
         )
 
-        self.peak_power = self.config["peak_power"]
-        self.weather_entity_id = self.config.get("weather_entity_id")
+        config = self.config
+        self.peak_power = config["peak_power"]
+        self.weather_entity_id = config.get("weather_entity_id")
 
         self._weather_state = None
         self._inverter_on = True
@@ -132,12 +136,12 @@ class Controller(controller.Controller[EntryConfig]):
             self,
             "pv_power_simulator",
             device_class=Sensor.DeviceClass.POWER,
-            name=self.config["name"],
-            native_unit_of_measurement=self.config["native_unit_of_measurement"],
+            name=config["name"],
+            native_unit_of_measurement=config["native_unit_of_measurement"],
         )
 
-        self.battery_voltage = self.config.get("battery_voltage", 0)
-        self.battery_capacity = self.config.get("battery_capacity", 0)
+        self.battery_voltage = config.get("battery_voltage", 0)
+        self.battery_capacity = config.get("battery_capacity", 0)
         self.battery_voltage_sensor: Sensor | None = None
         self.battery_current_sensor: Sensor | None = None
         self.battery_charge_sensor: BatteryChargeSensor | None = None
@@ -169,13 +173,13 @@ class Controller(controller.Controller[EntryConfig]):
                     parent_attr=Sensor.ParentAttr.DYNAMIC,
                 )
 
-        self.consumption_baseload_power_w = self.config.get(
+        self.consumption_baseload_power_w = config.get(
             "consumption_baseload_power_w", 0
         )
-        self.consumption_daily_extra_power_w = self.config.get(
+        self.consumption_daily_extra_power_w = config.get(
             "consumption_daily_extra_power_w", 0
         )
-        self.consumption_daily_fill_factor = self.config.get(
+        self.consumption_daily_fill_factor = config.get(
             "consumption_daily_fill_factor", 0
         )
         self.consumption_sensor = PowerSensor(
@@ -184,31 +188,28 @@ class Controller(controller.Controller[EntryConfig]):
             name="Consumption",
         )
 
-        self.inverter_zeroload_power = self.config.get("inverter_zeroload_power_w", 0)
-        self.inverter_efficiency = self.config.get("inverter_efficiency", 1)
+        self.inverter_zeroload_power = config.get("inverter_zeroload_power_w", 0)
+        self.inverter_efficiency = config.get("inverter_efficiency", 1)
         self.inverter_losses_sensor = PowerSensor(
             self,
             "inverter_losses",
             name="Inverter losses",
         )
 
-    async def async_init(self):
+    async def async_setup(self):
         if self.weather_entity_id:
-            self.track_state_update(self.weather_entity_id, self._weather_update)
-        self._timer_callback()
-        await super().async_init()
+            self.track_state(
+                self.weather_entity_id,
+                self._weather_update,
+                Controller.HassJobType.Callback,
+            )
 
-    async def async_shutdown(self):
-        self._timer_callback_unsub.cancel()  # type: ignore
-        self._timer_callback_unsub = None
-        await super().async_shutdown()
+        self.track_timer(self.SAMPLING_PERIOD, self._timer_callback)
+        self._timer_callback()
+        await super().async_setup()
 
     @callback
     def _timer_callback(self):
-        self._timer_callback_unsub = self.schedule_callback(
-            self.SAMPLING_PERIOD, self._timer_callback
-        )
-
         sun_zenith, sun_azimuth = sun.zenith_and_azimuth(
             self.astral_observer,
             dt_util.now(),
@@ -312,8 +313,8 @@ class Controller(controller.Controller[EntryConfig]):
             round(total_consumption_power - consumption_power, 2)
         )
 
-    def _weather_update(self, state: "State | None"):
-        if state:
+    def _weather_update(self, event: "Event[EventStateChangedData] | Controller.Event"):
+        if state := event.data["new_state"]:
             self._weather_state = state.state
             attributes = state.attributes
             self._weather_cloud_coverage = attributes.get("cloud_coverage")

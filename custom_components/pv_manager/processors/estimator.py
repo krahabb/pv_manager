@@ -8,33 +8,45 @@ import dataclasses
 import datetime as dt
 import typing
 
-from . import BaseEnergyProcessor, EnergyProcessorConfig
-from ...helpers import datetime_from_epoch
+from homeassistant.components.recorder import get_instance as recorder_instance, history
+from homeassistant.helpers.json import save_json
+from homeassistant.util import dt as dt_util
+
+from . import TIME_TS, BaseEnergyProcessor, BaseProcessor
+from .. import const as pmc
+from ..helpers import datetime_from_epoch
+from ..manager import Manager
 
 if typing.TYPE_CHECKING:
-    from . import BaseProcessor
+    from typing import Unpack
 
 
 SAMPLING_INTERVAL_MODULO = 300  # 5 minutes
 
 
-class Estimator(BaseProcessor if typing.TYPE_CHECKING else object):
-    """This class acts mainly as a 'protocol' class for estimators.
-    It inherits (in typing) the same interface as BaseProcessor but the implementation
-    must be done in concrete implementations."""
+class Estimator[_input_t](BaseProcessor[_input_t]):
+
+    if typing.TYPE_CHECKING:
+
+        class Config(BaseProcessor.Config):
+            pass
+
+        class Args(BaseProcessor.Args):
+            pass
 
     UPDATE_LISTENER_TYPE = typing.Callable[["Estimator"], None]
     _update_listeners: typing.Final[set[UPDATE_LISTENER_TYPE]]
 
     _SLOTS_ = ("_update_listeners",)
 
-    def __init__(self):
+    def __init__(self, id, **kwargs: "Unpack[Args]"):
         self._update_listeners = set()
+        super().__init__(id, **kwargs)
 
     @typing.override
     def shutdown(self):
-        """Used to remove references when wanting to shutdown resources usage."""
         self._update_listeners.clear()
+        super().shutdown()
 
     # interface: self
     def listen_update(self, callback_func: UPDATE_LISTENER_TYPE):
@@ -81,23 +93,28 @@ class ObservedEnergy:
         self.samples = 0
 
 
-class EnergyEstimatorConfig(EnergyProcessorConfig):
-    sampling_interval_minutes: int
-    """Time resolution of model data"""
-    observation_duration_minutes: int  # minutes
-    """The time window for calculating current energy production from incoming energy observation."""
-    history_duration_days: int
-    """Number of (backward) days of data to keep in the model (used to build the estimates for the time forward)."""
-
-
-class EnergyEstimator(Estimator, BaseEnergyProcessor):
+class EnergyEstimator(Estimator[float], BaseEnergyProcessor):
     """
     Base class for all (energy) estimators.
     """
 
+    if typing.TYPE_CHECKING:
+
+        class Config(Estimator.Config, BaseEnergyProcessor.Config):
+            sampling_interval_minutes: int
+            """Time resolution of model data"""
+            observation_duration_minutes: int  # minutes
+            """The time window for calculating current energy production from incoming energy observation."""
+            history_duration_days: int
+            """Number of (backward) days of data to keep in the model (used to build the estimates for the time forward)."""
+
+        class Args(Estimator.Args, BaseEnergyProcessor.Args):
+            config: "EnergyEstimator.Config"
+
     OPS_DECAY: typing.Final = 0.9
     """Decay factor for the average number of observations per sample."""
 
+    source_entity_id: str
     tzinfo: dt.tzinfo
 
     """Contains warnings and any other useful operating condition of the estimator."""
@@ -108,7 +125,7 @@ class EnergyEstimator(Estimator, BaseEnergyProcessor):
     today_energy: float
     _observed_sample_curr: ObservedEnergy
 
-    __slots__ = (
+    _SLOTS_ = (
         # configuration
         "sampling_interval_ts",
         "history_duration_ts",
@@ -122,29 +139,29 @@ class EnergyEstimator(Estimator, BaseEnergyProcessor):
         "tomorrow_ts",  # UTC time of local midnight tomorrow (start of tomorrow)
         "today_energy",  # energy accumulated today
         "_observed_sample_curr",
-    ) + Estimator._SLOTS_
+        "_restore_history_exit",
+    )
 
     def __init__(
         self,
         id,
-        *,
-        tzinfo: dt.tzinfo,
-        **kwargs: typing.Unpack[EnergyEstimatorConfig],
+        **kwargs: "Unpack[Args]",
     ):
+        config = kwargs["config"]
         self.sampling_interval_ts: typing.Final = (
             (
-                ((kwargs.get("sampling_interval_minutes") or 10) * 60)
+                (config.get("ampling_interval_minutes", 0) * 60)
                 // SAMPLING_INTERVAL_MODULO
             )
             * SAMPLING_INTERVAL_MODULO
         ) or SAMPLING_INTERVAL_MODULO
         self.history_duration_ts: typing.Final = (
-            kwargs.get("history_duration_days", 7) * 86400
+            config.get("history_duration_days", 0) * 86400
         )
         self.observation_duration_ts: typing.Final = (
-            kwargs.get("observation_duration_minutes", 20) * 60
+            config.get("observation_duration_minutes", 20) * 60
         )
-        self.tzinfo = tzinfo
+        self.tzinfo = dt_util.get_default_time_zone()
         self.observed_samples = deque()
         self.observed_time_ts = 0
         self.observations_per_sample_avg = 0
@@ -153,24 +170,37 @@ class EnergyEstimator(Estimator, BaseEnergyProcessor):
         self.today_energy = 0
         # do not define here..we're relying on AttributeError for proper initialization
         # self._history_sample_curr = None
-        Estimator.__init__(self)
-        BaseEnergyProcessor.__init__(self, id, **kwargs)
+        super().__init__(id, **kwargs)
+
+    @typing.override
+    async def async_start(self):
+        if self.history_duration_ts:
+            self._restore_history_exit = False
+            await recorder_instance(Manager.hass).async_add_executor_job(
+                self._restore_history,
+                datetime_from_epoch(TIME_TS() - self.history_duration_ts),
+            )
+
+        self.update_estimate()
+        await super().async_start()
 
     @typing.override
     def shutdown(self):
-        Estimator.shutdown(self)
-        BaseEnergyProcessor.shutdown(self)
+        self._restore_history_exit = True
+        return super().shutdown()
 
+    @typing.override
     def as_dict(self):
-        return BaseEnergyProcessor.as_dict(self) | {
+        return super().as_dict() | {
             "tz_info": str(self.tzinfo),
             "sampling_interval_minutes": self.sampling_interval_ts / 60,
             "observation_duration_minutes": self.observation_duration_ts / 60,
             "history_duration_days": self.history_duration_ts / 86400,
         }
 
+    @typing.override
     def get_state_dict(self):
-        return BaseEnergyProcessor.get_state_dict(self) | {
+        return super().get_state_dict() | {
             "today": datetime_from_epoch(self.today_ts).isoformat(),
             # "tomorrow_ts": estimator._tomorrow_local_ts,
             "tomorrow": datetime_from_epoch(self.tomorrow_ts).isoformat(),
@@ -187,7 +217,7 @@ class EnergyEstimator(Estimator, BaseEnergyProcessor):
         }
 
     @typing.override
-    def process(self, input: float, time_ts: float) -> float | None:
+    def process(self, input: float | None, time_ts: float) -> float | None:
         """
         Add a new Observation to the model. Observations are collected to build an Observation window
         to get an average of recent observations used for 'recent time' auto-regressive estimation.
@@ -341,3 +371,48 @@ class EnergyEstimator(Estimator, BaseEnergyProcessor):
     def _observed_energy_history_add(self, history_sample: ObservedEnergy):
         """Called when an ObservedEnergy sample exits the observation window and enters history."""
         pass
+
+    def _restore_history(self, history_start_time: dt.datetime):
+        """This runs in an executor."""
+        if self._restore_history_exit:
+            return
+
+        observed_entity_states = history.state_changes_during_period(
+            Manager.hass,
+            history_start_time,
+            None,
+            self.source_entity_id,
+            no_attributes=False,
+        )
+
+        if not observed_entity_states:
+            self.log(
+                self.WARNING,
+                "Loading history for entity '%s' did not return any data. Is the entity correct?",
+                self.source_entity_id,
+            )
+            return
+
+        for state in observed_entity_states[self.source_entity_id]:
+            if self._restore_history_exit:
+                return
+            try:
+                self.process(
+                    self._state_convert(
+                        float(state.state),
+                        state.attributes["unit_of_measurement"],
+                        self.input_unit,
+                    ),
+                    state.last_updated_timestamp,
+                )
+            except:
+                # in case the state doesn't represent a proper value
+                # just discard it
+                pass
+
+        if pmc.DEBUG:
+            filepath = pmc.DEBUG.get_debug_output_filename(
+                Manager.hass,
+                f"model_{self.source_entity_id}_{self.__class__.__name__.lower()}.json",
+            )
+            save_json(filepath, self.as_dict())

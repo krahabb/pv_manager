@@ -1,11 +1,10 @@
 from collections import deque
-import datetime as dt
 import typing
 
 from .estimator import EnergyEstimator, ObservedEnergy
 
 if typing.TYPE_CHECKING:
-    from .estimator import EnergyEstimatorConfig
+    pass
 
 
 class EnergyModel:
@@ -62,7 +61,7 @@ class HeuristicConsumptionEstimator(EnergyEstimator):
     history_samples: typing.Final[deque[ObservedEnergy]]
     model: typing.Final[dict[int, EnergyModel]]
 
-    __slots__ = (
+    _SLOTS_ = (
         "history_samples",
         "model",
         "observed_ratio",
@@ -71,31 +70,25 @@ class HeuristicConsumptionEstimator(EnergyEstimator):
     def __init__(
         self,
         id,
-        *,
-        tzinfo: "dt.tzinfo",
-        **kwargs: "typing.Unpack[EnergyEstimatorConfig]",
+        **kwargs: "typing.Unpack[EnergyEstimator.Args]",
     ):
-        EnergyEstimator.__init__(
-            self,
-            id,
-            tzinfo=tzinfo,
-            **kwargs,
-        )
         self.history_samples = deque()
         self.model = {}
         self.observed_ratio: float = 1
+        super().__init__(id, **kwargs)
 
     # interface: Estimator
     def as_dict(self):
-        return EnergyEstimator.as_dict(self) | {"model": self.model}
+        return super().as_dict() | {"model": self.model}
 
     def get_state_dict(self):
         """Returns a synthetic state string for the estimator.
         Used for debugging purposes."""
-        return EnergyEstimator.get_state_dict(self) | {
+        return super().get_state_dict() | {
             "observed_ratio": self.observed_ratio,
         }
 
+    @typing.override
     def update_estimate(self):
         """Process a new sample trying to update the forecast of energy production."""
 
@@ -121,6 +114,7 @@ class HeuristicConsumptionEstimator(EnergyEstimator):
         for listener in self._update_listeners:
             listener(self)
 
+    @typing.override
     def get_estimated_energy(
         self, time_begin_ts: float | int, time_end_ts: float | int
     ):
@@ -170,6 +164,7 @@ class HeuristicConsumptionEstimator(EnergyEstimator):
 
         return energy / self.sampling_interval_ts
 
+    @typing.override
     def get_estimated_energy_max(
         self, time_begin_ts: float | int, time_end_ts: float | int
     ):
@@ -196,6 +191,7 @@ class HeuristicConsumptionEstimator(EnergyEstimator):
 
         return energy / self.sampling_interval_ts
 
+    @typing.override
     def get_estimated_energy_min(
         self, time_begin_ts: float | int, time_end_ts: float | int
     ):
@@ -222,6 +218,7 @@ class HeuristicConsumptionEstimator(EnergyEstimator):
 
         return energy / self.sampling_interval_ts
 
+    @typing.override
     def _observed_energy_history_add(self, history_sample: ObservedEnergy):
 
         if history_sample.energy:

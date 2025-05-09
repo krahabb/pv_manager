@@ -21,9 +21,9 @@
                 "description": "Compute the energy of a power source",
                 "data": {
                     "name": "Entity name(s)",
-                    "power_entity_id": "Source entity",
+                    "source_entity_id": "Source entity",
                     "cycle_modes": "Set of 'metering' entities to create",
-                    "integration_period_seconds": "Integration period",
+                    "update_period_seconds": "Integration period",
                     "maximum_latency_seconds": "Maximum latency"
                 }
             },
@@ -32,11 +32,11 @@
                 "description": "Estimate energy consumption",
                 "data": {
                     "name": "Entity name(s)",
-                    "observed_entity_id": "Observed consumed power/energy entity",
+                    "source_entity_id": "Observed consumed power/energy entity",
                     "sampling_interval_minutes": "Sampling interval",
                     "observation_duration_minutes": "Observation period",
                     "history_duration_days": "History length",
-                    "refresh_period_minutes": "Refresh interval",
+                    "update_period_seconds": "Refresh interval",
                     "maximum_latency_seconds": "Maximum latency"
                 }
             },
@@ -45,12 +45,12 @@
                 "description": "Estimate PV energy production",
                 "data": {
                     "name": "Entity name(s)",
-                    "observed_entity_id": "Observed PV power/energy entity",
+                    "source_entity_id": "Observed PV power/energy entity",
                     "weather_entity_id": "Weather entity",
                     "sampling_interval_minutes": "Sampling interval",
                     "observation_duration_minutes": "Observation period",
                     "history_duration_days": "History length",
-                    "refresh_period_minutes": "Refresh interval",
+                    "update_period_seconds": "Refresh interval",
                     "maximum_latency_seconds": "Maximum latency"
                 }
             },

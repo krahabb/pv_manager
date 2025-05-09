@@ -37,8 +37,8 @@ async def test_estimator_pv_energy_heuristic(
         # pre-fill with 1 day worth of history the HA recorder
         await time_mock.async_warp(HISTORY_DURATION, SIMULATOR_DATA_RATE_PERIOD)
 
-        data: pv_energy_estimator.EntryConfig = dict(tc.CE_PVENERGY_HEURISTIC_ESTIMATOR["data"])  # type: ignore
-        data["observed_entity_id"] = (
+        data: "pv_energy_estimator.Controller.Config" = dict(tc.CE_PVENERGY_HEURISTIC_ESTIMATOR["data"])  # type: ignore
+        data["source_entity_id"] = (
             pv_simulator_controller.pv_power_simulator_sensor.entity_id
         )
         data["maximum_latency_seconds"] = SIMULATOR_DATA_RATE_PERIOD * 2
