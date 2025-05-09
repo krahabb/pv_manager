@@ -132,14 +132,18 @@ class Controller[_ConfigT: pmc.EntryConfig](Device):
         self.entries = {None: EntryData.Entry(config_entry)}
         self.diagnostic_entities = {}
 
-        logger = helpers.getLogger(f"{helpers.LOGGER.name}.{slugify(config_entry.title)}")
+        logger = helpers.getLogger(
+            f"{helpers.LOGGER.name}.{slugify(config_entry.title)}"
+        )
         logger.setLevel(
             pmc.CONF_LOGGING_LEVEL_OPTIONS.get(
                 self.options.get("logging_level", "default"), self.DEFAULT
             )
         )
-        super().__init__(config_entry.entry_id, controller=self, logger=logger, config=self.config)
-        
+        super().__init__(
+            config_entry.entry_id, controller=self, logger=logger, config=self.config
+        )
+
         entries = self.entries
         for subentry_id, subentry in self.config_entry.subentries.items():
             entries[subentry_id] = entry_data = EntryData.SubEntry(subentry)
@@ -173,13 +177,13 @@ class Controller[_ConfigT: pmc.EntryConfig](Device):
 
         # removing circular refs here
         for subentry_id, entry_data in self.entries.items():
-            for entity in list(entry_data.entities.values()):
+            for entity in tuple(entry_data.entities.values()):
                 await entity.async_shutdown(False)
             assert not entry_data.entities
         assert not self.diagnostic_entities
         self.platforms.clear()
 
-        for device in self.devices.values():
+        for device in tuple(reversed(self.devices.values())):
             device.shutdown()
         self.devices.clear()
 
@@ -223,10 +227,10 @@ class Controller[_ConfigT: pmc.EntryConfig](Device):
             entry_data = entries[subentry_id]
             await self._async_subentry_remove(subentry_id, entry_data)
             # removed leftover entities (eventually)
-            for entity in list(entry_data.entities.values()):
+            for entity in tuple(entry_data.entities.values()):
                 await entity.async_shutdown(True)
             assert not entry_data.entities
-            entries.pop(subentry_id)
+            del entries[subentry_id]
 
         for subentry_id, subentry in config_entry.subentries.items():
             try:

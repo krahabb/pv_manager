@@ -2,14 +2,10 @@ from time import time as TIME_TS
 import typing
 
 from homeassistant import const as hac
-from homeassistant.core import callback
-from homeassistant.util.unit_conversion import (
-    EnergyConverter,
-    PowerConverter,
-)
 
 from .. import const as pmc
 from ..processors import BaseEnergyProcessor, EnergyInputMode, SourceType
+from .devices.energy_processor import EnergyProcessorDevice
 
 if typing.TYPE_CHECKING:
     from typing import Any, Final, NotRequired, Unpack
@@ -17,6 +13,7 @@ if typing.TYPE_CHECKING:
     from homeassistant.core import State
 
     from . import Controller
+
     from ..helpers.entity import EntityArgs
     from .off_grid_manager import Controller as OffGridManager
 
@@ -31,31 +28,36 @@ class MeterStoreType(typing.TypedDict):
 
 class BaseMeter(BaseEnergyProcessor):
 
-    controller: "Final[OffGridManager]"
+    if typing.TYPE_CHECKING:
+
+        class Config(BaseEnergyProcessor.Config):
+            pass
+
+        class Args(BaseEnergyProcessor.Args):
+            device: "MeterDevice"
+
+    device: "Final[MeterDevice]"
     metering_source: "Final[SourceType]"
 
     _SLOTS_ = (
-        "controller",
+        "device",
         "metering_source",
     )
 
-    def __init__(
-        self,
-        controller: "OffGridManager",
-        metering_source: SourceType,
-        config: "BaseEnergyProcessor.Config",
-    ):
-        self.controller = controller
+    def __init__(self, metering_source: SourceType, **kwargs: "Unpack[Args]"):
+        self.device = kwargs["device"]
         self.metering_source = metering_source
-        super().__init__(metering_source, logger=controller, config=config)
+        super().__init__(metering_source, **kwargs)
+        controller = self.device.controller
         controller.energy_meters[metering_source] = self
         setattr(controller, f"{self.metering_source}_meter", self)
 
     def shutdown(self):
         super().shutdown()
-        self.controller.energy_meters.pop(self.metering_source)  # type: ignore
-        setattr(self.controller, f"{self.metering_source}_meter", None)
-        self.controller = None  # type: ignore
+        controller = self.device.controller
+        del controller.energy_meters[self.metering_source]
+        setattr(controller, f"{self.metering_source}_meter", None)
+        self.device = None  # type: ignore
 
     def load(self, data: MeterStoreType):
         self.output = data["energy"]
@@ -69,7 +71,31 @@ class BaseMeter(BaseEnergyProcessor):
         )
 
 
-class BatteryMeter(BaseMeter):
+class MeterDevice(EnergyProcessorDevice, BaseMeter):
+    if typing.TYPE_CHECKING:
+
+        class Config(EnergyProcessorDevice.Config, BaseMeter.Config):
+            pass
+
+    controller: "Final[OffGridManager]"
+
+    def __init__(
+        self,
+        metering_source: SourceType,
+        controller: "OffGridManager",
+        config: "Config",
+    ):
+        super().__init__(
+            metering_source,
+            controller=controller,
+            device=self,  # type: ignore
+            model=f"{metering_source}_meter",
+            config=config,
+            name=metering_source.value.upper(),
+        )
+
+
+class BatteryMeter(MeterDevice):
 
     __slots__ = (
         "in_meter",
@@ -77,10 +103,10 @@ class BatteryMeter(BaseMeter):
     )
 
     def __init__(self, controller: "OffGridManager", config: "BaseMeter.Config"):
-        super().__init__(controller, SourceType.BATTERY, config)
+        super().__init__(SourceType.BATTERY, controller, config)
         self.configure(EnergyInputMode.POWER)
-        self.in_meter = BaseMeter(controller, SourceType.BATTERY_IN, {})
-        self.out_meter = BaseMeter(controller, SourceType.BATTERY_OUT, {})
+        self.in_meter = BaseMeter(SourceType.BATTERY_IN, device=self, config={})
+        self.out_meter = BaseMeter(SourceType.BATTERY_OUT, device=self, config={})
         self._energy_listeners.add(self._energy_callback)
 
     def _energy_callback(self, energy: float, time_ts: float):
@@ -96,19 +122,17 @@ class BatteryMeter(BaseMeter):
             listener(energy, time_ts)
 
 
-class PvMeter(BaseMeter):
+class PvMeter(MeterDevice):
     def __init__(self, controller: "OffGridManager", config: "BaseMeter.Config"):
-        super().__init__(controller, SourceType.PV, config)
+        super().__init__(SourceType.PV, controller, config)
 
 
-class LoadMeter(BaseMeter):
+class LoadMeter(MeterDevice):
     def __init__(self, controller: "OffGridManager", config: "BaseMeter.Config"):
-        super().__init__(controller, SourceType.LOAD, config)
+        super().__init__(SourceType.LOAD, controller, config)
 
 
 class LossesMeter(BaseMeter):
-
-    controller: "OffGridManager"
 
     __slots__ = (
         "battery_energy",
@@ -120,9 +144,9 @@ class LossesMeter(BaseMeter):
 
     def __init__(self, controller: "OffGridManager", update_period_seconds: float):
         super().__init__(
-            controller,
             SourceType.LOSSES,
-            {"update_period_seconds": update_period_seconds},
+            device=controller,  # type: ignore
+            config={"update_period_seconds": update_period_seconds},
         )
 
     async def async_start(self):
@@ -132,7 +156,7 @@ class LossesMeter(BaseMeter):
 
     def _update_callback(self):
         time_ts = TIME_TS()
-        controller = self.controller
+        controller = self.device.controller
         battery_old = self.battery_energy
         battery_in_old = self.battery_in_energy
         battery_out_old = self.battery_out_energy
@@ -171,7 +195,7 @@ class LossesMeter(BaseMeter):
                 controller.conversion_yield_actual_sensor.update(None)
 
     def _losses_compute(self):
-        controller = self.controller
+        controller = self.device.controller
         self.battery_energy = battery = controller.battery_meter.output
         self.battery_in_energy = battery_in = controller.battery_in_meter.output
         self.battery_out_energy = battery_out = controller.battery_out_meter.output

@@ -109,19 +109,6 @@ class PowerSensor(Sensor):
     _attr_device_class = Sensor.DeviceClass.POWER
     _attr_native_unit_of_measurement = Sensor.hac.UnitOfPower.WATT
 
-    def __init__(
-        self,
-        controller: "Controller",
-        id: str,
-        **kwargs: "Unpack[EntityArgs]",
-    ):
-        Sensor.__init__(
-            self,
-            controller,
-            id,
-            **kwargs,
-        )
-
 
 class EnergySensor(MeteringEntity, Sensor, he.RestoreEntity):
 
@@ -198,7 +185,7 @@ class EnergySensor(MeteringEntity, Sensor, he.RestoreEntity):
 
         self.native_value = int(self._integral_value)
         await super().async_added_to_hass()
-        self._meter_energy_unsub_ =  self.energy_processor.listen_energy(self.accumulate)
+        self._meter_energy_unsub_ = self.energy_processor.listen_energy(self.accumulate)
 
     async def async_will_remove_from_hass(self):
         if self._meter_energy_unsub_:
@@ -246,8 +233,6 @@ class EnergySensor(MeteringEntity, Sensor, he.RestoreEntity):
 
 
 class BatteryChargeSensor(Sensor, he.RestoreEntity):
-
-    controller: "Controller"
 
     native_value: float
     charge: float

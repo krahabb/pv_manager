@@ -22,7 +22,7 @@ from ..processors import (
 from ..processors.battery_estimator import BatteryEstimator
 from ..sensor import BatteryChargeSensor, EnergySensor, PowerSensor, Sensor
 from ._energy_meters import (
-    TIME_TS,
+    MeterDevice,
     BaseMeter,
     BatteryMeter,
     LoadMeter,
@@ -39,6 +39,7 @@ if typing.TYPE_CHECKING:
     from homeassistant.core import Event, EventStateChangedData, State
 
     from ..controller import EntryData
+    from ..controller.devices import Device
     from ..helpers.entity import EntityArgs
     from ..processors import ProcessorWarning
 
@@ -96,13 +97,13 @@ class YieldSensor(Sensor):
 
     def __init__(
         self,
-        controller: "Controller",
+        device: "Device",
         id: YieldSensorId,
         config_subentry_id: str,
         name: str,
     ):
         super().__init__(
-            controller,
+            device,
             id,
             config_subentry_id=config_subentry_id,
             name=name,
@@ -372,6 +373,7 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
             parent_attr=Sensor.ParentAttr.DYNAMIC,
         )
 
+        """
         _warning_meters = (self.battery_meter, self.load_meter, self.pv_meter)
         _warning_processors_map: dict[str, set["ProcessorWarning"]] = {}
         for _meter in _warning_meters:
@@ -388,10 +390,10 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
             ProcessorWarningBinarySensor(
                 self, f"{_warning_id}_warning", _warning_processors
             )
-
+        """
 
     def _on_init(self):
-        config: "Controller.Config" = self.config # type: ignore
+        config: "Controller.Config" = self.config  # type: ignore
         maximum_latency_seconds = (
             config.get("maximum_latency_seconds") or MAXIMUM_LATENCY_DISABLED
         )
@@ -483,9 +485,6 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
                 Controller.HassJobType.Callback,
             )
 
-        await self.pv_meter.async_start()
-        await self.load_meter.async_start()
-
         await super().async_setup()
         # trigger now after adding entities to hass
         if self.losses_meter:
@@ -498,7 +497,7 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
 
         await self._async_store_save(0)
 
-        for energy_meter in tuple(self.energy_meters.values()):
+        for energy_meter in tuple(reversed(self.energy_meters.values())):
             energy_meter.shutdown()
         assert not self.energy_meters
 
@@ -515,7 +514,7 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
                         name = f"{energy_meter.metering_source} {name}"
                     for cycle_mode in sensor_config["cycle_modes"]:
                         EnergySensor(
-                            self,
+                            energy_meter.device,
                             f"{pmc.ConfigSubentryType.MANAGER_ENERGY_SENSOR}_{energy_meter.metering_source}",
                             cycle_mode,
                             energy_meter,
@@ -525,12 +524,12 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
             case pmc.ConfigSubentryType.MANAGER_YIELD:
                 assert not self.losses_meter
                 yield_config: ManagerYieldConfig = entry_data.config  # type: ignore
-                self.losses_meter = losses_meter = LossesMeter(
+                self.losses_meter = energy_meter = LossesMeter(
                     self, yield_config["sampling_interval_seconds"]
                 )
                 name = yield_config["name"]
                 PowerSensor(
-                    self,
+                    energy_meter.device,
                     "losses_power",
                     config_subentry_id=subentry_id,
                     name=name,
@@ -538,10 +537,10 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
                 )
                 for cycle_mode in yield_config["cycle_modes"]:
                     EnergySensor(
-                        self,
-                        f"{pmc.ConfigSubentryType.MANAGER_ENERGY_SENSOR}_{losses_meter.metering_source}",
+                        energy_meter.device,
+                        f"{pmc.ConfigSubentryType.MANAGER_ENERGY_SENSOR}_{energy_meter.metering_source}",
                         cycle_mode,
-                        losses_meter,
+                        energy_meter,
                         name=name,
                         config_subentry_id=subentry_id,
                     )
@@ -549,14 +548,14 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
                     setattr(self, f"{yield_sensor_id}_sensor", None)
                     if name := yield_config.get(yield_sensor_id):
                         YieldSensor(
-                            self,
+                            energy_meter.device,
                             yield_sensor_id,
                             config_subentry_id=subentry_id,
                             name=name,
                         )
                 if self.config_entry.state == ConfigEntryState.LOADED:
                     self.async_create_task(
-                        losses_meter.async_start(), "LossesMeter.async_start"
+                        energy_meter.async_start(), "LossesMeter.async_start"
                     )
 
     async def _async_subentry_update(self, subentry_id: str, entry_data: "EntryData"):
@@ -570,7 +569,7 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
                         name = f"{energy_meter.metering_source} {name}"
                     cycle_modes_new = set(sensor_config["cycle_modes"])
                     energy_sensor: EnergySensor
-                    for energy_sensor in list(entry_data.entities.values()):  # type: ignore
+                    for energy_sensor in tuple(entry_data.entities.values()):  # type: ignore
                         try:
                             cycle_modes_new.remove(energy_sensor.cycle_mode)
                             # cycle_mode still present: update
@@ -583,7 +582,7 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
                     # leftovers are those newly added cycle_mode(s)
                     for cycle_mode in cycle_modes_new:
                         EnergySensor(
-                            self,
+                            energy_meter.device,
                             f"{pmc.ConfigSubentryType.MANAGER_ENERGY_SENSOR}_{energy_meter.metering_source}",
                             cycle_mode,
                             energy_meter,
@@ -593,12 +592,12 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
                     # no state flush/update for entities since they're all integrating sensors
                     # and need a cycle to be computed/refreshed
             case pmc.ConfigSubentryType.MANAGER_YIELD:
-                losses_meter = self.losses_meter
-                assert losses_meter
+                energy_meter = self.losses_meter
+                assert energy_meter
                 yield_config: ManagerYieldConfig = entry_data.config  # type: ignore
                 name = yield_config["name"]
                 # TODO: retrigger the track_timer
-                losses_meter.update_period_ts = yield_config[
+                energy_meter.update_period_ts = yield_config[
                     "sampling_interval_seconds"
                 ]
                 entities = entry_data.entities
@@ -622,10 +621,10 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
                 # leftovers are those newly added cycle_mode(s)
                 for cycle_mode in cycle_modes_new:
                     EnergySensor(
-                        self,
-                        f"{pmc.ConfigSubentryType.MANAGER_ENERGY_SENSOR}_{losses_meter.metering_source}",
+                        energy_meter.device,
+                        f"{pmc.ConfigSubentryType.MANAGER_ENERGY_SENSOR}_{energy_meter.metering_source}",
                         cycle_mode,
-                        losses_meter,
+                        energy_meter,
                         name=name,
                         config_subentry_id=subentry_id,
                     )
@@ -651,7 +650,7 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
                 # leftovers are newly added yield sensors
                 for yield_sensor_id in yield_sensors_id_new:
                     YieldSensor(
-                        self,
+                        energy_meter.device,
                         yield_sensor_id,
                         config_subentry_id=subentry_id,
                         name=yield_config[yield_sensor_id],  # type: ignore

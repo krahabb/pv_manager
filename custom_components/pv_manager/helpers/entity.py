@@ -7,7 +7,7 @@ from . import Loggable
 from ..manager import Manager
 
 if typing.TYPE_CHECKING:
-    from typing import ClassVar, Final, NotRequired
+    from typing import ClassVar, Final, NotRequired, Unpack
 
     from .. import const as pmc
     from ..controller import Controller, Device
@@ -63,6 +63,7 @@ class Entity(Loggable, entity.Entity if typing.TYPE_CHECKING else object):
     assumed_state: typing.Final
     force_update: typing.Final
     should_poll: typing.Final
+    unique_id: typing.Final[str]
 
     __slots__ = (
         "device",
@@ -85,7 +86,7 @@ class Entity(Loggable, entity.Entity if typing.TYPE_CHECKING else object):
         self,
         device: "Device",
         id: str,
-        **kwargs: "typing.Unpack[EntityArgs]",
+        **kwargs: "Unpack[EntityArgs]",
     ):
         controller = device.controller
         self.device = device
@@ -99,7 +100,7 @@ class Entity(Loggable, entity.Entity if typing.TYPE_CHECKING else object):
         self.icon = kwargs.pop("icon", self._attr_icon)
         self.name = kwargs.pop("name", None) or id
         self.should_poll = False
-        self.unique_id = "_".join((controller.config_entry.entry_id, id))
+        self.unique_id = f"{device.unique_id}_{id}"
         self.added_to_hass = False
         self._parent_attr = kwargs.pop("parent_attr", self._attr_parent_attr)
         for _attr_name, _attr_value in kwargs.items():
@@ -107,8 +108,11 @@ class Entity(Loggable, entity.Entity if typing.TYPE_CHECKING else object):
         Loggable.__init__(self, id, logger=device)
 
         entities = controller.entries[self.config_subentry_id].entities
-        assert id not in entities
-        entities[id] = self
+        if self.unique_id in entities:
+            raise Exception(
+                f"{__name__}:{self.LN()} Duplicated id ({id}) in subentry ({self.config_subentry_id})"
+            )
+        entities[self.unique_id] = self
         if self._parent_attr is ParentAttr.STATIC:
             setattr(device, f"{id}_{self.PLATFORM}", self)
         elif self._parent_attr is ParentAttr.DYNAMIC:
@@ -122,7 +126,9 @@ class Entity(Loggable, entity.Entity if typing.TYPE_CHECKING else object):
     async def async_shutdown(self, remove: bool):
         if self._parent_attr:
             delattr(self.device, f"{self.id}_{self.PLATFORM}")
-        self.device.controller.entries[self.config_subentry_id].entities.pop(self.id)
+        del self.device.controller.entries[self.config_subentry_id].entities[
+            self.unique_id
+        ]
         if remove:
             if self.added_to_hass:
                 await self.async_remove(force_remove=True)
@@ -189,7 +195,7 @@ class DiagnosticEntity(Entity if typing.TYPE_CHECKING else object):
         device.controller.diagnostic_entities[id] = self
 
     async def async_shutdown(self, remove: bool):
-        self.device.controller.diagnostic_entities.pop(self.id)
+        del self.device.controller.diagnostic_entities[self.id]
         await super().async_shutdown(remove)
 
 

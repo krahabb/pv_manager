@@ -12,19 +12,18 @@ from homeassistant.helpers import (
     entity_registry as er,
     event,
 )
-from homeassistant.helpers.event import async_track_state_change_event
 
 from . import const as pmc
 from .helpers import Loggable
 
 if typing.TYPE_CHECKING:
+    from logging import Logger
     from asyncio.events import TimerHandle
     from datetime import datetime
     from typing import Any, Callable, Coroutine, Final, Iterable
 
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import (
-        CALLBACK_TYPE,
         HassJob,
         HomeAssistant,
     )
@@ -40,6 +39,7 @@ class ManagerClass(Loggable):
     Singleton global manager/helper class
     """
 
+    logger: "Logger"
     hass: "Final[HomeAssistant]"
     device_registry: "Final[dr.DeviceRegistry]"
     entity_registry: "Final[er.EntityRegistry]"
@@ -65,7 +65,7 @@ class ManagerClass(Loggable):
             hass.data[pmc.DOMAIN] = Manager
 
             async def _async_unload(_event) -> None:
-                hass.data.pop(pmc.DOMAIN)
+                del hass.data[pmc.DOMAIN]
                 Manager.hass = None  # type: ignore
                 Manager.device_registry = None  # type: ignore
                 Manager.entity_registry = None  # type: ignore
@@ -79,8 +79,9 @@ class ManagerClass(Loggable):
         super().__init__(None)
 
     # interface: Loggable
-    def configure_logger(self):
-        self.logtag = "Manager"
+    def log(self, level: int, msg: str, *args, **kwargs):
+        if (logger := self.logger).isEnabledFor(level):
+            logger._log(level, msg, args, **kwargs)
 
     # interface: self
     @callback

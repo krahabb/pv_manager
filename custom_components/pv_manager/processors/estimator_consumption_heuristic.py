@@ -240,7 +240,7 @@ class HeuristicConsumptionEstimator(EnergyEstimator):
                 sample_time_of_day_ts = discarded_sample.time_ts % 86400
                 model = self.model[sample_time_of_day_ts]
                 if model.pop_sample(discarded_sample):
-                    self.model.pop(sample_time_of_day_ts)
+                    del self.model[sample_time_of_day_ts]
         except IndexError:
             # history empty
             pass

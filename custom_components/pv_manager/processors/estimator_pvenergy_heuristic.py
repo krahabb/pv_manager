@@ -348,7 +348,7 @@ class HeuristicPVEnergyEstimator(PVEnergyEstimator):
                 if model.energy_max == self._model_energy_max:
                     recalc_energy_max = True
                 if model.pop_sample(discarded_sample):
-                    self.energy_model.pop(sample_time_of_day_ts)
+                    del self.energy_model[sample_time_of_day_ts]
         except IndexError:
             # history empty
             pass

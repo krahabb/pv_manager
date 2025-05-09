@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from enum import StrEnum
 import importlib
+import inspect
 import logging
 from time import gmtime, time
 import typing
@@ -227,6 +228,14 @@ class Loggable(abc.ABC):
     INFO = logging.INFO
     WARNING = logging.WARNING
     CRITICAL = logging.CRITICAL
+
+    @staticmethod
+    def LN():
+        """Returns the current line number in our program"""
+        try:
+            return inspect.currentframe().f_back.f_lineno  # type: ignore
+        except:
+            return None
 
     __slots__ = (
         "id",

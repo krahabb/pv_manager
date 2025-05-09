@@ -41,10 +41,12 @@ class Device(CallbackTracker, Loggable):
             model: NotRequired[str]
 
     controller: "Final[Controller]"
+    unique_id: "Final[str]"
     device_info: "Final[DeviceInfo]"
 
     __slots__ = (
         "controller",
+        "unique_id",
         "device_info",
     )
 
@@ -52,11 +54,12 @@ class Device(CallbackTracker, Loggable):
         self.controller = controller = kwargs["controller"]
         entry_id = controller.config_entry.entry_id
         if controller is self:
-            self.device_info = {"identifiers": {(pmc.DOMAIN, entry_id)}}
+            self.unique_id = entry_id
             via_device = None
         else:
-            self.device_info = {"identifiers": {(pmc.DOMAIN, f"{entry_id}.{id}")}}
-            via_device = controller.device_info["identifiers"]  # type: ignore
+            self.unique_id = f"{entry_id}.{id}"
+            via_device = next(iter(controller.device_info["identifiers"]))  # type: ignore
+        self.device_info = {"identifiers": {(pmc.DOMAIN, self.unique_id)}}
         Manager.device_registry.async_get_or_create(
             config_entry_id=entry_id,
             name=kwargs.get("name", controller.config_entry.title),
@@ -74,4 +77,5 @@ class Device(CallbackTracker, Loggable):
 
     def shutdown(self):
         super().shutdown()
-        self.controller = None # type: ignore
+        del self.controller.devices[self.id]
+        self.controller = None  # type: ignore
