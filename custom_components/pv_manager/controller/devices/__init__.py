@@ -76,6 +76,6 @@ class Device(CallbackTracker, Loggable):
         pass
 
     def shutdown(self):
-        super().shutdown()
         del self.controller.devices[self.id]
+        super().shutdown()
         self.controller = None  # type: ignore

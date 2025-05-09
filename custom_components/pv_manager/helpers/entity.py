@@ -100,7 +100,7 @@ class Entity(Loggable, entity.Entity if typing.TYPE_CHECKING else object):
         self.icon = kwargs.pop("icon", self._attr_icon)
         self.name = kwargs.pop("name", None) or id
         self.should_poll = False
-        self.unique_id = f"{device.unique_id}_{id}"
+        self.unique_id = f"{device.unique_id}-{id}"
         self.added_to_hass = False
         self._parent_attr = kwargs.pop("parent_attr", self._attr_parent_attr)
         for _attr_name, _attr_value in kwargs.items():

@@ -1,7 +1,7 @@
 import typing
 
 from homeassistant.exceptions import ConfigEntryError
-from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import config_validation as cv, entity_registry
 
 from . import const as pmc
 from .controller import Controller
@@ -44,6 +44,51 @@ async def async_setup_entry(
 async def async_unload_entry(
     hass: "HomeAssistant", config_entry: "ConfigEntry[Controller]"
 ):
-    cntrl = config_entry.runtime_data
-    await cntrl.async_shutdown()
+    await config_entry.runtime_data.async_shutdown()
+    return True
+
+
+async def async_migrate_entry(hass: "HomeAssistant", config_entry: "ConfigEntry"):
+
+    import asyncio
+    await asyncio.sleep(5)
+
+    if config_entry.version > 1:
+        # This means the user has downgraded from a future version
+        return False
+
+    if config_entry.version == 1:
+        kwargs = {}
+
+        if config_entry.minor_version < 2:
+
+            def _migrate_uniqueid(registry_entry: entity_registry.RegistryEntry):
+                """
+                old format: f"{config_entry.entry_id}_{entity.id}"
+                new format: f"{device.uniqued_id}-{entity.id}"
+
+                where device.uniqued_id = f"{config_entry.entry_id}.{device.id}"
+                or (controller/main device) = f"{config_entry.entry_id}"
+                """
+                s = registry_entry.unique_id.split("_")
+                entry_id = s.pop(0)
+                assert entry_id == config_entry.entry_id
+                new_unique_id = f'{entry_id}-{"_".join(s)}'
+                return {"new_unique_id": new_unique_id}
+
+            await entity_registry.async_migrate_entries(
+                hass, config_entry.entry_id, _migrate_uniqueid
+            )
+
+        hass.config_entries.async_update_entry(
+            config_entry, minor_version=2, version=1, **kwargs
+        )
+
+    Manager.log(
+        Manager.DEBUG,
+        "Migration to configuration version %s.%s successful",
+        config_entry.version,
+        config_entry.minor_version,
+    )
+
     return True

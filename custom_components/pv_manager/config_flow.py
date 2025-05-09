@@ -115,7 +115,7 @@ class ConfigFlow(CommonFlow, config_entries.ConfigFlow, domain=pmc.DOMAIN):  # t
     # The schema version of the entries that it creates
     # Home Assistant will call your migrate method if the version changes
     VERSION = 1
-    MINOR_VERSION = 1
+    MINOR_VERSION = 2
 
     reconfigure_entry: "ConfigEntry | None" = None
 

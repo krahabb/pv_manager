@@ -53,10 +53,10 @@ class BaseMeter(BaseEnergyProcessor):
         setattr(controller, f"{self.metering_source}_meter", self)
 
     def shutdown(self):
-        super().shutdown()
         controller = self.device.controller
         del controller.energy_meters[self.metering_source]
         setattr(controller, f"{self.metering_source}_meter", None)
+        super().shutdown()
         self.device = None  # type: ignore
 
     def load(self, data: MeterStoreType):
