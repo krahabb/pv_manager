@@ -50,9 +50,6 @@ async def async_unload_entry(
 
 async def async_migrate_entry(hass: "HomeAssistant", config_entry: "ConfigEntry"):
 
-    import asyncio
-    await asyncio.sleep(5)
-
     if config_entry.version > 1:
         # This means the user has downgraded from a future version
         return False
