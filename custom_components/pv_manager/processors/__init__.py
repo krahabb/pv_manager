@@ -342,11 +342,17 @@ class BaseEnergyProcessor(BaseProcessor[float]):
 
     @typing.override
     def update(self, time_ts: float):
-        if self.input_mode:
-            # TODO: interpolate energy
-            pass
-        else:
-            self.process(self.input, time_ts)
+        try:
+            if self.input_mode:
+                # TODO: interpolate energy
+                pass
+            else:
+                self.process(self.input, time_ts)
+        except Exception as e:
+            # This might happen if we use interpolation on 'invalid' states
+            # i.e. when entities don't update or we've still not fully initialized
+            # This might be a subtle error though but we just log when debugging
+            self.log_exception(self.DEBUG, e, "calling update()", timeout = 1800)
 
     @typing.override
     def as_dict(self):
