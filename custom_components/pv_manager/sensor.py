@@ -15,16 +15,10 @@ if typing.TYPE_CHECKING:
     from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
     from .controller import Controller, Device
-    from .helpers.entity import EntityArgs
     from .processors import BaseEnergyProcessor
 
     SensorStateType = sensor.StateType | sensor.date | sensor.datetime | sensor.Decimal
 
-    class SensorArgs(EntityArgs):
-        device_class: NotRequired[sensor.SensorDeviceClass | None]
-        state_class: NotRequired[sensor.SensorStateClass | None]
-        native_value: NotRequired[SensorStateType]
-        native_unit_of_measurement: NotRequired[str]
 
 
 async def async_setup_entry(
@@ -38,6 +32,13 @@ async def async_setup_entry(
 
 
 class Sensor(he.Entity, sensor.SensorEntity):
+
+    if typing.TYPE_CHECKING:
+        class Args(he.Entity.Args):
+            device_class: NotRequired[sensor.SensorDeviceClass | None]
+            state_class: NotRequired[sensor.SensorStateClass | None]
+            native_value: NotRequired[SensorStateType]
+            native_unit_of_measurement: NotRequired[str]
 
     PLATFORM = sensor.DOMAIN
 
@@ -70,7 +71,7 @@ class Sensor(he.Entity, sensor.SensorEntity):
         self,
         device: "Device",
         id: str,
-        **kwargs: "typing.Unpack[SensorArgs]",
+        **kwargs: "Unpack[Args]",
     ):
         self.device_class = kwargs.pop("device_class", self._attr_device_class)
         self.native_value = kwargs.pop("native_value", self._attr_native_value)
@@ -81,7 +82,7 @@ class Sensor(he.Entity, sensor.SensorEntity):
             self.state_class = kwargs.pop("state_class")
         else:
             self.state_class = self.DEVICE_CLASS_TO_STATE_CLASS.get(self.device_class)
-        he.Entity.__init__(self, device, id, **kwargs)
+        super().__init__(device, id, **kwargs)
 
     def update(self, native_value: "SensorStateType"):
         if self.native_value != native_value:
@@ -144,7 +145,7 @@ class EnergySensor(MeteringEntity, Sensor, he.RestoreEntity):
         id: str,
         cycle_mode: CycleMode,
         energy_processor: "BaseEnergyProcessor",
-        **kwargs: "Unpack[EntityArgs]",
+        **kwargs: "Unpack[he.Entity.Args]",
     ):
         self.cycle_mode = cycle_mode
         self.energy_processor = energy_processor
@@ -255,7 +256,7 @@ class BatteryChargeSensor(Sensor, he.RestoreEntity):
         *,
         capacity: float,
         native_value: float = 0,
-        **kwargs: "Unpack[EntityArgs]",
+        **kwargs: "Unpack[he.Entity.Args]",
     ):
         self.capacity = capacity
         self.charge = native_value

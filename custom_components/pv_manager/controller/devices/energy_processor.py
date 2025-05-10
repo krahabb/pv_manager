@@ -1,5 +1,3 @@
-import datetime as dt
-from time import time as TIME_TS
 import typing
 
 from homeassistant import const as hac
@@ -13,7 +11,6 @@ from ...processors import BaseEnergyProcessor
 if typing.TYPE_CHECKING:
     from typing import Any, Callable, ClassVar, Coroutine, Final, Unpack
 
-    from .. import Controller
 
 
 class EnergyProcessorDevice(BaseEnergyProcessor, Device):

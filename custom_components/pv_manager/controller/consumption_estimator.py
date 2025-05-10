@@ -10,24 +10,15 @@ from ..processors.estimator_consumption_heuristic import (
 if typing.TYPE_CHECKING:
     from typing import Unpack
 
-    from homeassistant.config_entries import ConfigEntry
 
-class Controller(EnergyEstimatorController["Controller.Config"]):  # type: ignore
-    """Base controller class for managing ConfigEntry behavior."""
+class Controller(EnergyEstimatorController["Controller.Config"], HeuristicConsumptionEstimator):  # type: ignore
+    """Base controller class for consumption estimation."""
 
     if typing.TYPE_CHECKING:
 
-        class Config(EnergyEstimatorController.Config):
+        class Config(
+            EnergyEstimatorController.Config, HeuristicConsumptionEstimator.Config
+        ):
             pass
 
     TYPE = pmc.ConfigEntryType.CONSUMPTION_ESTIMATOR
-
-    # interface: EnergyEstimatorController
-    @staticmethod
-    def get_config_entry_schema(config: "Config | None") -> pmc.ConfigSchema:
-        return hv.entity_schema(
-            config or {"name": "Consumption estimation"},
-        ) | EnergyEstimatorController.get_config_entry_schema(config)
-
-    def __init__(self, config_entry: "ConfigEntry"):
-        super().__init__(config_entry, HeuristicConsumptionEstimator)

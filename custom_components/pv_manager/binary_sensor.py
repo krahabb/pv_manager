@@ -7,18 +7,14 @@ from .helpers.entity import Entity
 from .processors import ProcessorWarning
 
 if typing.TYPE_CHECKING:
-    from typing import Callable, Iterable
+    from typing import Callable, Iterable, Unpack
 
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
     from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
     from .controller import Controller, Device
-    from .helpers.entity import EntityArgs
-
-    class BinarySensorArgs(EntityArgs):
-        device_class: typing.NotRequired[binary_sensor.BinarySensorDeviceClass]
-        is_on: typing.NotRequired[bool | None]
+    from .helpers.entity import Entity
 
 
 async def async_setup_entry(
@@ -33,6 +29,12 @@ async def async_setup_entry(
 
 class BinarySensor(Entity, binary_sensor.BinarySensorEntity):
 
+    if typing.TYPE_CHECKING:
+        class Args(Entity.Args):
+            device_class: typing.NotRequired[binary_sensor.BinarySensorDeviceClass]
+            is_on: typing.NotRequired[bool | None]
+
+
     PLATFORM = binary_sensor.DOMAIN
 
     DeviceClass = binary_sensor.BinarySensorDeviceClass
@@ -46,11 +48,11 @@ class BinarySensor(Entity, binary_sensor.BinarySensorEntity):
         self,
         device: "Device",
         id: str,
-        **kwargs: "typing.Unpack[BinarySensorArgs]",
+        **kwargs: "Unpack[Args]",
     ):
         self.device_class = kwargs.pop("device_class", self._attr_device_class)
         self.is_on = kwargs.pop("is_on", None)
-        Entity.__init__(self, device, id, **kwargs)
+        super().__init__(device, id, **kwargs)
 
     def update(self, is_on: bool | None):
         if self.is_on != is_on:
@@ -90,7 +92,7 @@ class ProcessorWarningBinarySensor(BinarySensor):
         device: "Device",
         id,
         processor_warning: "Iterable[ProcessorWarning] | ProcessorWarning",
-        **kwargs: "typing.Unpack[BinarySensorArgs]",
+        **kwargs: "Unpack[BinarySensor.Args]",
     ):
         if isinstance(processor_warning, ProcessorWarning):
             self._processor_warning = processor_warning

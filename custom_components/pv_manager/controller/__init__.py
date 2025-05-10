@@ -4,13 +4,11 @@ from homeassistant import const as hac
 from homeassistant.util import slugify
 
 from .. import const as pmc, helpers
-from ..binary_sensor import ProcessorWarningBinarySensor
 from ..helpers import validation as hv
-from ..helpers.entity import EstimatorEntity
 from ..manager import Manager
-from ..processors.estimator import EnergyEstimator
 from ..sensor import Sensor
 from .devices import Device
+from .devices.estimator_processor import EnergyEstimatorDevice, EnergyEstimatorSensor
 
 if typing.TYPE_CHECKING:
     from typing import Any, Callable, ClassVar, Coroutine, Final, TypedDict, Unpack
@@ -19,7 +17,7 @@ if typing.TYPE_CHECKING:
     from homeassistant.core import HomeAssistant, State
     from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-    from ..helpers.entity import DiagnosticEntity, Entity, EntityArgs
+    from ..helpers.entity import DiagnosticEntity, Entity
 
 
 class EntryData[_ConfigT: pmc.EntryConfig | pmc.SubentryConfig]:
@@ -104,10 +102,12 @@ class Controller[_ConfigT: pmc.EntryConfig](Device):
         )
         return controller_module.Controller
 
-    @staticmethod
-    def get_config_entry_schema(config: pmc.ConfigMapping | None) -> pmc.ConfigSchema:
+    @classmethod
+    def get_config_entry_schema(
+        cls, config: pmc.ConfigMapping | None
+    ) -> pmc.ConfigSchema:
         # to be overriden
-        return {}
+        return cls.get_config_schema(config)
 
     @staticmethod
     def get_config_subentry_schema(
@@ -275,133 +275,16 @@ class Controller[_ConfigT: pmc.EntryConfig](Device):
         pass
 
 
-class EnergyEstimatorSensorConfig(pmc.EntityConfig, pmc.SubentryConfig):
-    """Configure additional estimation sensors reporting forecasted energy over an amount of time."""
-
-    forecast_duration_hours: int
-
-
-class EnergyEstimatorSensor(EstimatorEntity, Sensor):
-
-    controller: "EnergyEstimatorController"
-
-    _attr_device_class = Sensor.DeviceClass.ENERGY
-    _attr_native_unit_of_measurement = hac.UnitOfEnergy.WATT_HOUR
-
-    __slots__ = ("forecast_duration_ts",)
-
-    def __init__(
-        self,
-        controller: "EnergyEstimatorController",
-        id,
-        *,
-        forecast_duration_ts: float = 0,
-        **kwargs: "Unpack[EntityArgs]",
-    ):
-        self.forecast_duration_ts = forecast_duration_ts
-        super().__init__(
-            controller,
-            id,
-            controller.estimator,
-            state_class=None,
-            **kwargs,
-        )
-
-    @typing.override
-    def on_estimator_update(self, estimator: EnergyEstimator):
-        self.native_value = round(
-            estimator.get_estimated_energy(
-                estimator.observed_time_ts,
-                estimator.observed_time_ts + self.forecast_duration_ts,
-            )
-        )
-        if self.added_to_hass:
-            self._async_write_ha_state()
-
-
-class TodayEnergyEstimatorSensor(EnergyEstimatorSensor):
-
-    @typing.override
-    def on_estimator_update(self, estimator: EnergyEstimator):
-        self.extra_state_attributes = estimator.get_state_dict()
-        self.native_value = round(
-            estimator.today_energy
-            + estimator.get_estimated_energy(
-                estimator.observed_time_ts, estimator.tomorrow_ts
-            )
-        )
-        if self.added_to_hass:
-            self._async_write_ha_state()
-
-
-class TomorrowEnergyEstimatorSensor(EnergyEstimatorSensor):
-
-    @typing.override
-    def on_estimator_update(self, estimator: EnergyEstimator):
-        self.native_value = round(
-            estimator.get_estimated_energy(
-                estimator.tomorrow_ts, estimator.tomorrow_ts + 86400
-            )
-        )
-        if self.added_to_hass:
-            self._async_write_ha_state()
-
-
 class EnergyEstimatorController[_ConfigT: "EnergyEstimatorController.Config"](  # type: ignore
-    Controller[_ConfigT]
+    Controller[_ConfigT], EnergyEstimatorDevice
 ):
 
     if typing.TYPE_CHECKING:
 
-        class Config(EnergyEstimator.Config, Controller.Config):
+        class Config(EnergyEstimatorDevice.Config, Controller.Config):
             pass
 
     PLATFORMS = {Sensor.PLATFORM}
-
-    estimator: EnergyEstimator
-
-    __slots__ = (
-        # configuration
-        # state
-        "estimator",
-    )
-
-    @staticmethod
-    def get_config_entry_schema(
-        config: "Config | None",
-    ) -> pmc.ConfigSchema:
-        if not config:
-            config = {
-                "source_entity_id": "",
-                "sampling_interval_minutes": 10,
-                "observation_duration_minutes": 20,
-                "history_duration_days": 7,
-                "maximum_latency_seconds": 60,
-            }
-        return {
-            hv.req_config("source_entity_id", config): hv.sensor_selector(
-                device_class=[Sensor.DeviceClass.POWER, Sensor.DeviceClass.ENERGY]
-            ),
-            hv.req_config(
-                "sampling_interval_minutes",
-                config,
-            ): hv.time_period_selector(unit_of_measurement=hac.UnitOfTime.MINUTES),
-            hv.req_config(
-                "observation_duration_minutes", config
-            ): hv.time_period_selector(unit_of_measurement=hac.UnitOfTime.MINUTES),
-            hv.req_config("history_duration_days", config): hv.time_period_selector(
-                unit_of_measurement=hac.UnitOfTime.DAYS, max=30
-            ),
-            hv.opt_config("update_period_seconds", config): hv.time_period_selector(
-                unit_of_measurement=hac.UnitOfTime.SECONDS
-            ),
-            hv.opt_config("maximum_latency_seconds", config): hv.time_period_selector(
-                unit_of_measurement=hac.UnitOfTime.SECONDS
-            ),
-            hv.opt_config("safe_maximum_power_w", config): hv.positive_number_selector(
-                unit_of_measurement=hac.UnitOfPower.WATT
-            ),
-        }
 
     @staticmethod
     def get_config_subentry_schema(
@@ -426,43 +309,9 @@ class EnergyEstimatorController[_ConfigT: "EnergyEstimatorController.Config"](  
 
         return {}
 
-    def __init__(
-        self, config_entry: "ConfigEntry", estimator_class: type[EnergyEstimator]
-    ):
-
-        self.estimator = estimator_class(
-            self.TYPE,
-            config=config_entry.data,  # type: ignore
-        )
-
-        super().__init__(config_entry)
-
-        for warning in self.estimator.warnings:
-            ProcessorWarningBinarySensor(self, f"{warning.id}_warning", warning)
-
-        TodayEnergyEstimatorSensor(
-            self,
-            "today_energy_estimate",
-            name=f"{self.config.get("name", "Estimated energy")} (today)",
-        )
-        TomorrowEnergyEstimatorSensor(
-            self,
-            "tomorrow_energy_estimate",
-            name=f"{self.config.get("name", "Estimated energy")} (tomorrow)",
-        )
-
     # interface: Controller
-    async def async_setup(self):
-        await self.estimator.async_start()
-        await super().async_setup()
-
-    async def async_shutdown(self):
-        self.estimator.shutdown()
-        self.estimator = None  # type: ignore
-        await super().async_shutdown()
-
     def _subentry_add(
-        self, subentry_id: str, entry_data: EntryData[EnergyEstimatorSensorConfig]
+        self, subentry_id: str, entry_data: "EntryData[EnergyEstimatorSensor.Config]"
     ):
         match entry_data.subentry_type:
             case pmc.ConfigSubentryType.ENERGY_ESTIMATOR_SENSOR:
@@ -490,6 +339,6 @@ class EnergyEstimatorController[_ConfigT: "EnergyEstimatorController.Config"](  
                     entity.forecast_duration_ts = (
                         entry_data.config.get("forecast_duration_hours", 1) * 3600
                     )
-                    entity.on_estimator_update(self.estimator)
+                    entity.on_estimator_update(self)
 
     # interface: self

@@ -96,6 +96,11 @@ def weather_selector():
     return selector.EntitySelector({"filter": {"domain": "weather"}})
 
 
+def number_selector(**kwargs: "Unpack[selector.NumberSelectorConfig]"):
+    kwargs["mode"] = kwargs.get("mode", selector.NumberSelectorMode.BOX)
+    return selector.NumberSelector(kwargs)
+
+
 def positive_number_selector(**kwargs: "Unpack[selector.NumberSelectorConfig]"):
     kwargs["min"] = kwargs.get("min", 0)
     kwargs["mode"] = kwargs.get("mode", selector.NumberSelectorMode.BOX)

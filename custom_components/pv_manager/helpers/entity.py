@@ -13,14 +13,6 @@ if typing.TYPE_CHECKING:
     from ..controller import Controller, Device
     from ..processors.estimator import Estimator
 
-    class EntityArgs(typing.TypedDict):
-        config_subentry_id: NotRequired[str]
-        name: NotRequired[str | None]
-        entity_category: NotRequired[entity.EntityCategory]
-        icon: NotRequired[str]
-        # translation_key: typing.NotRequired[str]
-        parent_attr: NotRequired["ParentAttr | None"]
-
 
 class ParentAttr(enum.Enum):
     """Specifies if the entity should automatically manage its reference in the parent
@@ -38,6 +30,16 @@ class ParentAttr(enum.Enum):
 
 
 class Entity(Loggable, entity.Entity if typing.TYPE_CHECKING else object):
+
+    if typing.TYPE_CHECKING:
+
+        class Args(typing.TypedDict):
+            config_subentry_id: NotRequired[str]
+            name: NotRequired[str | None]
+            entity_category: NotRequired[entity.EntityCategory]
+            icon: NotRequired[str]
+            # translation_key: typing.NotRequired[str]
+            parent_attr: NotRequired["ParentAttr | None"]
 
     PLATFORM: typing.ClassVar[str]
 
@@ -86,7 +88,7 @@ class Entity(Loggable, entity.Entity if typing.TYPE_CHECKING else object):
         self,
         device: "Device",
         id: str,
-        **kwargs: "Unpack[EntityArgs]",
+        **kwargs: "Unpack[Args]",
     ):
         controller = device.controller
         self.device = device

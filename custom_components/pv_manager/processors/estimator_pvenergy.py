@@ -279,6 +279,8 @@ class PVEnergyEstimator(EnergyEstimator):
         class Args(EnergyEstimator.Args):
             config: "PVEnergyEstimator.Config"
 
+    DEFAULT_NAME = "PV energy estimation"
+
     weather_entity_id: str
     weather_model: typing.Final[WeatherModel]
     weather_history: typing.Final[deque[WeatherSample]]

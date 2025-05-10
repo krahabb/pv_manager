@@ -8,23 +8,28 @@ from homeassistant.util.unit_conversion import (
 )
 
 from ... import const as pmc
-from ...sensor import BatteryChargeSensor, EnergySensor, PowerSensor, Sensor
+from ...helpers import validation as hv
 from ...processors import (
+    SAFE_MAXIMUM_POWER_DISABLED,
+    SAFE_MINIMUM_POWER_DISABLED,
     BaseEnergyProcessor,
     EnergyInputMode,
     SourceType,
-    SAFE_MAXIMUM_POWER_DISABLED,
-    SAFE_MINIMUM_POWER_DISABLED,
 )
+from ...processors.estimator_consumption_heuristic import HeuristicConsumptionEstimator
+from ...processors.estimator_pvenergy_heuristic import HeuristicPVEnergyEstimator
+from ...sensor import BatteryChargeSensor, EnergySensor, PowerSensor, Sensor
 from ..devices.energy_processor import EnergyProcessorDevice
+from ..devices.estimator_processor import EnergyEstimatorDevice
 
 if typing.TYPE_CHECKING:
     from typing import Any, Final, NotRequired, TypedDict, Unpack
 
     from homeassistant.core import Event, EventStateChangedData
 
-    from ...helpers.entity import EntityArgs
     from . import Controller as OffGridManager
+    from ...processors.estimator import EnergyEstimator
+
 
 VOLTAGE_UNIT = hac.UnitOfElectricPotential.VOLT
 CURRENT_UNIT = hac.UnitOfElectricCurrent.AMPERE
@@ -102,8 +107,9 @@ class MeterDevice(EnergyProcessorDevice, BaseMeter):
             device=self,  # type: ignore
             model=f"{metering_source}_meter",
             config=config,
-            name=metering_source.value.upper(),
+            name=f"{controller.config.get("name", controller.TYPE)} {metering_source}",
         )
+        self.maximum_latency_ts = controller.maximum_latency_ts
 
 
 class BatteryMeter(MeterDevice):
@@ -137,6 +143,23 @@ class BatteryMeter(MeterDevice):
         # sensors
         "battery_charge_sensor",
     )
+
+    @staticmethod
+    def get_config_schema(config: "Config") -> "pmc.ConfigSchema":
+        return {
+            hv.req_config("battery_voltage_entity_id", config): hv.sensor_selector(
+                device_class=Sensor.DeviceClass.VOLTAGE
+            ),
+            hv.req_config("battery_current_entity_id", config): hv.sensor_selector(
+                device_class=Sensor.DeviceClass.CURRENT
+            ),
+            hv.req_config("battery_capacity", config): hv.positive_number_selector(
+                unit_of_measurement="Ah"
+            ),
+            hv.opt_config("safe_maximum_power_w", config): hv.positive_number_selector(
+                unit_of_measurement=hac.UnitOfPower.WATT
+            ),
+        }
 
     def __init__(self, controller: "OffGridManager", config: "Config"):
         self.battery_voltage_entity_id = config["battery_voltage_entity_id"]
@@ -267,22 +290,49 @@ class BatteryMeter(MeterDevice):
         pass
 
 
-class PvMeter(MeterDevice):
+class EnergyEstimatorMeterDevice(MeterDevice):
+    """Partial common base class for meters (pv and load) that could be built as estimators.
+    This is done at runtime by building a new class composition including the
+    needed components if the OffGridManager has a specific config subentry for that.
+    TODO"""
 
     if typing.TYPE_CHECKING:
 
         class Config(MeterDevice.Config):
             pass
 
+    @staticmethod
+    def get_config_schema(config: "Config") -> "pmc.ConfigSchema":
+        return {
+            hv.opt_config("source_entity_id", config): hv.sensor_selector(
+                device_class=Sensor.DeviceClass.POWER
+            ),
+            hv.opt_config("safe_maximum_power_w", config): hv.positive_number_selector(
+                unit_of_measurement=hac.UnitOfPower.WATT
+            ),
+        }
+
+    def __init__(self, metering_source, controller, config):
+        super().__init__(metering_source, controller, config)
+        self.safe_minimum_power = 0
+
+
+class PvMeter(EnergyEstimatorMeterDevice):
+
+    if typing.TYPE_CHECKING:
+
+        class Config(EnergyEstimatorMeterDevice.Config):
+            pass
+
     def __init__(self, controller: "OffGridManager", config: "Config"):
         super().__init__(SourceType.PV, controller, config)
 
 
-class LoadMeter(MeterDevice):
+class LoadMeter(EnergyEstimatorMeterDevice):
 
     if typing.TYPE_CHECKING:
 
-        class Config(MeterDevice.Config):
+        class Config(EnergyEstimatorMeterDevice.Config):
             pass
 
     def __init__(self, controller: "OffGridManager", config: "Config"):

@@ -1,8 +1,5 @@
 import typing
 
-from homeassistant import const as hac
-from homeassistant.core import callback
-
 from ... import const as pmc
 from ...helpers import Loggable
 from ...helpers.callback import CallbackTracker
@@ -40,6 +37,8 @@ class Device(CallbackTracker, Loggable):
             name: NotRequired[str]
             model: NotRequired[str]
 
+    DEFAULT_NAME: "ClassVar[str]" = ""
+
     controller: "Final[Controller]"
     unique_id: "Final[str]"
     device_info: "Final[DeviceInfo]"
@@ -49,6 +48,10 @@ class Device(CallbackTracker, Loggable):
         "unique_id",
         "device_info",
     )
+
+    @classmethod
+    def get_config_schema(cls, config: pmc.ConfigMapping | None) -> "pmc.ConfigSchema":
+        return {}
 
     def __init__(self, id, **kwargs: "Unpack[Args]"):
         self.controller = controller = kwargs["controller"]
@@ -62,7 +65,9 @@ class Device(CallbackTracker, Loggable):
         self.device_info = {"identifiers": {(pmc.DOMAIN, self.unique_id)}}
         Manager.device_registry.async_get_or_create(
             config_entry_id=entry_id,
-            name=kwargs.get("name", controller.config_entry.title),
+            name=kwargs.get(
+                "name", self.__class__.DEFAULT_NAME or controller.config_entry.title
+            ),
             model=kwargs.pop("model", controller.TYPE),
             via_device=via_device,
             **self.device_info,  # type: ignore
@@ -78,4 +83,4 @@ class Device(CallbackTracker, Loggable):
     def shutdown(self):
         del self.controller.devices[self.id]
         super().shutdown()
-        #self.controller = None  # type: ignore
+        # self.controller = None  # type: ignore

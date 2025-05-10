@@ -9,18 +9,20 @@ from homeassistant.util.unit_conversion import (
     PowerConverter,
 )
 
-from ..helpers import Loggable
+from ..helpers import Loggable, validation as hv
 from ..helpers.callback import CallbackTracker
 from ..manager import Manager
+from ..sensor import Sensor
 
 if typing.TYPE_CHECKING:
-    from typing import NotRequired, TypedDict, Unpack
+    from typing import ClassVar, NotRequired, TypedDict, Unpack
 
     from homeassistant.core import Event, EventStateChangedData, State
 
+    from .. import const as pmc
+
 
 class SourceType(enum.StrEnum):
-    UNKNOWN = enum.auto()
     BATTERY = enum.auto()
     BATTERY_IN = enum.auto()
     BATTERY_OUT = enum.auto()
@@ -85,6 +87,8 @@ class BaseProcessor[_input_t](CallbackTracker, Loggable):
         class Args(Loggable.Args):
             config: "BaseProcessor.Config"
 
+    DEFAULT_NAME: "ClassVar[str]" = ""
+
     config: "Config"
     time_ts: float
     input: _input_t | None
@@ -100,6 +104,17 @@ class BaseProcessor[_input_t](CallbackTracker, Loggable):
         "input",
         "warnings",
     )
+
+    @classmethod
+    def get_config_schema(cls, config: "Config | None") -> "pmc.ConfigSchema":
+        if config is None:
+            config = {}
+        return {
+            hv.req_config("source_entity_id", config): hv.sensor_selector(),
+            hv.opt_config("update_period_seconds", config): hv.time_period_selector(
+                unit_of_measurement=hac.UnitOfTime.SECONDS
+            ),
+        }
 
     def __init__(self, id, **kwargs: "Unpack[Args]"):
         self.config = kwargs["config"]
@@ -232,6 +247,28 @@ class BaseEnergyProcessor(BaseProcessor[float]):
         "_energy_listeners",
     )
 
+    @classmethod
+    def get_config_schema(cls, config: "Config | None") -> "pmc.ConfigSchema":
+        if config is None:
+            config = {}
+        return {
+            hv.opt_config("source_entity_id", config): hv.sensor_selector(
+                device_class=[Sensor.DeviceClass.POWER, Sensor.DeviceClass.ENERGY]
+            ),
+            hv.opt_config("update_period_seconds", config): hv.time_period_selector(
+                unit_of_measurement=hac.UnitOfTime.SECONDS
+            ),
+            hv.opt_config("maximum_latency_seconds", config): hv.time_period_selector(
+                unit_of_measurement=hac.UnitOfTime.SECONDS
+            ),
+            hv.opt_config("safe_maximum_power_w", config): hv.number_selector(
+                unit_of_measurement=hac.UnitOfPower.WATT
+            ),
+            hv.opt_config("safe_minimum_power_w", config): hv.number_selector(
+                unit_of_measurement=hac.UnitOfPower.WATT
+            ),
+        }
+
     def __init__(
         self,
         id,
@@ -352,7 +389,7 @@ class BaseEnergyProcessor(BaseProcessor[float]):
             # This might happen if we use interpolation on 'invalid' states
             # i.e. when entities don't update or we've still not fully initialized
             # This might be a subtle error though but we just log when debugging
-            self.log_exception(self.DEBUG, e, "calling update()", timeout = 1800)
+            self.log_exception(self.DEBUG, e, "calling update()", timeout=1800)
 
     @typing.override
     def as_dict(self):

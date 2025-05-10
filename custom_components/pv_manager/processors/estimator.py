@@ -111,6 +111,8 @@ class EnergyEstimator(Estimator[float], BaseEnergyProcessor):
         class Args(Estimator.Args, BaseEnergyProcessor.Args):
             config: "EnergyEstimator.Config"
 
+    DEFAULT_NAME = "Energy estimation"
+
     OPS_DECAY: typing.Final = 0.9
     """Decay factor for the average number of observations per sample."""
 

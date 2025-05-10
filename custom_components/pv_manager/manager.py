@@ -17,9 +17,9 @@ from . import const as pmc
 from .helpers import Loggable
 
 if typing.TYPE_CHECKING:
-    from logging import Logger
     from asyncio.events import TimerHandle
     from datetime import datetime
+    from logging import Logger
     from typing import Any, Callable, Coroutine, Final, Iterable
 
     from homeassistant.config_entries import ConfigEntry

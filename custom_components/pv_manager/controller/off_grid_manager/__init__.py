@@ -17,11 +17,11 @@ from ...processors import (
 )
 from ...sensor import BatteryChargeSensor, EnergySensor, PowerSensor, Sensor
 from .energy_meters import (
-    MeterDevice,
     BaseMeter,
     BatteryMeter,
     LoadMeter,
     LossesMeter,
+    MeterDevice,
     MeterStoreType,
     PvMeter,
     SourceType,
@@ -35,8 +35,6 @@ if typing.TYPE_CHECKING:
 
     from ...controller import EntryData
     from ...controller.devices import Device
-    from ...helpers.entity import EntityArgs
-    from ...processors import ProcessorWarning
 
 
 class ControllerStoreType(typing.TypedDict):
@@ -144,6 +142,8 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
             """Maximum time between source power/energy samples before considering an error in data sampling."""
 
     TYPE = pmc.ConfigEntryType.OFF_GRID_MANAGER
+    DEFAULT_NAME = "Off grid Manager"
+
     PLATFORMS = {Sensor.PLATFORM}
 
     STORE_SAVE_PERIOD = 3600
@@ -190,59 +190,29 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
     def get_config_entry_schema(config: "Config | None") -> pmc.ConfigSchema:
         if not config:
             config = {
-                "name": "Off grid Manager",
+                "name": Controller.DEFAULT_NAME,
                 "battery": {
                     "battery_voltage_entity_id": "",
                     "battery_current_entity_id": "",
                     "battery_capacity": 100,
                 },
-                "pv": {},
-                "load": {},
+                "pv": {
+                },
+                "load": {
+                },
             }
+
         return hv.entity_schema(config) | {
             hv.vol.Required("battery"): hv.section(
-                hv.vol.Schema(
-                    {
-                        hv.req_config(
-                            "battery_voltage_entity_id", config
-                        ): hv.sensor_selector(device_class=Sensor.DeviceClass.VOLTAGE),
-                        hv.req_config(
-                            "battery_current_entity_id", config
-                        ): hv.sensor_selector(device_class=Sensor.DeviceClass.CURRENT),
-                        hv.req_config(
-                            "battery_capacity", config
-                        ): hv.positive_number_selector(unit_of_measurement="Ah"),
-                        hv.opt_config(
-                            "safe_maximum_power_w", config
-                        ): hv.positive_number_selector(unit_of_measurement="W"),
-                    }
-                ),
+                hv.vol.Schema(BatteryMeter.get_config_schema(config["battery"])),
                 {"collapsed": True},
             ),
             hv.vol.Required("pv"): hv.section(
-                hv.vol.Schema(
-                    {
-                        hv.opt_config("source_entity_id", config): hv.sensor_selector(
-                            device_class=Sensor.DeviceClass.POWER
-                        ),
-                        hv.opt_config(
-                            "safe_maximum_power_w", config
-                        ): hv.positive_number_selector(unit_of_measurement="W"),
-                    }
-                ),
+                hv.vol.Schema(PvMeter.get_config_schema(config["pv"])),
                 {"collapsed": True},
             ),
             hv.vol.Required("load"): hv.section(
-                hv.vol.Schema(
-                    {
-                        hv.opt_config("source_entity_id", config): hv.sensor_selector(
-                            device_class=Sensor.DeviceClass.POWER
-                        ),
-                        hv.opt_config(
-                            "safe_maximum_power_w", config
-                        ): hv.positive_number_selector(unit_of_measurement="W"),
-                    }
-                ),
+                hv.vol.Schema(LoadMeter.get_config_schema(config["load"])),
                 {"collapsed": True},
             ),
             hv.opt_config("maximum_latency_seconds", config): hv.time_period_selector(
@@ -260,14 +230,16 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
                     config = {
                         "name": MANAGER_ENERGY_SENSOR_NAME,
                     }
-                    return hv.entity_schema(config) | {
+                    return {
                         hv.req_config("metering_source", config): hv.select_selector(
                             options=list(SourceType)
                         ),
+                        hv.req_config("name", config): str,
                         hv.req_config("cycle_modes", config): hv.cycle_modes_selector(),
                     }
                 else:
-                    return hv.entity_schema(config) | {
+                    return {
+                        hv.req_config("name", config): str,
                         hv.req_config("cycle_modes", config): hv.cycle_modes_selector(),
                     }
 
@@ -318,34 +290,13 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
 
     def _on_init(self):
         config: "Controller.Config" = self.config  # type: ignore
-        maximum_latency_seconds = (
+        self.maximum_latency_ts = (
             config.get("maximum_latency_seconds") or MAXIMUM_LATENCY_DISABLED
         )
-        self.maximum_latency_ts = maximum_latency_seconds
 
-        self.battery_meter = BatteryMeter(
-            self,
-            config["battery"]
-            | {
-                "maximum_latency_seconds": maximum_latency_seconds,
-            },  # type: ignore
-        )
-        self.pv_meter = PvMeter(
-            self,
-            config["pv"]
-            | {
-                "maximum_latency_seconds": maximum_latency_seconds,
-                "safe_minimum_power_w": 0,
-            },
-        )
-        self.load_meter = LoadMeter(
-            self,
-            config["load"]
-            | {
-                "maximum_latency_seconds": maximum_latency_seconds,
-                "safe_minimum_power_w": 0,
-            },
-        )
+        self.battery_meter = BatteryMeter(self, config["battery"])
+        self.pv_meter = PvMeter(self, config["pv"])
+        self.load_meter = LoadMeter(self, config["load"])
 
         return super()._on_init()
 

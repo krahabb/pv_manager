@@ -23,6 +23,7 @@ class Controller(controller.Controller["EntryConfig"], EnergyProcessorDevice): #
 
 
     TYPE = pmc.ConfigEntryType.ENERGY_CALCULATOR
+    DEFAULT_NAME = "Energy"
 
     PLATFORMS = {EnergySensor.PLATFORM}
 
@@ -31,10 +32,9 @@ class Controller(controller.Controller["EntryConfig"], EnergyProcessorDevice): #
     def get_config_entry_schema(config: "Config | None") -> pmc.ConfigSchema:
         if not config:
             config = {
-                "name": "Energy",
+                "name": Controller.DEFAULT_NAME,
                 "source_entity_id": "",
                 "cycle_modes": [EnergySensor.CycleMode.TOTAL],
-                "update_period_seconds": 5,
             }
         return hv.entity_schema(config) | {
             hv.req_config("source_entity_id", config): hv.sensor_selector(
@@ -45,10 +45,10 @@ class Controller(controller.Controller["EntryConfig"], EnergyProcessorDevice): #
                 "update_period_seconds", config
             ): hv.time_period_selector(),
             hv.opt_config("maximum_latency_seconds", config): hv.time_period_selector(),
-            hv.opt_config("safe_maximum_power_w", config): hv.positive_number_selector(
+            hv.opt_config("safe_maximum_power_w", config): hv.number_selector(
                 unit_of_measurement=hac.UnitOfPower.WATT
             ),
-            hv.opt_config("safe_minimum_power_w", config): hv.positive_number_selector(
+            hv.opt_config("safe_minimum_power_w", config): hv.number_selector(
                 unit_of_measurement=hac.UnitOfPower.WATT
             ),
         }
@@ -57,7 +57,7 @@ class Controller(controller.Controller["EntryConfig"], EnergyProcessorDevice): #
         super().__init__(config_entry)
 
         config = self.config
-        name = config.get("name")
+        name = config.get("name", Controller.DEFAULT_NAME)
 
         # TODO: rename id pv_energy_sensor
         for cycle_mode in config["cycle_modes"]:

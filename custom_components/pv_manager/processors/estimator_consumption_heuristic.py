@@ -58,6 +58,8 @@ class HeuristicConsumptionEstimator(EnergyEstimator):
 
     """
 
+    DEFAULT_NAME = "Consumption estimation"
+
     history_samples: typing.Final[deque[ObservedEnergy]]
     model: typing.Final[dict[int, EnergyModel]]
 
