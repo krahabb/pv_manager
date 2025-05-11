@@ -173,7 +173,6 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
 
     TYPE = pmc.ConfigEntryType.OFF_GRID_MANAGER
     PLATFORMS = {Sensor.PLATFORM}
-    UNIQUE_SUBENTRY_TYPES = {pmc.ConfigSubentryType.MANAGER_LOSSES}
 
     STORE_SAVE_PERIOD = 3600
 

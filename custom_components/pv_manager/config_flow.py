@@ -42,10 +42,13 @@ class CommonFlow(data_entry_flow.FlowHandler if typing.TYPE_CHECKING else object
         while re-configuring. This will ensure also, that optional fields (in schema) are correctly removed
         from config should they be nulled by the user."""
         # TODO: merge subkeys since we're supporting sections in schema
-        # TODO: remove dead keys from config (keys not appearing in schema)
         data = dict(self.current_config)
         schema_keys = {key.schema for key in self.current_schema.keys()}
-        data = {key: value for key, value in self.current_config.items() if key in schema_keys}
+        data = {
+            key: value
+            for key, value in self.current_config.items()
+            if key in schema_keys
+        }
         data.update(user_input)
         for key in schema_keys:
             if key not in user_input:
@@ -59,21 +62,43 @@ class ConfigSubentryFlow(CommonFlow, config_entries.ConfigSubentryFlow):  # type
     ENTRY_TYPE: typing.ClassVar[pmc.ConfigEntryType]
     SUBENTRY_TYPE: typing.ClassVar[pmc.ConfigSubentryType]
 
+    entry_id: str
+    subentry_type: str
+    config_entry: "ConfigEntry"
+    subentry_id: str | None = None
+    config_subentry: "ConfigSubentry"
     """
     TODO: self.handler should be a tuple like: (entry_id, subentry_type)
     so we could simplify our generalization
     """
 
+    async def _async_init_controller(self):
+        assert not self.controller_class
+        self.entry_id, self.subentry_type = self.handler
+        self.controller_class = await Controller.get_controller_class(
+            self.hass, self.ENTRY_TYPE
+        )
+        self.config_entry = self.hass.config_entries.async_get_known_entry(
+            self.entry_id
+        )
+
     async def async_step_user(self, user_input: pmc.ConfigDict | None = None):
 
         if user_input:
             return self.async_create_entry(
-                title=user_input.get("name", self.SUBENTRY_TYPE),
+                title=user_input.get("name", self.subentry_type),
                 data=user_input,
                 unique_id=self.controller_class.get_config_subentry_unique_id(
-                    self.SUBENTRY_TYPE, user_input
+                    self.subentry_type, user_input
                 ),
             )
+        else:
+            await self._async_init_controller()
+            for subentry in self.config_entry.subentries.values():
+                if subentry.unique_id == self.subentry_type:
+                    self.config_subentry = subentry
+                    self.current_config = subentry.data
+                    return await self._async_show_form("reconfigure")
 
         return await self._async_show_form()
 
@@ -81,30 +106,25 @@ class ConfigSubentryFlow(CommonFlow, config_entries.ConfigSubentryFlow):  # type
 
         if user_input:
             return self.async_update_and_abort(
-                self._get_reconfigure_entry(),
-                self._get_reconfigure_subentry(),
+                self.config_entry,
+                self.config_subentry,
                 title=user_input.get("name", self.SUBENTRY_TYPE),
                 data=self.merge_input(user_input),
             )
+        else:
+            await self._async_init_controller()
+            self.subentry_id = self._reconfigure_subentry_id
+            self.config_subentry = self.config_entry.subentries[self.subentry_id]
+            self.current_config = self.config_subentry.data
 
-        self.current_config = self._get_reconfigure_subentry().data
         return await self._async_show_form()
 
-    async def _async_show_form(
-        self,
-    ):
-        if not self.controller_class:
-            self.controller_class = await Controller.get_controller_class(
-                self.hass, self.ENTRY_TYPE
-            )
-
-        self.config_entry = self.hass.config_entries.async_get_known_entry(
-            self.handler[0]
-        )
+    async def _async_show_form(self, step_id: str | None = None):
         self.current_schema = self.controller_class.get_config_subentry_schema(
-            self.config_entry, self.SUBENTRY_TYPE, self.current_config
+            self.config_entry, self.subentry_type, self.current_config
         )
         return super().async_show_form(
+            step_id=step_id,
             data_schema=vol.Schema(self.current_schema),
         )
 
