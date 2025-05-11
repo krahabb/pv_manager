@@ -89,6 +89,13 @@ CE_OFF_GRID_MANAGER = ConfigEntriesItem(
             "load": {
                 "source_entity_id": OptionalString(EntityIdEnum.LOAD_POWER),
             },
+            "estimator": {
+                "enabled": False,
+                "sampling_interval_minutes": 10,
+                "history_duration_days": 7,
+                "observation_duration_minutes": 30,
+                "weather_model": "cubic",
+            },
             "maximum_latency_seconds": 10,
         },
     }
