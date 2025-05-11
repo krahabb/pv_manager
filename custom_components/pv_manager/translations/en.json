@@ -105,16 +105,16 @@
                 "reconfigure_successful": "Reconfigure successful"
             }
         },
-        "manager_yield": {
+        "manager_losses": {
             "initiate_flow": {
-                "user": "Yield calculator"
+                "user": "Losses"
             },
             "step": {
                 "user": {
-                    "title": "Yield calculator",
+                    "title": "Losses",
                     "description": "Compute losses and yields based off sources observations",
                     "data": {
-                        "name": "Losses sensor name(s)"
+                        "name": "Sensor name(s)"
                     }
                 }
             },

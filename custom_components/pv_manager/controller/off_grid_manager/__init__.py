@@ -15,7 +15,10 @@ from ...processors import (
     SAFE_MAXIMUM_POWER_DISABLED,
     SAFE_MINIMUM_POWER_DISABLED,
 )
-from ...sensor import BatteryChargeSensor, EnergySensor, PowerSensor, Sensor
+from ...processors.estimator_consumption_heuristic import HeuristicConsumptionEstimator
+from ...processors.estimator_pvenergy_heuristic import HeuristicPVEnergyEstimator
+from ...sensor import EnergySensor, PowerSensor, Sensor
+from ..devices.estimator_processor import EnergyEstimatorDevice
 from .energy_meters import (
     BaseMeter,
     BatteryMeter,
@@ -35,6 +38,7 @@ if typing.TYPE_CHECKING:
 
     from ...controller import EntryData
     from ...controller.devices import Device
+    from ...processors.estimator import EnergyEstimator
 
 
 class ControllerStoreType(typing.TypedDict):
@@ -134,17 +138,42 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
 
     if typing.TYPE_CHECKING:
 
+        class EstimatorConfig(EnergyEstimator.Config):
+            enabled: bool
+            # pv estimator specific
+            weather_entity_id: NotRequired[str]
+            weather_model: NotRequired[str]
+
         class Config(pmc.EntityConfig, controller.Controller.Config):
             battery: BatteryMeter.Config
             pv: PvMeter.Config
             load: LoadMeter.Config
+            estimator: "Controller.EstimatorConfig"
             maximum_latency_seconds: NotRequired[int]
             """Maximum time between source power/energy samples before considering an error in data sampling."""
 
-    TYPE = pmc.ConfigEntryType.OFF_GRID_MANAGER
     DEFAULT_NAME = "Off grid Manager"
+    DEFAULT_CONFIG: "Config" = {
+        "name": DEFAULT_NAME,
+        "battery": {
+            "battery_voltage_entity_id": "",
+            "battery_current_entity_id": "",
+            "battery_capacity": 100,
+        },
+        "pv": {},
+        "load": {},
+        "estimator": {
+            "enabled": False,
+            "sampling_interval_minutes": 10,
+            "history_duration_days": 7,
+            "observation_duration_minutes": 30,
+            "weather_model": "cubic",
+        },
+    }
 
+    TYPE = pmc.ConfigEntryType.OFF_GRID_MANAGER
     PLATFORMS = {Sensor.PLATFORM}
+    UNIQUE_SUBENTRY_TYPES = {pmc.ConfigSubentryType.MANAGER_LOSSES}
 
     STORE_SAVE_PERIOD = 3600
 
@@ -189,31 +218,44 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
     @staticmethod
     def get_config_entry_schema(config: "Config | None") -> pmc.ConfigSchema:
         if not config:
-            config = {
-                "name": Controller.DEFAULT_NAME,
-                "battery": {
-                    "battery_voltage_entity_id": "",
-                    "battery_current_entity_id": "",
-                    "battery_capacity": 100,
-                },
-                "pv": {
-                },
-                "load": {
-                },
+            config = Controller.DEFAULT_CONFIG
+
+        def _estimator_schema(
+            config: "Controller.EstimatorConfig | None",
+        ) -> pmc.ConfigSchema:
+            if not config:
+                config = Controller.DEFAULT_CONFIG["estimator"]
+            return {
+                hv.req_config("enabled", config): bool,
+                hv.req_config(
+                    "sampling_interval_minutes", config
+                ): hv.time_period_selector(unit_of_measurement=hac.UnitOfTime.MINUTES),
+                hv.req_config(
+                    "observation_duration_minutes", config
+                ): hv.time_period_selector(unit_of_measurement=hac.UnitOfTime.MINUTES),
+                hv.req_config("history_duration_days", config): hv.time_period_selector(
+                    unit_of_measurement=hac.UnitOfTime.DAYS, max=30
+                ),
+                hv.opt_config(
+                    "weather_entity_id", config
+                ): hv.weather_entity_selector(),
+                hv.opt_config(
+                    "weather_model", config
+                ): HeuristicPVEnergyEstimator.weather_model_selector(),
             }
 
         return hv.entity_schema(config) | {
             hv.vol.Required("battery"): hv.section(
-                hv.vol.Schema(BatteryMeter.get_config_schema(config["battery"])),
-                {"collapsed": True},
+                BatteryMeter.get_config_schema(config.get("battery") or {}),
             ),
             hv.vol.Required("pv"): hv.section(
-                hv.vol.Schema(PvMeter.get_config_schema(config["pv"])),
-                {"collapsed": True},
+                PvMeter.get_config_schema(config.get("pv") or {}),
             ),
             hv.vol.Required("load"): hv.section(
-                hv.vol.Schema(LoadMeter.get_config_schema(config["load"])),
-                {"collapsed": True},
+                LoadMeter.get_config_schema(config.get("load") or {}),
+            ),
+            hv.vol.Required("estimator"): hv.section(
+                _estimator_schema(config.get("estimator")),
             ),
             hv.opt_config("maximum_latency_seconds", config): hv.time_period_selector(
                 unit_of_measurement=hac.UnitOfTime.SECONDS
@@ -222,7 +264,9 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
 
     @staticmethod
     def get_config_subentry_schema(
-        subentry_type: str, config: pmc.ConfigMapping | None
+        config_entry: "ConfigEntry",
+        subentry_type: str,
+        config: pmc.ConfigMapping | None,
     ) -> pmc.ConfigSchema:
         match subentry_type:
             case pmc.ConfigSubentryType.MANAGER_ENERGY_SENSOR:
@@ -230,9 +274,19 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
                     config = {
                         "name": MANAGER_ENERGY_SENSOR_NAME,
                     }
+                    _options = [t.value for t in SourceType]
+                    for subentry in config_entry.subentries.values():
+                        if (
+                            subentry.subentry_type
+                            == pmc.ConfigSubentryType.MANAGER_ENERGY_SENSOR
+                        ):
+                            try:
+                                _options.remove(subentry.data["metering_source"])
+                            except (KeyError, ValueError):
+                                pass
                     return {
                         hv.req_config("metering_source", config): hv.select_selector(
-                            options=list(SourceType)
+                            options=_options
                         ),
                         hv.req_config("name", config): str,
                         hv.req_config("cycle_modes", config): hv.cycle_modes_selector(),
@@ -243,7 +297,7 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
                         hv.req_config("cycle_modes", config): hv.cycle_modes_selector(),
                     }
 
-            case pmc.ConfigSubentryType.MANAGER_YIELD:
+            case pmc.ConfigSubentryType.MANAGER_LOSSES:
                 if not config:
                     config = {
                         "name": "Losses",
@@ -276,8 +330,8 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
         match subentry_type:
             case pmc.ConfigSubentryType.MANAGER_ENERGY_SENSOR:
                 return f"{pmc.ConfigSubentryType.MANAGER_ENERGY_SENSOR}.{user_input["metering_source"]}"
-            case pmc.ConfigSubentryType.MANAGER_YIELD:
-                return pmc.ConfigSubentryType.MANAGER_YIELD
+            case pmc.ConfigSubentryType.MANAGER_LOSSES:
+                return pmc.ConfigSubentryType.MANAGER_LOSSES
         return None
 
     def __init__(self, config_entry: "ConfigEntry"):
@@ -294,10 +348,29 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
             config.get("maximum_latency_seconds") or MAXIMUM_LATENCY_DISABLED
         )
 
-        self.battery_meter = BatteryMeter(self, config["battery"])
-        self.pv_meter = PvMeter(self, config["pv"])
-        self.load_meter = LoadMeter(self, config["load"])
+        # we need to build meters here since they need to be in place when the controller
+        # will be loading subentries during __init__
+        estimator_config = config.get("estimator")
+        if estimator_config and estimator_config.get("enabled"):
+            pv_meter_config = config["pv"] | estimator_config
+            PvMeterClass = type(
+                "PvMeterClass",
+                (PvMeter, EnergyEstimatorDevice, HeuristicPVEnergyEstimator),
+                {},
+            )
+            self.pv_meter = PvMeterClass(self, pv_meter_config)
+            load_meter_config = config["load"] | estimator_config
+            LoadMeterClass = type(
+                "LoadMeterClass",
+                (LoadMeter, EnergyEstimatorDevice, HeuristicConsumptionEstimator),
+                {},
+            )
+            self.load_meter = LoadMeterClass(self, load_meter_config)
 
+        else:
+            self.pv_meter = PvMeter(self, config["pv"])
+            self.load_meter = LoadMeter(self, config["load"])
+        self.battery_meter = BatteryMeter(self, config["battery"])
         return super()._on_init()
 
     async def async_setup(self):
@@ -361,7 +434,7 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
                             name=name,
                             config_subentry_id=subentry_id,
                         )
-            case pmc.ConfigSubentryType.MANAGER_YIELD:
+            case pmc.ConfigSubentryType.MANAGER_LOSSES:
                 assert not self.losses_meter
                 yield_config: ManagerYieldConfig = entry_data.config  # type: ignore
                 self.losses_meter = energy_meter = LossesMeter(
@@ -431,7 +504,7 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
                         )
                     # no state flush/update for entities since they're all integrating sensors
                     # and need a cycle to be computed/refreshed
-            case pmc.ConfigSubentryType.MANAGER_YIELD:
+            case pmc.ConfigSubentryType.MANAGER_LOSSES:
                 energy_meter = self.losses_meter
                 assert energy_meter
                 yield_config: ManagerYieldConfig = entry_data.config  # type: ignore
@@ -501,7 +574,7 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
             case pmc.ConfigSubentryType.MANAGER_ENERGY_SENSOR:
                 # default cleanup will suffice
                 pass
-            case pmc.ConfigSubentryType.MANAGER_YIELD:
+            case pmc.ConfigSubentryType.MANAGER_LOSSES:
                 assert self.losses_meter
                 self.losses_meter.shutdown()
 

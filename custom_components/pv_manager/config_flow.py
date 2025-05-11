@@ -25,6 +25,10 @@ class CommonFlow(data_entry_flow.FlowHandler if typing.TYPE_CHECKING else object
 
     controller_class: type[Controller] = None  # type: ignore
     """Cached Controller class instance providing schemas and rules to this flow."""
+
+    config_entry: "ConfigEntry | None" = None
+    """Cached config_entry when reconfiguring or managing subentry flows. Hoping it doesn't mess with HA."""
+
     current_schema: pmc.ConfigSchema = {}
     """current_schema is updated whenever we show a form so that the context knows the actual
     validation Schema. This is used for example to correctly merge updates in reconfigure flows."""
@@ -37,12 +41,15 @@ class CommonFlow(data_entry_flow.FlowHandler if typing.TYPE_CHECKING else object
         """Merge current input into current config allowing to preserve values which will not be changed
         while re-configuring. This will ensure also, that optional fields (in schema) are correctly removed
         from config should they be nulled by the user."""
+        # TODO: merge subkeys since we're supporting sections in schema
+        # TODO: remove dead keys from config (keys not appearing in schema)
         data = dict(self.current_config)
+        schema_keys = {key.schema for key in self.current_schema.keys()}
+        data = {key: value for key, value in self.current_config.items() if key in schema_keys}
         data.update(user_input)
-        for key in self.current_schema.keys():
-            s_key = key.schema
-            if s_key not in user_input:
-                data.pop(s_key, None)
+        for key in schema_keys:
+            if key not in user_input:
+                data.pop(key, None)
         return data
 
 
@@ -91,8 +98,11 @@ class ConfigSubentryFlow(CommonFlow, config_entries.ConfigSubentryFlow):  # type
                 self.hass, self.ENTRY_TYPE
             )
 
+        self.config_entry = self.hass.config_entries.async_get_known_entry(
+            self.handler[0]
+        )
         self.current_schema = self.controller_class.get_config_subentry_schema(
-            self.SUBENTRY_TYPE, self.current_config
+            self.config_entry, self.SUBENTRY_TYPE, self.current_config
         )
         return super().async_show_form(
             data_schema=vol.Schema(self.current_schema),
@@ -116,8 +126,6 @@ class ConfigFlow(CommonFlow, config_entries.ConfigFlow, domain=pmc.DOMAIN):  # t
     # Home Assistant will call your migrate method if the version changes
     VERSION = 1
     MINOR_VERSION = 2
-
-    reconfigure_entry: "ConfigEntry | None" = None
 
     @staticmethod
     @callback
@@ -158,19 +166,19 @@ class ConfigFlow(CommonFlow, config_entries.ConfigFlow, domain=pmc.DOMAIN):  # t
         return self.async_show_menu(menu_options=menu_options)
 
     async def async_step_reconfigure(self, user_input):
-        self.reconfigure_entry = self._get_reconfigure_entry()
+        self.config_entry = self._get_reconfigure_entry()
         return await getattr(
             self,
-            f"async_step_{pmc.ConfigEntryType.get_from_entry(self.reconfigure_entry)}",
+            f"async_step_{pmc.ConfigEntryType.get_from_entry(self.config_entry)}",
         )(None)
 
     async def _async_step_controller(
         self, controller_type: pmc.ConfigEntryType, user_input: pmc.ConfigDict | None
     ):
         if user_input:
-            if self.reconfigure_entry:
+            if self.config_entry:
                 return self.async_update_reload_and_abort(
-                    self.reconfigure_entry,
+                    self.config_entry,
                     title=user_input.get("name", controller_type),
                     data=self.merge_input(user_input),
                 )
@@ -180,8 +188,8 @@ class ConfigFlow(CommonFlow, config_entries.ConfigFlow, domain=pmc.DOMAIN):  # t
                     data=user_input,
                 )
 
-        if self.reconfigure_entry:
-            self.current_config = self.reconfigure_entry.data
+        if self.config_entry:
+            self.current_config = self.config_entry.data
         else:
             await self.async_set_unique_id(
                 ".".join((controller_type, uuid.uuid4().hex))

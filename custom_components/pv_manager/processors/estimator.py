@@ -152,7 +152,7 @@ class EnergyEstimator(Estimator[float], BaseEnergyProcessor):
         config = kwargs["config"]
         self.sampling_interval_ts: typing.Final = (
             (
-                (config.get("ampling_interval_minutes", 0) * 60)
+                (config.get("sampling_interval_minutes", 0) * 60)
                 // SAMPLING_INTERVAL_MODULO
             )
             * SAMPLING_INTERVAL_MODULO

@@ -9,7 +9,7 @@ from homeassistant.components.recorder.history import state_changes_during_perio
 from homeassistant.helpers import sun as sun_helpers
 from homeassistant.util import dt as dt_util
 
-from ..helpers import datetime_from_epoch
+from ..helpers import datetime_from_epoch, validation as hv
 from ..manager import Manager
 from .estimator import EnergyEstimator, ObservedEnergy
 
@@ -121,13 +121,6 @@ class WeatherModel:
     """Base (abstract) class modeling the influence of weather on PV production."""
 
     __slots__ = ()
-
-    @staticmethod
-    def build(model: str | None):
-        try:
-            return WEATHER_MODELS[model]()
-        except KeyError:
-            return WeatherModel()
 
     def as_dict(self):
         return {}
@@ -256,13 +249,6 @@ class CubicWeatherModel(WeatherModel):
                     self.Wc1 = wc_max
 
 
-WEATHER_MODELS: dict[str | None, type[WeatherModel]] = {
-    None: WeatherModel,
-    "simple": SimpleWeatherModel,
-    "cubic": CubicWeatherModel,
-}
-
-
 class PVEnergyEstimator(EnergyEstimator):
     """
     Base class for estimator implementations based off different approaches.
@@ -281,6 +267,12 @@ class PVEnergyEstimator(EnergyEstimator):
 
     DEFAULT_NAME = "PV energy estimation"
 
+    WEATHER_MODELS: typing.Final[dict[str | None, type[WeatherModel]]] = {
+        None: WeatherModel,
+        "simple": SimpleWeatherModel,
+        "cubic": CubicWeatherModel,
+    }
+
     weather_entity_id: str
     weather_model: typing.Final[WeatherModel]
     weather_history: typing.Final[deque[WeatherSample]]
@@ -297,6 +289,23 @@ class PVEnergyEstimator(EnergyEstimator):
         "_sunset_ts",
     )
 
+    @staticmethod
+    def weather_model_selector():
+        return hv.select_selector(
+            options=[
+                model_name
+                for model_name in PVEnergyEstimator.WEATHER_MODELS.keys()
+                if model_name
+            ],
+        )
+
+    @staticmethod
+    def weather_model_build(model: str | None):
+        try:
+            return PVEnergyEstimator.WEATHER_MODELS[model]()
+        except KeyError:
+            return WeatherModel()
+
     def __init__(
         self,
         id,
@@ -308,7 +317,9 @@ class PVEnergyEstimator(EnergyEstimator):
         )
         config = kwargs["config"]
         self.weather_entity_id = config.get("weather_entity_id", "")
-        self.weather_model = WeatherModel.build(config.get("weather_model", None))
+        self.weather_model = self.__class__.weather_model_build(
+            config.get("weather_model", None)
+        )
         self.weather_history = deque()
         self.weather_forecasts = []
         self._noon_ts: int = 0

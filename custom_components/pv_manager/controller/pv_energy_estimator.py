@@ -10,7 +10,6 @@ from .. import const as pmc, helpers
 from ..controller import EnergyEstimatorController
 from ..helpers import validation as hv
 from ..manager import Manager
-from ..processors.estimator_pvenergy import WEATHER_MODELS
 from ..processors.estimator_pvenergy_heuristic import HeuristicPVEnergyEstimator
 from ..sensor import DiagnosticSensor, EstimatorDiagnosticSensor
 
@@ -132,12 +131,10 @@ class Controller(EnergyEstimatorController["Controller.Config"], HeuristicPVEner
             "weather_model": "simple",
         }
         return EnergyEstimatorController.get_config_schema(config) | {
-            hv.opt_config("weather_entity_id", _config): hv.weather_selector(),
-            hv.opt_config("weather_model", _config): hv.select_selector(
-                options=[
-                    model_name for model_name in WEATHER_MODELS.keys() if model_name
-                ],
-            ),
+            hv.opt_config("weather_entity_id", _config): hv.weather_entity_selector(),
+            hv.opt_config(
+                "weather_model", _config
+            ): HeuristicPVEnergyEstimator.weather_model_selector(),
         }
 
     def _create_diagnostic_entities(self):

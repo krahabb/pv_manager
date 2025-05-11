@@ -16,8 +16,6 @@ from ...processors import (
     EnergyInputMode,
     SourceType,
 )
-from ...processors.estimator_consumption_heuristic import HeuristicConsumptionEstimator
-from ...processors.estimator_pvenergy_heuristic import HeuristicPVEnergyEstimator
 from ...sensor import BatteryChargeSensor, EnergySensor, PowerSensor, Sensor
 from ..devices.energy_processor import EnergyProcessorDevice
 from ..devices.estimator_processor import EnergyEstimatorDevice

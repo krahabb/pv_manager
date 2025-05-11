@@ -1,7 +1,6 @@
 import typing
 
-from homeassistant import const as hac
-from homeassistant.data_entry_flow import section
+from homeassistant import const as hac, data_entry_flow
 from homeassistant.helpers import selector
 import voluptuous as vol
 
@@ -92,7 +91,7 @@ def sensor_selector(**kwargs: "Unpack[_sensor_selector_args]"):
     )
 
 
-def weather_selector():
+def weather_entity_selector():
     return selector.EntitySelector({"filter": {"domain": "weather"}})
 
 
@@ -128,3 +127,9 @@ def pvenergy_estimator_selector():
     return selector.ConfigEntrySelector(
         selector.ConfigEntrySelectorConfig(integration=pmc.DOMAIN)
     )
+
+
+class section(data_entry_flow.section):
+
+    def __init__(self, schema: pmc.ConfigSchema, collapsed: bool = True):
+        super().__init__(vol.Schema(schema), {"collapsed": collapsed})

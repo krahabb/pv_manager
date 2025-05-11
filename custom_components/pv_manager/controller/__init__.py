@@ -72,6 +72,10 @@ class Controller[_ConfigT: pmc.EntryConfig](Device):
     that we'll (at least) forward entry setup to these platforms (even if we've still not registered any entity for those).
     This in turn allows us to later create and register entities since we'll register the add_entities callback in our platforms."""
 
+    UNIQUE_SUBENTRY_TYPES: "ClassVar[set[str]]" = set()
+    """Set of subentry_types which should only be configured once x controller/entry. The base Controller class will
+    try to automatically drop these from ConfigEntry.supported_subentry_types once they're already configured."""
+
     logger: helpers.logging.Logger
 
     config: _ConfigT
@@ -111,7 +115,9 @@ class Controller[_ConfigT: pmc.EntryConfig](Device):
 
     @staticmethod
     def get_config_subentry_schema(
-        subentry_type: str, config: pmc.ConfigMapping | None
+        config_entry: "ConfigEntry",
+        subentry_type: str,
+        config: pmc.ConfigMapping | None,
     ) -> pmc.ConfigSchema:
         # to be overriden
         return {}
@@ -145,9 +151,11 @@ class Controller[_ConfigT: pmc.EntryConfig](Device):
         )
 
         entries = self.entries
-        for subentry_id, subentry in self.config_entry.subentries.items():
+        for subentry_id, subentry in config_entry.subentries.items():
             entries[subentry_id] = entry_data = EntryData.SubEntry(subentry)
             self._subentry_add(subentry_id, entry_data)
+            if subentry.unique_id and subentry.subentry_type in self.__class__.UNIQUE_SUBENTRY_TYPES:
+                self._subentry_check_supported(subentry)
 
         if self.options.get("create_diagnostic_entities"):
             self._create_diagnostic_entities()
@@ -242,6 +250,8 @@ class Controller[_ConfigT: pmc.EntryConfig](Device):
                 # new subentry
                 entries[subentry_id] = entry_data = EntryData.SubEntry(subentry)
                 self._subentry_add(subentry_id, entry_data)
+                if subentry.unique_id and subentry.subentry_type in self.__class__.UNIQUE_SUBENTRY_TYPES:
+                    self._subentry_check_supported(subentry)
 
         if self.options != config_entry.options:
             self.options = config_entry.options  # type: ignore
@@ -274,6 +284,17 @@ class Controller[_ConfigT: pmc.EntryConfig](Device):
     async def _async_subentry_remove(self, subentry_id: str, entry_data: EntryData):
         pass
 
+    def _subentry_check_supported(self, subentry: "ConfigSubentry"):
+        """Removes the subentry_type from the config_entry.supported_subentry_types when
+        this only needs to be configured once. This should remove the type from the UI menu
+        disallowing further additions."""
+        try:
+            # maybe a little hack here...
+            del self.config_entry.supported_subentry_types[subentry.subentry_type]
+        except Exception as e:
+            self.log_exception(self.DEBUG, e, "trying reconfiguring supported_subentry_types")
+
+
 
 class EnergyEstimatorController[_ConfigT: "EnergyEstimatorController.Config"](  # type: ignore
     Controller[_ConfigT], EnergyEstimatorDevice
@@ -288,7 +309,9 @@ class EnergyEstimatorController[_ConfigT: "EnergyEstimatorController.Config"](  
 
     @staticmethod
     def get_config_subentry_schema(
-        subentry_type: str, config: pmc.ConfigMapping | None
+        config_entry: "ConfigEntry",
+        subentry_type: str,
+        config: pmc.ConfigMapping | None,
     ) -> pmc.ConfigSchema:
         match subentry_type:
             case pmc.ConfigSubentryType.ENERGY_ESTIMATOR_SENSOR:
