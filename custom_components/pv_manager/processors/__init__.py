@@ -22,15 +22,6 @@ if typing.TYPE_CHECKING:
     from .. import const as pmc
 
 
-class SourceType(enum.StrEnum):
-    BATTERY = enum.auto()
-    BATTERY_IN = enum.auto()
-    BATTERY_OUT = enum.auto()
-    LOAD = enum.auto()
-    LOSSES = enum.auto()
-    PV = enum.auto()
-
-
 class ProcessorWarning:
 
     CALLBACK_TYPE = typing.Callable[[bool], None]
@@ -76,13 +67,12 @@ class ProcessorWarning:
             listener(self.on)
 
 
-class BaseProcessor[_input_t](CallbackTracker, Loggable):
+class BaseProcessor(CallbackTracker, Loggable):
 
     if typing.TYPE_CHECKING:
 
         class Config(TypedDict):
-            source_entity_id: NotRequired[str | None]
-            update_period_seconds: NotRequired[float | None]
+            pass
 
         class Args(Loggable.Args):
             config: "BaseProcessor.Config"
@@ -90,22 +80,72 @@ class BaseProcessor[_input_t](CallbackTracker, Loggable):
     DEFAULT_NAME: "ClassVar[str]" = ""
 
     config: "Config"
-    time_ts: float
-    input: _input_t | None
 
     WARNINGS: typing.ClassVar[typing.Iterable[str]] = ()
     warnings: typing.Final[set[ProcessorWarning]]
 
     _SLOTS_ = (
         "config",
-        "source_entity_id",
-        "update_period_ts",
-        "time_ts",
-        "input",
         "warnings",
     )
 
     @classmethod
+    def get_config_schema(cls, config: "Config | None") -> "pmc.ConfigSchema":
+        return {}
+
+    def __init__(self, id, **kwargs: "Unpack[Args]"):
+        super().__init__(id, **kwargs)
+        self.config = kwargs["config"]
+        self.warnings = {
+            ProcessorWarning(self, warning_id) for warning_id in self.WARNINGS
+        }
+
+    async def async_start(self):
+        pass
+
+    def shutdown(self):
+        """Used to remove references when wanting to shutdown resources usage."""
+        super().shutdown()
+        for warning in self.warnings:
+            warning.shutdown()
+
+    def as_dict(self):
+        """Used for serialization to debug files or so.
+        Returns the configuration."""
+        return {}
+
+    def get_state_dict(self):
+        """Returns a synthetic state dict.
+        Used for debugging purposes."""
+        return {
+            "warnings": {warning.id: warning.on for warning in self.warnings},
+        }
+
+
+class SignalProcessor[_input_t](BaseProcessor):
+
+    if typing.TYPE_CHECKING:
+
+        class Config(BaseProcessor.Config):
+            source_entity_id: NotRequired[str | None]
+            update_period_seconds: NotRequired[float | None]
+
+        class Args(BaseProcessor.Args):
+            config: "SignalProcessor.Config"
+
+    config: "Config"
+    time_ts: float
+    input: _input_t | None
+
+    _SLOTS_ = (
+        "source_entity_id",
+        "update_period_ts",
+        "time_ts",
+        "input",
+    )
+
+    @classmethod
+    @typing.override
     def get_config_schema(cls, config: "Config | None") -> "pmc.ConfigSchema":
         if config is None:
             config = {}
@@ -117,43 +157,24 @@ class BaseProcessor[_input_t](CallbackTracker, Loggable):
         }
 
     def __init__(self, id, **kwargs: "Unpack[Args]"):
-        self.config = kwargs["config"]
-        self.source_entity_id = self.config.get("source_entity_id")
-        self.update_period_ts = self.config.get("update_period_seconds", 0)
         self.time_ts = None  # type: ignore
         self.input = None
-        self.warnings = {
-            ProcessorWarning(self, warning_id) for warning_id in self.WARNINGS
-        }
         super().__init__(id, **kwargs)
+        self.source_entity_id = self.config.get("source_entity_id")
+        self.update_period_ts = self.config.get("update_period_seconds", 0)
 
+    @typing.override
     async def async_start(self):
         if self.source_entity_id:
             self.track_state(
                 self.source_entity_id,
                 self._source_entity_update,
-                BaseProcessor.HassJobType.Callback,
+                SignalProcessor.HassJobType.Callback,
             )
-
         if self.update_period_ts:
             self.track_timer(self.update_period_ts, self._update_callback)
 
-    def shutdown(self):
-        """Used to remove references when wanting to shutdown resources usage."""
-        super().shutdown()
-        for warning in self.warnings:
-            warning.shutdown()
-
-    def configure(self, *args, **kwargs):
-        pass
-
-    def process(self, input: _input_t, time_ts: float) -> typing.Any:
-        self.time_ts = time_ts
-        self.input = input
-
-    def update(self, time_ts: float):
-        self.time_ts = time_ts
-
+    @typing.override
     def as_dict(self):
         """Used for serialization to debug files or so.
         Returns the configuration."""
@@ -162,12 +183,12 @@ class BaseProcessor[_input_t](CallbackTracker, Loggable):
             "update_period_ts": self.update_period_ts,
         }
 
-    def get_state_dict(self):
-        """Returns a synthetic state dict.
-        Used for debugging purposes."""
-        return {
-            "warnings": {warning.id: warning.on for warning in self.warnings},
-        }
+    def process(self, input: _input_t, time_ts: float) -> typing.Any:
+        self.time_ts = time_ts
+        self.input = input
+
+    def update(self, time_ts: float):
+        self.time_ts = time_ts
 
     def _state_convert(self, value: float, from_unit: str | None, to_unit: str | None):
         pass
@@ -181,16 +202,6 @@ class BaseProcessor[_input_t](CallbackTracker, Loggable):
         self.update(TIME_TS())
 
 
-class EnergyInputMode(enum.Enum):
-    POWER = (False, "W")
-    ENERGY = (True, "Wh")
-
-
-class EnergyProcessorWarningId(enum.StrEnum):
-    maximum_latency = enum.auto()
-    out_of_range = enum.auto()
-
-
 # these defaults are applied when the corresponding config option is not set or is 0
 # they means by default we're measuring positive energies with (almost) no latency checks
 # In code they're checked anyway but the set limits should be high enough to not pose any real issue
@@ -200,11 +211,11 @@ SAFE_MAXIMUM_POWER_DISABLED = 1e6
 SAFE_MINIMUM_POWER_DISABLED = -1e6
 
 
-class BaseEnergyProcessor(BaseProcessor[float]):
+class SignalEnergyProcessor(SignalProcessor[float]):
 
     if typing.TYPE_CHECKING:
 
-        class Config(BaseProcessor.Config):
+        class Config(SignalProcessor.Config):
             maximum_latency_seconds: NotRequired[float]
             """Maximum time between source pv power/energy samples before considering an error in data sampling."""
             safe_maximum_power_w: NotRequired[float]
@@ -212,10 +223,12 @@ class BaseEnergyProcessor(BaseProcessor[float]):
             safe_minimum_power_w: NotRequired[float]
             """Minimum power expected at the input used to filter out outliers from processing. If not set disables the check."""
 
-        class Args(BaseProcessor.Args):
-            config: "BaseEnergyProcessor.Config"
+        class Args(SignalProcessor.Args):
+            config: "SignalEnergyProcessor.Config"
 
-    InputMode = EnergyInputMode
+    class InputMode(enum.Enum):
+        POWER = (False, "W")
+        ENERGY = (True, "Wh")
 
     input_mode: typing.Final[bool]
     input_unit: typing.Final[str | None]
@@ -224,7 +237,9 @@ class BaseEnergyProcessor(BaseProcessor[float]):
 
     output: float
 
-    WARNINGS = EnergyProcessorWarningId
+    class WARNINGS(enum.StrEnum):
+        maximum_latency = enum.auto()
+        out_of_range = enum.auto()
 
     # built and set automatically on super().__init__
     warning_maximum_latency: ProcessorWarning
@@ -248,6 +263,7 @@ class BaseEnergyProcessor(BaseProcessor[float]):
     )
 
     @classmethod
+    @typing.override
     def get_config_schema(cls, config: "Config | None") -> "pmc.ConfigSchema":
         if config is None:
             config = {}
@@ -292,6 +308,31 @@ class BaseEnergyProcessor(BaseProcessor[float]):
         self._energy_listeners = set()
         super().__init__(id, **kwargs)
 
+    @typing.override
+    def shutdown(self):
+        self._energy_listeners.clear()
+        super().shutdown()
+
+    @typing.override
+    def as_dict(self):
+        return {
+            "maximum_latency_seconds": (
+                None
+                if self.maximum_latency_ts is MAXIMUM_LATENCY_DISABLED
+                else self.maximum_latency_ts
+            ),
+            "safe_maximum_power_w": (
+                None
+                if self.safe_maximum_power is SAFE_MAXIMUM_POWER_DISABLED
+                else self.safe_maximum_power
+            ),
+            "safe_minimum_power_w": (
+                None
+                if self.safe_minimum_power is SAFE_MINIMUM_POWER_DISABLED
+                else self.safe_minimum_power
+            ),
+        }
+
     def listen_energy(self, callback_func: ENERGY_LISTENER_TYPE):
         self._energy_listeners.add(callback_func)
 
@@ -303,16 +344,7 @@ class BaseEnergyProcessor(BaseProcessor[float]):
 
         return _unsub
 
-    @typing.override
-    def shutdown(self):
-        self._energy_listeners.clear()
-        super().shutdown()
-
-    @typing.override
-    def configure(
-        self,
-        input_mode: EnergyInputMode,
-    ):
+    def configure(self, input_mode: InputMode):
         self.input_mode, self.input_unit = input_mode.value  # type: ignore
 
     @typing.override
@@ -390,26 +422,6 @@ class BaseEnergyProcessor(BaseProcessor[float]):
             # i.e. when entities don't update or we've still not fully initialized
             # This might be a subtle error though but we just log when debugging
             self.log_exception(self.DEBUG, e, "calling update()", timeout=1800)
-
-    @typing.override
-    def as_dict(self):
-        return {
-            "maximum_latency_seconds": (
-                None
-                if self.maximum_latency_ts is MAXIMUM_LATENCY_DISABLED
-                else self.maximum_latency_ts
-            ),
-            "safe_maximum_power_w": (
-                None
-                if self.safe_maximum_power is SAFE_MAXIMUM_POWER_DISABLED
-                else self.safe_maximum_power
-            ),
-            "safe_minimum_power_w": (
-                None
-                if self.safe_minimum_power is SAFE_MINIMUM_POWER_DISABLED
-                else self.safe_minimum_power
-            ),
-        }
 
     @typing.override
     def _source_entity_update(

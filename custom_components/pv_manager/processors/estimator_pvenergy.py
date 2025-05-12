@@ -11,7 +11,7 @@ from homeassistant.util import dt as dt_util
 
 from ..helpers import datetime_from_epoch, validation as hv
 from ..manager import Manager
-from .estimator import EnergyEstimator, ObservedEnergy
+from .estimator import SignalEnergyEstimator
 
 if typing.TYPE_CHECKING:
     from typing import NotRequired, Unpack
@@ -91,7 +91,7 @@ class WeatherSample:
 
 
 @dataclass(slots=True)
-class ObservedPVEnergy(ObservedEnergy):
+class ObservedPVEnergy(SignalEnergyEstimator.Sample):
     """PV energy/power history data extraction. This sample is used to build energy production
     in a time window (1 hour by design) by querying either a PV power sensor or a PV energy sensor.
     Building from PV power should be preferrable due to the 'failable' nature of energy accumulation.
@@ -112,7 +112,7 @@ class ObservedPVEnergy(ObservedEnergy):
         sampling_interval_ts: int,
         weather: WeatherSample | None,
     ):
-        ObservedEnergy.__init__(self, time_ts, sampling_interval_ts)
+        SignalEnergyEstimator.Sample.__init__(self, time_ts, sampling_interval_ts)
         self.weather = weather
         self.sun_azimuth = self.sun_zenith = self.SUN_NOT_SET
 
@@ -249,7 +249,7 @@ class CubicWeatherModel(WeatherModel):
                     self.Wc1 = wc_max
 
 
-class PVEnergyEstimator(EnergyEstimator):
+class PVEnergyEstimator(SignalEnergyEstimator):
     """
     Base class for estimator implementations based off different approaches.
     Beside the current HeuristicEstimator we should think about using neural networks for implementation.
@@ -258,11 +258,11 @@ class PVEnergyEstimator(EnergyEstimator):
 
     if typing.TYPE_CHECKING:
 
-        class Config(EnergyEstimator.Config):
+        class Config(SignalEnergyEstimator.Config):
             weather_entity_id: NotRequired[str]
             weather_model: NotRequired[str]
 
-        class Args(EnergyEstimator.Args):
+        class Args(SignalEnergyEstimator.Args):
             config: "PVEnergyEstimator.Config"
 
     DEFAULT_NAME = "PV energy estimation"
@@ -350,7 +350,7 @@ class PVEnergyEstimator(EnergyEstimator):
         Used for debugging purposes."""
         return super().get_state_dict() | {
             "weather_model": self.weather_model.as_dict(),
-            "weather": self.get_weather_at(self.observed_time_ts),
+            "weather": self.get_weather_at(self.estimation_time_ts),
         }
 
     def _observed_energy_new(self, time_ts: int):

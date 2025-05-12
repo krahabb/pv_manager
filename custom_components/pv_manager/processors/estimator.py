@@ -12,7 +12,7 @@ from homeassistant.components.recorder import get_instance as recorder_instance,
 from homeassistant.helpers.json import save_json
 from homeassistant.util import dt as dt_util
 
-from . import TIME_TS, BaseEnergyProcessor, BaseProcessor
+from . import TIME_TS, BaseProcessor, SignalEnergyProcessor
 from .. import const as pmc
 from ..helpers import datetime_from_epoch
 from ..manager import Manager
@@ -24,7 +24,7 @@ if typing.TYPE_CHECKING:
 SAMPLING_INTERVAL_MODULO = 300  # 5 minutes
 
 
-class Estimator[_input_t](BaseProcessor[_input_t]):
+class Estimator(BaseProcessor):
 
     if typing.TYPE_CHECKING:
 
@@ -35,18 +35,30 @@ class Estimator[_input_t](BaseProcessor[_input_t]):
             pass
 
     UPDATE_LISTENER_TYPE = typing.Callable[["Estimator"], None]
+
+    estimation_time_ts: int
     _update_listeners: typing.Final[set[UPDATE_LISTENER_TYPE]]
 
-    _SLOTS_ = ("_update_listeners",)
+    _SLOTS_ = (
+        "estimation_time_ts",
+        "_update_listeners",
+    )
 
     def __init__(self, id, **kwargs: "Unpack[Args]"):
-        self._update_listeners = set()
         super().__init__(id, **kwargs)
+        self.estimation_time_ts = 0
+        self._update_listeners = set()
 
     @typing.override
     def shutdown(self):
         self._update_listeners.clear()
         super().shutdown()
+
+    @typing.override
+    def get_state_dict(self):
+        return super().get_state_dict() | {
+            "estimation_time": datetime_from_epoch(self.estimation_time_ts).isoformat(),
+        }
 
     # interface: self
     def listen_update(self, callback_func: UPDATE_LISTENER_TYPE):
@@ -66,80 +78,158 @@ class Estimator[_input_t](BaseProcessor[_input_t]):
             listener(self)
 
 
-@dataclasses.dataclass(slots=True)
-class ObservedEnergy:
-    time: dt.datetime
-    """The sample time start"""
+class EnergyEstimator(Estimator):
 
-    time_ts: int
-    time_next_ts: int
+    if typing.TYPE_CHECKING:
 
-    energy: float
-    """The effective accumulated energy considering interpolation at the (time) limits"""
+        class Config(Estimator.Config):
+            sampling_interval_minutes: int
+            """Time resolution of model data"""
 
-    samples: int
-    """Number of samples in the time window (could be seen as a quality indicator of sampling)"""
+        class Args(Estimator.Args):
+            config: "EnergyEstimator.Config"
 
-    def __init__(
-        self,
-        time_ts: int,
-        sampling_interval_ts: int,
+    config: "EnergyEstimator.Config"
+
+    today_ts: int
+    tomorrow_ts: int
+    today_energy: float
+
+    _SLOTS_ = (
+        "sampling_interval_ts",
+        "today_ts",  # UTC time of local midnight (start of today)
+        "tomorrow_ts",  # UTC time of local midnight tomorrow (start of tomorrow)
+        "today_energy",  # effective energy measured today
+    )
+
+    def __init__(self, id, **kwargs):
+        super().__init__(id, **kwargs)
+        config = self.config
+        self.sampling_interval_ts: typing.Final = (
+            int(
+                (
+                    (config.get("sampling_interval_minutes", 0) * 60)
+                    // SAMPLING_INTERVAL_MODULO
+                )
+                * SAMPLING_INTERVAL_MODULO
+            )
+            or SAMPLING_INTERVAL_MODULO
+        )
+        self.today_ts = 0
+        self.tomorrow_ts = 0
+        self.today_energy = 0
+
+    @typing.override
+    def as_dict(self):
+        return super().as_dict() | {
+            "sampling_interval_minutes": self.sampling_interval_ts / 60,
+        }
+
+    @typing.override
+    def get_state_dict(self):
+        return super().get_state_dict() | {
+            "today": datetime_from_epoch(self.today_ts).isoformat(),
+            "tomorrow": datetime_from_epoch(self.tomorrow_ts).isoformat(),
+            "today_energy": self.today_energy,
+            "today_energy_max": self.get_estimated_energy_max(
+                self.today_ts, self.tomorrow_ts
+            ),
+            "today_energy_min": self.get_estimated_energy_min(
+                self.today_ts, self.tomorrow_ts
+            ),
+        }
+
+    @abc.abstractmethod
+    def get_estimated_energy(self, time_begin_ts: float, time_end_ts: float) -> float:
+        """
+        Returns the estimated energy in the (forward) time interval at current estimator state.
+        """
+        return 0
+
+    @abc.abstractmethod
+    def get_estimated_energy_max(
+        self, time_begin_ts: float | int, time_end_ts: float | int
     ):
-        time_ts -= time_ts % sampling_interval_ts
-        self.time = datetime_from_epoch(time_ts)
-        self.time_ts = time_ts
-        self.time_next_ts = time_ts + sampling_interval_ts
-        self.energy = 0
-        self.samples = 0
+        """
+        Returns the estimated maximum energy (the 'capacity' of the plant) in the (forward) time
+        interval at current estimator state.
+        """
+        return 0
+
+    @abc.abstractmethod
+    def get_estimated_energy_min(
+        self, time_begin_ts: float | int, time_end_ts: float | int
+    ):
+        """
+        Returns the estimated minimum energy in the (forward) time
+        interval at current estimator state.
+        """
+        return 0
 
 
-class EnergyEstimator(Estimator[float], BaseEnergyProcessor):
+class SignalEnergyEstimator(EnergyEstimator, SignalEnergyProcessor):
     """
     Base class for all (energy) estimators.
     """
 
     if typing.TYPE_CHECKING:
 
-        class Config(Estimator.Config, BaseEnergyProcessor.Config):
-            sampling_interval_minutes: int
-            """Time resolution of model data"""
+        class Config(EnergyEstimator.Config, SignalEnergyProcessor.Config):
             observation_duration_minutes: int  # minutes
             """The time window for calculating current energy production from incoming energy observation."""
             history_duration_days: int
             """Number of (backward) days of data to keep in the model (used to build the estimates for the time forward)."""
 
-        class Args(Estimator.Args, BaseEnergyProcessor.Args):
-            config: "EnergyEstimator.Config"
+        class Args(EnergyEstimator.Args, SignalEnergyProcessor.Args):
+            config: "SignalEnergyEstimator.Config"
 
     DEFAULT_NAME = "Energy estimation"
 
     OPS_DECAY: typing.Final = 0.9
     """Decay factor for the average number of observations per sample."""
 
+    config: "SignalEnergyEstimator.Config"
     source_entity_id: str
     tzinfo: dt.tzinfo
 
-    """Contains warnings and any other useful operating condition of the estimator."""
-    observed_samples: typing.Final[deque[ObservedEnergy]]
-    observed_time_ts: int
-    today_ts: int
-    tomorrow_ts: int
-    today_energy: float
-    _observed_sample_curr: ObservedEnergy
+    @dataclasses.dataclass(slots=True)
+    class Sample:
+        time: dt.datetime
+        """The sample time start"""
+
+        time_ts: int
+        time_next_ts: int
+
+        energy: float
+        """The effective accumulated energy considering interpolation at the (time) limits"""
+
+        samples: int
+        """Number of samples in the time window (could be seen as a quality indicator of sampling)"""
+
+        def __init__(
+            self,
+            time_ts: int,
+            sampling_interval_ts: int,
+        ):
+            time_ts -= time_ts % sampling_interval_ts
+            self.time = datetime_from_epoch(time_ts)
+            self.time_ts = time_ts
+            self.time_next_ts = time_ts + sampling_interval_ts
+            self.energy = 0
+            self.samples = 0
+
+    observed_samples: typing.Final[deque[Sample]]
+
+    _observed_sample_curr: Sample
 
     _SLOTS_ = (
         # configuration
-        "sampling_interval_ts",
         "history_duration_ts",
         "observation_duration_ts",
         "tzinfo",
         # state
         "observed_samples",
-        "observed_time_ts",  # time of most recent observed sample
         "observations_per_sample_avg",
-        "today_ts",  # UTC time of local midnight (start of today)
-        "tomorrow_ts",  # UTC time of local midnight tomorrow (start of tomorrow)
-        "today_energy",  # energy accumulated today
         "_observed_sample_curr",
         "_restore_history_exit",
     )
@@ -149,30 +239,19 @@ class EnergyEstimator(Estimator[float], BaseEnergyProcessor):
         id,
         **kwargs: "Unpack[Args]",
     ):
-        config = kwargs["config"]
-        self.sampling_interval_ts: typing.Final = (
-            (
-                (config.get("sampling_interval_minutes", 0) * 60)
-                // SAMPLING_INTERVAL_MODULO
-            )
-            * SAMPLING_INTERVAL_MODULO
-        ) or SAMPLING_INTERVAL_MODULO
-        self.history_duration_ts: typing.Final = (
+        super().__init__(id, **kwargs)
+        config = self.config
+        self.history_duration_ts: typing.Final = int(
             config.get("history_duration_days", 0) * 86400
         )
-        self.observation_duration_ts: typing.Final = (
+        self.observation_duration_ts: typing.Final = int(
             config.get("observation_duration_minutes", 20) * 60
         )
         self.tzinfo = dt_util.get_default_time_zone()
         self.observed_samples = deque()
-        self.observed_time_ts = 0
         self.observations_per_sample_avg = 0
-        self.today_ts = 0
-        self.tomorrow_ts = 0
-        self.today_energy = 0
         # do not define here..we're relying on AttributeError for proper initialization
         # self._history_sample_curr = None
-        super().__init__(id, **kwargs)
 
     @typing.override
     async def async_start(self):
@@ -195,7 +274,6 @@ class EnergyEstimator(Estimator[float], BaseEnergyProcessor):
     def as_dict(self):
         return super().as_dict() | {
             "tz_info": str(self.tzinfo),
-            "sampling_interval_minutes": self.sampling_interval_ts / 60,
             "observation_duration_minutes": self.observation_duration_ts / 60,
             "history_duration_days": self.history_duration_ts / 86400,
         }
@@ -203,19 +281,7 @@ class EnergyEstimator(Estimator[float], BaseEnergyProcessor):
     @typing.override
     def get_state_dict(self):
         return super().get_state_dict() | {
-            "today": datetime_from_epoch(self.today_ts).isoformat(),
-            # "tomorrow_ts": estimator._tomorrow_local_ts,
-            "tomorrow": datetime_from_epoch(self.tomorrow_ts).isoformat(),
-            # "observed_time_ts": estimator.observed_time_ts,
-            "observed_time": datetime_from_epoch(self.observed_time_ts).isoformat(),
             "observations_per_sample_avg": self.observations_per_sample_avg,
-            "today_energy": self.today_energy,
-            "today_energy_max": self.get_estimated_energy_max(
-                self.today_ts, self.tomorrow_ts
-            ),
-            "today_energy_min": self.get_estimated_energy_min(
-                self.today_ts, self.tomorrow_ts
-            ),
         }
 
     @typing.override
@@ -231,7 +297,7 @@ class EnergyEstimator(Estimator[float], BaseEnergyProcessor):
         try:
             sample_curr = self._observed_sample_curr
             prev_time_ts = self.time_ts
-            energy = BaseEnergyProcessor.process(self, input, time_ts)
+            energy = SignalEnergyProcessor.process(self, input, time_ts)
 
             if sample_curr.time_ts < time_ts < sample_curr.time_next_ts:
                 if energy is not None:
@@ -257,11 +323,11 @@ class EnergyEstimator(Estimator[float], BaseEnergyProcessor):
                     sample_curr.samples += 1
 
             self.observations_per_sample_avg = (
-                self.observations_per_sample_avg * EnergyEstimator.OPS_DECAY
-                + sample_prev.samples * (1 - EnergyEstimator.OPS_DECAY)
+                self.observations_per_sample_avg * SignalEnergyEstimator.OPS_DECAY
+                + sample_prev.samples * (1 - SignalEnergyEstimator.OPS_DECAY)
             )
             self.observed_samples.append(sample_prev)
-            self.observed_time_ts = sample_prev.time_next_ts
+            self.estimation_time_ts = sample_prev.time_next_ts
 
             if sample_prev.time_ts >= self.tomorrow_ts:
                 # new day
@@ -321,36 +387,9 @@ class EnergyEstimator(Estimator[float], BaseEnergyProcessor):
             # no observations though
             return (0, 0, 0)
 
-    @abc.abstractmethod
-    def get_estimated_energy(self, time_begin_ts: float, time_end_ts: float) -> float:
-        """
-        Returns the estimated energy in the (forward) time interval at current estimator state.
-        """
-        return 0
-
-    @abc.abstractmethod
-    def get_estimated_energy_max(
-        self, time_begin_ts: float | int, time_end_ts: float | int
-    ):
-        """
-        Returns the estimated maximum energy (the 'capacity' of the plant) in the (forward) time
-        interval at current estimator state.
-        """
-        return 0
-
-    @abc.abstractmethod
-    def get_estimated_energy_min(
-        self, time_begin_ts: float | int, time_end_ts: float | int
-    ):
-        """
-        Returns the estimated minimum energy in the (forward) time
-        interval at current estimator state.
-        """
-        return 0
-
     def _observed_energy_new(self, time_ts: int):
         """Called when starting data collection for a new ObservedEnergy sample."""
-        return ObservedEnergy(time_ts, self.sampling_interval_ts)
+        return SignalEnergyEstimator.Sample(time_ts, self.sampling_interval_ts)
 
     def _observed_energy_daystart(self, time_ts: int):
         """Called when starting a new day in observations."""
@@ -370,7 +409,7 @@ class EnergyEstimator(Estimator[float], BaseEnergyProcessor):
         self.today_energy = 0
 
     @abc.abstractmethod
-    def _observed_energy_history_add(self, history_sample: ObservedEnergy):
+    def _observed_energy_history_add(self, history_sample: Sample):
         """Called when an ObservedEnergy sample exits the observation window and enters history."""
         pass
 
@@ -418,3 +457,198 @@ class EnergyEstimator(Estimator[float], BaseEnergyProcessor):
                 f"model_{self.source_entity_id}_{self.__class__.__name__.lower()}.json",
             )
             save_json(filepath, self.as_dict())
+
+
+class EnergyBalanceEstimator(EnergyEstimator):
+    """
+    This class computes the balance (surplus vs deficit) between a production estimate
+    and a consumption estimate (where production is likely pv energy and consumption is the load).
+    This acts as a simpler base for a Battery estimator where the storage must also be taken care of.
+    """
+
+    if typing.TYPE_CHECKING:
+
+        class Config(EnergyEstimator.Config):
+            forecast_duration_hours: int
+
+        class Args(EnergyEstimator.Args):
+            config: "EnergyBalanceEstimator.Config"
+
+    class Forecast:
+
+        time_ts: float
+        production: float
+        consumption: float
+
+        __slots__ = (
+            "time_ts",
+            "production",
+            "consumption",
+        )
+
+        def __init__(self):
+            self.time_ts = 0
+            self.production = 0
+            self.consumption = 0
+
+    production_estimator: "SignalEnergyEstimator | None"
+    consumption_estimator: "SignalEnergyEstimator | None"
+
+    forecasts: list[Forecast]
+
+    _SLOTS_ = (
+        "forecast_duration_ts",
+        "production_estimator",
+        "consumption_estimator",
+        "forecasts",
+        "_production_estimator_unsub",
+        "_consumption_estimator_unsub",
+    )
+
+    def __init__(self, id, **kwargs: "Unpack[Args]"):
+        super().__init__(id, **kwargs)
+        config = self.config
+        self.forecast_duration_ts = (
+            int(
+                ((config.get("forecast_duration_hours") or 1) * 3600)
+                // self.sampling_interval_ts
+            )
+            * self.sampling_interval_ts
+        )
+        self.production_estimator = None
+        self.consumption_estimator = None
+        self.forecasts = [
+            self.__class__.Forecast()
+            for i in range(self.forecast_duration_ts // self.sampling_interval_ts)
+        ]
+        self._production_estimator_unsub = None
+        self._consumption_estimator_unsub = None
+
+    def shutdown(self):
+        if self._production_estimator_unsub:
+            self._production_estimator_unsub()
+            self._production_estimator_unsub = None
+        if self._consumption_estimator_unsub:
+            self._consumption_estimator_unsub()
+            self._consumption_estimator_unsub = None
+        self.production_estimator = None
+        self.consumption_estimator = None
+        return super().shutdown()
+
+    def connect_production(self, estimator: "SignalEnergyEstimator"):
+        if self._production_estimator_unsub:
+            self._production_estimator_unsub()
+        self.production_estimator = estimator
+        self._production_estimator_unsub = estimator.listen_update(
+            self._production_estimator_update
+        )
+
+    def connect_consumption(self, estimator: "SignalEnergyEstimator"):
+        if self._consumption_estimator_unsub:
+            self._consumption_estimator_unsub()
+        self.consumption_estimator = estimator
+        self._consumption_estimator_unsub = estimator.listen_update(
+            self._consumption_estimator_update
+        )
+
+    @typing.override
+    def update_estimate(self):
+
+        production_estimator = self.production_estimator
+        consumption_estimator = self.consumption_estimator
+
+        self.today_energy = 0
+        if production_estimator:
+            self.today_energy = production_estimator.today_energy
+            if self.estimation_time_ts < production_estimator.estimation_time_ts:
+                self.estimation_time_ts = production_estimator.estimation_time_ts
+                if self.today_ts < production_estimator.today_ts:
+                    self.today_ts = production_estimator.today_ts
+                    self.tomorrow_ts = production_estimator.tomorrow_ts
+
+        if consumption_estimator:
+            self.today_energy -= consumption_estimator.today_energy
+            if self.estimation_time_ts < consumption_estimator.estimation_time_ts:
+                self.estimation_time_ts = consumption_estimator.estimation_time_ts
+                if self.today_ts < consumption_estimator.today_ts:
+                    self.today_ts = consumption_estimator.today_ts
+                    self.tomorrow_ts = consumption_estimator.tomorrow_ts
+
+        forecast_ts = self.estimation_time_ts
+        sampling_interval_ts = self.sampling_interval_ts
+        for forecast in iter(self.forecasts):
+            forecast_next_ts = forecast_ts + sampling_interval_ts
+            forecast.time_ts = forecast_ts
+            if production_estimator:
+                forecast.production = production_estimator.get_estimated_energy(
+                    forecast_ts, forecast_next_ts
+                )
+            else:
+                forecast.production = 0
+            if consumption_estimator:
+                forecast.consumption = consumption_estimator.get_estimated_energy(
+                    forecast_ts, forecast_next_ts
+                )
+            else:
+                forecast.consumption = 0
+            forecast_ts = forecast_next_ts
+
+        for listener in self._update_listeners:
+            listener(self)
+
+    @typing.override
+    def get_estimated_energy(self, time_begin_ts: float | int, time_end_ts: float | int) -> float:
+        """
+        Returns the estimated energy in the (forward) time interval at current estimator state.
+        """
+        energy = 0
+
+        time_begin_ts = int(time_begin_ts)
+        time_end_ts = int(time_end_ts)
+        sampling_interval_ts = self.sampling_interval_ts
+        for forecast in iter(self.forecasts):
+            if forecast.time_ts >= time_end_ts:
+                break
+
+            forecast_next_ts = forecast.time_ts + sampling_interval_ts
+            if time_begin_ts >= forecast_next_ts:
+                continue
+
+            if time_end_ts <= forecast_next_ts:
+                energy += (forecast.production - forecast.consumption) * (time_end_ts - time_begin_ts)
+                break
+            else:
+                energy += (forecast.production - forecast.consumption) * (forecast_next_ts - time_begin_ts)
+
+            time_begin_ts = forecast_next_ts
+
+        return energy / sampling_interval_ts
+
+
+    @typing.override
+    def get_estimated_energy_max(
+        self, time_begin_ts: float | int, time_end_ts: float | int
+    ):
+        """
+        Returns the estimated maximum energy (the 'capacity' of the plant) in the (forward) time
+        interval at current estimator state.
+        """
+        # TODO
+        return self.get_estimated_energy(time_begin_ts, time_end_ts)
+
+    @typing.override
+    def get_estimated_energy_min(
+        self, time_begin_ts: float | int, time_end_ts: float | int
+    ):
+        """
+        Returns the estimated minimum energy in the (forward) time
+        interval at current estimator state.
+        """
+        # TODO
+        return self.get_estimated_energy(time_begin_ts, time_end_ts)
+
+    def _production_estimator_update(self, estimator: "Estimator"):
+        self.update_estimate()
+
+    def _consumption_estimator_update(self, estimator: "Estimator"):
+        self.update_estimate()

@@ -2,13 +2,12 @@ import typing
 
 from homeassistant import const as hac
 
-from . import Device
+from . import ProcessorDevice, SignalEnergyProcessorDevice
 from ... import const as pmc
 from ...helpers import validation as hv
 from ...helpers.entity import EstimatorEntity
-from ...processors.estimator import EnergyEstimator, Estimator
+from ...processors.estimator import EnergyEstimator, Estimator, SignalEnergyEstimator
 from ...sensor import Sensor
-from .energy_processor import EnergyProcessorDevice
 
 if typing.TYPE_CHECKING:
     from typing import Any, Callable, ClassVar, Coroutine, Final, Unpack
@@ -16,13 +15,13 @@ if typing.TYPE_CHECKING:
     from ...helpers.entity import Entity
 
 
-class EstimatorDevice(Estimator, Device):
+class EstimatorDevice(Estimator, ProcessorDevice):
     if typing.TYPE_CHECKING:
 
-        class Config(Estimator.Config, Device.Config):
+        class Config(Estimator.Config, ProcessorDevice.Config):
             pass
 
-        class Args(Estimator.Args, Device.Args):
+        class Args(Estimator.Args, ProcessorDevice.Args):
             config: "EstimatorDevice.Config"
 
 
@@ -65,8 +64,8 @@ class EnergyEstimatorSensor(EstimatorEntity, Sensor):
     def on_estimator_update(self, estimator: EnergyEstimator):
         self.native_value = round(
             estimator.get_estimated_energy(
-                estimator.observed_time_ts,
-                estimator.observed_time_ts + self.forecast_duration_ts,
+                estimator.estimation_time_ts,
+                estimator.estimation_time_ts + self.forecast_duration_ts,
             )
         )
         if self.added_to_hass:
@@ -81,7 +80,7 @@ class TodayEnergyEstimatorSensor(EnergyEstimatorSensor):
         self.native_value = round(
             estimator.today_energy
             + estimator.get_estimated_energy(
-                estimator.observed_time_ts, estimator.tomorrow_ts
+                estimator.estimation_time_ts, estimator.tomorrow_ts
             )
         )
         if self.added_to_hass:
@@ -101,22 +100,56 @@ class TomorrowEnergyEstimatorSensor(EnergyEstimatorSensor):
             self._async_write_ha_state()
 
 
-class EnergyEstimatorDevice(EnergyEstimator, EstimatorDevice, EnergyProcessorDevice):
+class EnergyEstimatorDevice(EnergyEstimator, EstimatorDevice):
 
     if typing.TYPE_CHECKING:
 
         class Config(
             EnergyEstimator.Config,
             EstimatorDevice.Config,
-            EnergyProcessorDevice.Config,
+            pmc.EntityConfig,
+        ):
+            pass
+
+        class Args(EnergyEstimator.Args, EstimatorDevice.Args):
+            config: "EnergyEstimatorDevice.Config"
+
+    def __init__(self, id, **kwargs: "Unpack[Args]"):
+
+        super().__init__(id, **kwargs)
+
+        TodayEnergyEstimatorSensor(
+            self,
+            "today_energy_estimate",
+            name=f"{self.config.get("name", self.__class__.DEFAULT_NAME)} (today)",
+        )
+        TomorrowEnergyEstimatorSensor(
+            self,
+            "tomorrow_energy_estimate",
+            name=f"{self.config.get("name", self.__class__.DEFAULT_NAME)} (tomorrow)",
+        )
+
+
+class SignalEnergyEstimatorDevice(
+    SignalEnergyEstimator, EnergyEstimatorDevice, SignalEnergyProcessorDevice
+):
+
+    if typing.TYPE_CHECKING:
+
+        class Config(
+            SignalEnergyEstimator.Config,
+            EstimatorDevice.Config,
+            SignalEnergyProcessorDevice.Config,
             pmc.EntityConfig,
         ):
             pass
 
         class Args(
-            EnergyEstimator.Args, EstimatorDevice.Args, EnergyProcessorDevice.Args
+            SignalEnergyEstimator.Args,
+            EstimatorDevice.Args,
+            SignalEnergyProcessorDevice.Args,
         ):
-            config: "EnergyEstimatorDevice.Config"
+            config: "SignalEnergyEstimatorDevice.Config"
 
     @classmethod
     def get_config_schema(cls, config: "Config | None") -> "pmc.ConfigSchema":
@@ -154,18 +187,3 @@ class EnergyEstimatorDevice(EnergyEstimator, EstimatorDevice, EnergyProcessorDev
                 unit_of_measurement=hac.UnitOfPower.WATT
             ),
         }
-
-    def __init__(self, id, **kwargs: "Unpack[Args]"):
-
-        super().__init__(id, **kwargs)
-
-        TodayEnergyEstimatorSensor(
-            self,
-            "today_energy_estimate",
-            name=f"{self.config.get("name", self.__class__.DEFAULT_NAME)} (today)",
-        )
-        TomorrowEnergyEstimatorSensor(
-            self,
-            "tomorrow_energy_estimate",
-            name=f"{self.config.get("name", self.__class__.DEFAULT_NAME)} (tomorrow)",
-        )

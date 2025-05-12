@@ -1,3 +1,4 @@
+import enum
 from time import time as TIME_TS
 import typing
 
@@ -12,13 +13,10 @@ from ...helpers import validation as hv
 from ...processors import (
     SAFE_MAXIMUM_POWER_DISABLED,
     SAFE_MINIMUM_POWER_DISABLED,
-    BaseEnergyProcessor,
-    EnergyInputMode,
-    SourceType,
+    SignalEnergyProcessor,
 )
 from ...sensor import BatteryChargeSensor, EnergySensor, PowerSensor, Sensor
-from ..devices.energy_processor import EnergyProcessorDevice
-from ..devices.estimator_processor import EnergyEstimatorDevice
+from ..devices import SignalEnergyProcessorDevice
 
 if typing.TYPE_CHECKING:
     from typing import Any, Final, NotRequired, TypedDict, Unpack
@@ -26,7 +24,7 @@ if typing.TYPE_CHECKING:
     from homeassistant.core import Event, EventStateChangedData
 
     from . import Controller as OffGridManager
-    from ...processors.estimator import EnergyEstimator
+    from ...processors.estimator import SignalEnergyEstimator
 
 
 VOLTAGE_UNIT = hac.UnitOfElectricPotential.VOLT
@@ -35,19 +33,28 @@ POWER_UNIT = hac.UnitOfPower.WATT
 ENERGY_UNIT = hac.UnitOfEnergy.WATT_HOUR
 
 
+class SourceType(enum.StrEnum):
+    BATTERY = enum.auto()
+    BATTERY_IN = enum.auto()
+    BATTERY_OUT = enum.auto()
+    LOAD = enum.auto()
+    LOSSES = enum.auto()
+    PV = enum.auto()
+
+
 class MeterStoreType(typing.TypedDict):
     time_ts: float | None
     energy: float
 
 
-class BaseMeter(BaseEnergyProcessor):
+class BaseMeter(SignalEnergyProcessor):
 
     if typing.TYPE_CHECKING:
 
-        class Config(BaseEnergyProcessor.Config):
+        class Config(SignalEnergyProcessor.Config):
             pass
 
-        class Args(BaseEnergyProcessor.Args):
+        class Args(SignalEnergyProcessor.Args):
             device: "MeterDevice"
 
     device: "Final[MeterDevice]"
@@ -85,11 +92,14 @@ class BaseMeter(BaseEnergyProcessor):
         )
 
 
-class MeterDevice(EnergyProcessorDevice, BaseMeter):
+class MeterDevice(SignalEnergyProcessorDevice, BaseMeter):
     if typing.TYPE_CHECKING:
 
-        class Config(EnergyProcessorDevice.Config, BaseMeter.Config):
+        class Config(SignalEnergyProcessorDevice.Config, BaseMeter.Config):
             pass
+
+        class Args(SignalEnergyProcessorDevice.Args, BaseMeter.Args):
+            config: "MeterDevice.Config"
 
     controller: "Final[OffGridManager]"
 
@@ -179,7 +189,7 @@ class BatteryMeter(MeterDevice):
             self.safe_minimum_power = -self.safe_maximum_power
             self.safe_minimum_power_cal = self.safe_minimum_power / 3600
 
-        self.configure(EnergyInputMode.POWER)
+        self.configure(SignalEnergyProcessor.InputMode.POWER)
         self.in_meter = BaseMeter(SourceType.BATTERY_IN, device=self, config={})
         self.out_meter = BaseMeter(SourceType.BATTERY_OUT, device=self, config={})
         self._energy_listeners.add(self._energy_callback)

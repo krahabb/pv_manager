@@ -6,18 +6,18 @@ import typing
 
 from homeassistant import const as hac
 
+from . import EnergyEstimatorController
 from .. import const as pmc, helpers
-from ..controller import EnergyEstimatorController
 from ..helpers import validation as hv
 from ..manager import Manager
 from ..processors.estimator_pvenergy_heuristic import HeuristicPVEnergyEstimator
 from ..sensor import DiagnosticSensor, EstimatorDiagnosticSensor
+from .devices.estimator_processor import SignalEnergyEstimatorDevice
 
 if typing.TYPE_CHECKING:
     from typing import Any, Callable, Final, Unpack
 
     from ..processors.estimator import Estimator
-    from .devices import Device
     from .devices.estimator_processor import EnergyEstimatorDevice
 
 
@@ -130,7 +130,8 @@ class Controller(EnergyEstimatorController["Controller.Config"], HeuristicPVEner
         _config = config or {
             "weather_model": "simple",
         }
-        return EnergyEstimatorController.get_config_schema(config) | {
+        # TODO: fix the class hierarchy for config building
+        return SignalEnergyEstimatorDevice.get_config_schema(config) | {
             hv.opt_config("weather_entity_id", _config): hv.weather_entity_selector(),
             hv.opt_config(
                 "weather_model", _config

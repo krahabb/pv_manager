@@ -15,10 +15,9 @@ if typing.TYPE_CHECKING:
     from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
     from .controller import Controller, Device
-    from .processors import BaseEnergyProcessor
+    from .processors import SignalEnergyProcessor
 
     SensorStateType = sensor.StateType | sensor.date | sensor.datetime | sensor.Decimal
-
 
 
 async def async_setup_entry(
@@ -34,6 +33,7 @@ async def async_setup_entry(
 class Sensor(he.Entity, sensor.SensorEntity):
 
     if typing.TYPE_CHECKING:
+
         class Args(he.Entity.Args):
             device_class: NotRequired[sensor.SensorDeviceClass | None]
             state_class: NotRequired[sensor.SensorStateClass | None]
@@ -116,7 +116,7 @@ class EnergySensor(MeteringEntity, Sensor, he.RestoreEntity):
     CycleMode = CycleMode
 
     cycle_mode: "Final[CycleMode]"
-    energy_processor: "Final[BaseEnergyProcessor]"
+    energy_processor: "Final[SignalEnergyProcessor]"
 
     _metering_cycle: "MeteringCycle"
 
@@ -144,7 +144,7 @@ class EnergySensor(MeteringEntity, Sensor, he.RestoreEntity):
         device: "Device",
         id: str,
         cycle_mode: CycleMode,
-        energy_processor: "BaseEnergyProcessor",
+        energy_processor: "SignalEnergyProcessor",
         **kwargs: "Unpack[he.Entity.Args]",
     ):
         self.cycle_mode = cycle_mode

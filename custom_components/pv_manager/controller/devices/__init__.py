@@ -1,9 +1,11 @@
 import typing
 
 from ... import const as pmc
+from ...binary_sensor import ProcessorWarningBinarySensor
 from ...helpers import Loggable
 from ...helpers.callback import CallbackTracker
 from ...manager import Manager
+from ...processors import BaseProcessor, SignalEnergyProcessor
 
 if typing.TYPE_CHECKING:
     from typing import (
@@ -25,6 +27,7 @@ if typing.TYPE_CHECKING:
 
 
 class Device(CallbackTracker, Loggable):
+    """Base concrete class for any device."""
 
     if typing.TYPE_CHECKING:
 
@@ -84,3 +87,39 @@ class Device(CallbackTracker, Loggable):
         del self.controller.devices[self.id]
         super().shutdown()
         # self.controller = None  # type: ignore
+
+
+class ProcessorDevice(BaseProcessor, Device):
+    """Common class for any device representing any type of Processor."""
+
+    if typing.TYPE_CHECKING:
+
+        class Config(BaseProcessor.Config, Device.Config):
+            pass
+
+        class Args(BaseProcessor.Args, Device.Args):
+            config: "ProcessorDevice.Config"
+
+    def __init__(self, id, **kwargs: "Unpack[Args]"):
+
+        super().__init__(id, **kwargs)
+
+        for warning in self.warnings:
+            ProcessorWarningBinarySensor(self, f"{warning.id}_warning", warning)
+
+
+class SignalEnergyProcessorDevice(SignalEnergyProcessor, ProcessorDevice):
+    """Device class featuring a functional signal energy processor.
+    This class is then able to connect to a source entity and measure its energy."""
+
+    if typing.TYPE_CHECKING:
+
+        class Config(SignalEnergyProcessor.Config, Device.Config):
+            pass
+
+        class Args(SignalEnergyProcessor.Args, Device.Args):
+            config: "SignalEnergyProcessorDevice.Config"
+
+        def __init__(self, id, **kwargs: "Unpack[Args]"):
+
+            super().__init__(id, **kwargs)

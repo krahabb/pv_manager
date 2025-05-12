@@ -5,28 +5,32 @@ from homeassistant import const as hac
 from .. import const as pmc, controller
 from ..helpers import validation as hv
 from ..sensor import EnergySensor
-from .devices.energy_processor import EnergyProcessorDevice
+from .devices import SignalEnergyProcessorDevice
 
 if typing.TYPE_CHECKING:
     from typing import Unpack
 
     from homeassistant.config_entries import ConfigEntry
 
-    class EntryConfig(EnergyProcessorDevice.Config, pmc.EntityConfig, controller.Controller.Config):
+    class EntryConfig(
+        SignalEnergyProcessorDevice.Config,
+        pmc.EntityConfig,
+        controller.Controller.Config,
+    ):
         cycle_modes: list[EnergySensor.CycleMode]
         """list of 'metering' sensors to configure"""
 
-class Controller(controller.Controller["EntryConfig"], EnergyProcessorDevice): # type: ignore
+
+class Controller(controller.Controller["EntryConfig"], SignalEnergyProcessorDevice):  # type: ignore
     """Energy calculator controller."""
+
     if typing.TYPE_CHECKING:
         Config = EntryConfig
-
 
     TYPE = pmc.ConfigEntryType.ENERGY_CALCULATOR
     DEFAULT_NAME = "Energy"
 
     PLATFORMS = {EnergySensor.PLATFORM}
-
 
     @staticmethod
     def get_config_entry_schema(config: "Config | None") -> pmc.ConfigSchema:
@@ -41,9 +45,7 @@ class Controller(controller.Controller["EntryConfig"], EnergyProcessorDevice): #
                 device_class=EnergySensor.DeviceClass.POWER
             ),
             hv.req_config("cycle_modes", config): hv.cycle_modes_selector(),
-            hv.opt_config(
-                "update_period_seconds", config
-            ): hv.time_period_selector(),
+            hv.opt_config("update_period_seconds", config): hv.time_period_selector(),
             hv.opt_config("maximum_latency_seconds", config): hv.time_period_selector(),
             hv.opt_config("safe_maximum_power_w", config): hv.number_selector(
                 unit_of_measurement=hac.UnitOfPower.WATT
@@ -68,4 +70,3 @@ class Controller(controller.Controller["EntryConfig"], EnergyProcessorDevice): #
                 self,
                 name=name,
             )
-

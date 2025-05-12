@@ -7,7 +7,6 @@ from homeassistant.helpers import storage
 from homeassistant.util import dt as dt_util
 
 from ... import const as pmc, controller
-from ...binary_sensor import ProcessorWarningBinarySensor
 from ...helpers import validation as hv
 from ...manager import Manager
 from ...processors import (
@@ -15,16 +14,19 @@ from ...processors import (
     SAFE_MAXIMUM_POWER_DISABLED,
     SAFE_MINIMUM_POWER_DISABLED,
 )
+from ...processors.battery_estimator import BatteryEstimator
 from ...processors.estimator_consumption_heuristic import HeuristicConsumptionEstimator
 from ...processors.estimator_pvenergy_heuristic import HeuristicPVEnergyEstimator
 from ...sensor import EnergySensor, PowerSensor, Sensor
-from ..devices.estimator_processor import EnergyEstimatorDevice
+from ..devices.estimator_processor import (
+    EnergyEstimatorDevice,
+    SignalEnergyEstimatorDevice,
+)
 from .energy_meters import (
     BaseMeter,
     BatteryMeter,
     LoadMeter,
     LossesMeter,
-    MeterDevice,
     MeterStoreType,
     PvMeter,
     SourceType,
@@ -38,7 +40,7 @@ if typing.TYPE_CHECKING:
 
     from ...controller import EntryData
     from ...controller.devices import Device
-    from ...processors.estimator import EnergyEstimator
+    from ...processors.estimator import SignalEnergyEstimator
 
 
 class ControllerStoreType(typing.TypedDict):
@@ -138,7 +140,7 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
 
     if typing.TYPE_CHECKING:
 
-        class EstimatorConfig(EnergyEstimator.Config):
+        class EstimatorConfig(SignalEnergyEstimator.Config):
             enabled: bool
             # pv estimator specific
             weather_entity_id: NotRequired[str]
@@ -351,25 +353,35 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
         # will be loading subentries during __init__
         estimator_config = config.get("estimator")
         if estimator_config and estimator_config.get("enabled"):
-            pv_meter_config = config["pv"] | estimator_config
-            PvMeterClass = type(
-                "PvMeterClass",
-                (PvMeter, EnergyEstimatorDevice, HeuristicPVEnergyEstimator),
-                {},
-            )
-            self.pv_meter = PvMeterClass(self, pv_meter_config)
             load_meter_config = config["load"] | estimator_config
             LoadMeterClass = type(
                 "LoadMeterClass",
-                (LoadMeter, EnergyEstimatorDevice, HeuristicConsumptionEstimator),
+                (LoadMeter, SignalEnergyEstimatorDevice, HeuristicConsumptionEstimator),
                 {},
             )
             self.load_meter = LoadMeterClass(self, load_meter_config)
-
+            pv_meter_config = config["pv"] | estimator_config
+            PvMeterClass = type(
+                "PvMeterClass",
+                (PvMeter, SignalEnergyEstimatorDevice, HeuristicPVEnergyEstimator),
+                {},
+            )
+            self.pv_meter = PvMeterClass(self, pv_meter_config)
+            battery_meter_config = config["battery"] | (
+                estimator_config | {"forecast_duration_hours": 24}
+            )
+            BatteryMeterClass = type(
+                "BatteryMeterClass",
+                (BatteryMeter, EnergyEstimatorDevice, BatteryEstimator),
+                {},
+            )
+            self.battery_meter = BatteryMeterClass(self, battery_meter_config)  # type: ignore
+            self.battery_meter.connect_consumption(self.load_meter)
+            self.battery_meter.connect_production(self.pv_meter)
         else:
-            self.pv_meter = PvMeter(self, config["pv"])
             self.load_meter = LoadMeter(self, config["load"])
-        self.battery_meter = BatteryMeter(self, config["battery"])
+            self.pv_meter = PvMeter(self, config["pv"])
+            self.battery_meter = BatteryMeter(self, config["battery"])
         return super()._on_init()
 
     async def async_setup(self):

@@ -14,7 +14,6 @@ if typing.TYPE_CHECKING:
     pass
 
 
-
 class TimeSpanEnergyModel:
     """
     Trying to implement a very basic linear model where
@@ -105,8 +104,10 @@ class HeuristicPVEnergyEstimator(PVEnergyEstimator):
     """
 
     if typing.TYPE_CHECKING:
+
         class Config(PVEnergyEstimator.Config):
             pass
+
         class Args(PVEnergyEstimator.Args):
             pass
 
@@ -221,9 +222,10 @@ class HeuristicPVEnergyEstimator(PVEnergyEstimator):
             weight_or_decay = self.sampling_interval_ts / (
                 3600 * 4
             )  # fixed 4 hours decay
-            if time_begin_ts > self.observed_time_ts:
+            if time_begin_ts > self.estimation_time_ts:
                 weight_or -= (
-                    (time_begin_ts - self.observed_time_ts) / self.sampling_interval_ts
+                    (time_begin_ts - self.estimation_time_ts)
+                    / self.sampling_interval_ts
                 ) * weight_or_decay
                 if weight_or < weight_or_decay:
                     weight_or = 0

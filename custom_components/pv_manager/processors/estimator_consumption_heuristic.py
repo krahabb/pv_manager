@@ -1,7 +1,7 @@
 from collections import deque
 import typing
 
-from .estimator import EnergyEstimator, ObservedEnergy
+from .estimator import SignalEnergyEstimator
 
 if typing.TYPE_CHECKING:
     pass
@@ -10,10 +10,12 @@ if typing.TYPE_CHECKING:
 class EnergyModel:
     """Consumption estimator focusing on base load and average energy consumption."""
 
-    samples: list[ObservedEnergy]
+    ObservedEnergy = SignalEnergyEstimator.Sample
 
+    samples: list[ObservedEnergy]
     energy_min: float  # base load in this time frame
     energy_avg: float  # average energy in this time frame
+
     __slots__ = (
         "samples",
         "energy_min",
@@ -52,13 +54,16 @@ class EnergyModel:
         }
 
 
-class HeuristicConsumptionEstimator(EnergyEstimator):
+class HeuristicConsumptionEstimator(SignalEnergyEstimator):
     """
     Proof-of-concept of an estimator model based on some heuristics:
 
     """
 
     DEFAULT_NAME = "Consumption estimation"
+
+    class ObservedEnergy(SignalEnergyEstimator.Sample):
+        pass
 
     history_samples: typing.Final[deque[ObservedEnergy]]
     model: typing.Final[dict[int, EnergyModel]]
@@ -72,7 +77,7 @@ class HeuristicConsumptionEstimator(EnergyEstimator):
     def __init__(
         self,
         id,
-        **kwargs: "typing.Unpack[EnergyEstimator.Args]",
+        **kwargs: "typing.Unpack[SignalEnergyEstimator.Args]",
     ):
         self.history_samples = deque()
         self.model = {}
@@ -132,9 +137,9 @@ class HeuristicConsumptionEstimator(EnergyEstimator):
         observed_ratio = self.observed_ratio
         weight_or = 1  # if time_begin_ts == self.observed_ratio_ts
         weight_or_decay = self.sampling_interval_ts / (3600 * 2)  # fixed 2 hours decay
-        if time_begin_ts > self.observed_time_ts:
+        if time_begin_ts > self.estimation_time_ts:
             weight_or -= (
-                (time_begin_ts - self.observed_time_ts) / self.sampling_interval_ts
+                (time_begin_ts - self.estimation_time_ts) / self.sampling_interval_ts
             ) * weight_or_decay
             if weight_or < weight_or_decay:
                 weight_or = 0
