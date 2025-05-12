@@ -85,7 +85,6 @@ class Controller[_ConfigT: pmc.EntryConfig](Device):
     entries: "Final[dict[str | None, EntryData]]"
     """Cached copy of subentries used to manage subentry add/remove/update."""
     diagnostic_entities: "Final[dict[str, DiagnosticEntity]]"
-    _removed_subentry_types: "Final[dict[str, Any]]"
 
     __slots__ = (
         "config_entry",
@@ -95,7 +94,6 @@ class Controller[_ConfigT: pmc.EntryConfig](Device):
         "devices",
         "entries",
         "diagnostic_entities",
-        "_removed_subentry_types",
     )
 
     @staticmethod
@@ -138,7 +136,6 @@ class Controller[_ConfigT: pmc.EntryConfig](Device):
         self.devices = {}
         self.entries = {None: EntryData.Entry(config_entry)}
         self.diagnostic_entities = {}
-        self._removed_subentry_types = {}
         logger = helpers.getLogger(
             f"{helpers.LOGGER.name}.{slugify(config_entry.title)}"
         )
@@ -233,12 +230,6 @@ class Controller[_ConfigT: pmc.EntryConfig](Device):
         for subentry_id in removed_entries:
             entry_data = entries[subentry_id]
             await self._async_subentry_remove(subentry_id, entry_data)
-            # re-enable subentry_type in case
-            subentry_type: str = entry_data.subentry_type  # type: ignore
-            if subentry_type in self._removed_subentry_types:
-                config_entry.supported_subentry_types[subentry_type] = (
-                    self._removed_subentry_types.pop(subentry_type)
-                )
             # removed leftover entities (eventually)
             for entity in tuple(entry_data.entities.values()):
                 await entity.async_shutdown(True)
