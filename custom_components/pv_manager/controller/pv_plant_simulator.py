@@ -164,6 +164,7 @@ class Controller(controller.Controller["EntryConfig"]):
                 parent_attr=Sensor.ParentAttr.DYNAMIC,
             )
             if self.battery_capacity:
+                self._inverter_on = False  # let the capacity check start the inverter
                 BatteryChargeSensor(
                     self,
                     "battery_charge",
@@ -205,8 +206,8 @@ class Controller(controller.Controller["EntryConfig"]):
             )
 
         self.track_timer(self.SAMPLING_PERIOD, self._timer_callback)
-        self._timer_callback()
         await super().async_setup()
+        self._timer_callback()
 
     @callback
     def _timer_callback(self):
