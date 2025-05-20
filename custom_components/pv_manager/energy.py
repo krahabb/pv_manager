@@ -1,8 +1,4 @@
-from datetime import timedelta
-from time import time
 import typing
-
-from homeassistant.util import dt as dt_util
 
 from . import const as pmc
 
@@ -19,13 +15,9 @@ async def async_get_solar_forecast(
     config_entry = hass.config_entries.async_get_known_entry(config_entry_id)
     match pmc.ConfigEntryType.get_from_entry(config_entry):
         case pmc.ConfigEntryType.PV_ENERGY_ESTIMATOR:
-            controller: "PvEnergyEstimator" = config_entry.runtime_data
-            time = dt_util.start_of_local_day()
-            delta = timedelta(hours=1)
-            wh_hours = {}
-            for i in range(48):
-                ts = time.timestamp()
-                wh_hours[time.isoformat()] = controller.get_estimated_energy(ts, ts + 3600)
-                time = time + delta
-            return { "wh_hours": wh_hours}
+            try:
+                controller: "PvEnergyEstimator" = config_entry.runtime_data
+            except AttributeError:
+                return None # not loaded
+            return controller.get_solar_forecast()
 

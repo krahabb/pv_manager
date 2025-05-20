@@ -14,8 +14,9 @@ from ..manager import Manager
 from .estimator import SignalEnergyEstimator
 
 if typing.TYPE_CHECKING:
-    from typing import NotRequired, Unpack
+    from typing import Final, NotRequired, Unpack
 
+    from homeassistant.components.energy.types import SolarForecastType
     from homeassistant.core import Event, EventStateChangedData, State
 
 
@@ -265,6 +266,14 @@ class PVEnergyEstimator(SignalEnergyEstimator):
         class Args(SignalEnergyEstimator.Args):
             config: "PVEnergyEstimator.Config"
 
+        config: Config
+        weather_entity_id: str
+        weather_model: Final[WeatherModel]
+        weather_history: Final[deque[WeatherSample]]
+        weather_forecasts: list[WeatherSample]
+
+        _solar_forecast: SolarForecastType
+
     DEFAULT_NAME = "PV energy estimation"
 
     WEATHER_MODELS: typing.Final[dict[str | None, type[WeatherModel]]] = {
@@ -273,10 +282,6 @@ class PVEnergyEstimator(SignalEnergyEstimator):
         "cubic": CubicWeatherModel,
     }
 
-    weather_entity_id: str
-    weather_model: typing.Final[WeatherModel]
-    weather_history: typing.Final[deque[WeatherSample]]
-    weather_forecasts: list[WeatherSample]
 
     _SLOTS_ = (
         "astral_observer",
@@ -284,6 +289,7 @@ class PVEnergyEstimator(SignalEnergyEstimator):
         "weather_model",
         "weather_history",
         "weather_forecasts",
+        "_solar_forecast",
         "_noon_ts",
         "_sunrise_ts",
         "_sunset_ts",
@@ -353,12 +359,20 @@ class PVEnergyEstimator(SignalEnergyEstimator):
             "weather": self.get_weather_at(self.estimation_time_ts),
         }
 
+    @typing.override
     def _observed_energy_new(self, time_ts: int):
         return ObservedPVEnergy(
             time_ts,
             self.sampling_interval_ts,
             self.get_weather_at(time_ts),
         )
+
+    def _observed_energy_daystart(self, time_ts: int):
+        try:
+            del self._solar_forecast
+        except AttributeError:
+            pass
+        return super()._observed_energy_daystart(time_ts)
 
     """
     def _observed_energy_daystart(self, time_ts: int):
@@ -538,3 +552,25 @@ class PVEnergyEstimator(SignalEnergyEstimator):
 
         except Exception as e:
             self.log_exception(self.WARNING, e, "_async_weather_update")
+
+    def get_solar_forecast(self) -> "SolarForecastType":
+        """Returns the forecasts array for HA energy integration"""
+        try:
+            wh_hours = self._solar_forecast["wh_hours"]
+            # wh_hours is cached for the day since we want to 'preserve' past forecasts
+            # for the HA energy dashboard. Our get_estimated_energy in fact, when invoked on the past
+            # would return a different estimate since that contains updated data from the past itself
+            # This way, when HA requests to refresh the forecasts would get 'stable values for past hours
+        except AttributeError:
+            # on demand
+            wh_hours = {}
+            self._solar_forecast = {"wh_hours": wh_hours}
+
+        time = dt_util.now().replace(minute=0, second=0, microsecond=0)
+        delta = dt.timedelta(hours=1)
+        for i in range(48):
+            ts = time.timestamp()
+            wh_hours[time.isoformat()] = self.get_estimated_energy(ts, ts + 3600)
+            time = time + delta
+
+        return self._solar_forecast

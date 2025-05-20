@@ -18,7 +18,7 @@ from ..helpers import datetime_from_epoch
 from ..manager import Manager
 
 if typing.TYPE_CHECKING:
-    from typing import Unpack
+    from typing import Final, Unpack
 
 
 SAMPLING_INTERVAL_MODULO = 300  # 5 minutes
@@ -89,11 +89,10 @@ class EnergyEstimator(Estimator):
         class Args(Estimator.Args):
             config: "EnergyEstimator.Config"
 
-    config: "EnergyEstimator.Config"
-
-    today_ts: int
-    tomorrow_ts: int
-    today_energy: float
+        config: Config
+        today_ts: int
+        tomorrow_ts: int
+        today_energy: float
 
     _SLOTS_ = (
         "sampling_interval_ts",
@@ -172,25 +171,10 @@ class SignalEnergyEstimator(EnergyEstimator, SignalEnergyProcessor):
     Base class for all (energy) estimators.
     """
 
-    if typing.TYPE_CHECKING:
-
-        class Config(EnergyEstimator.Config, SignalEnergyProcessor.Config):
-            observation_duration_minutes: int  # minutes
-            """The time window for calculating current energy production from incoming energy observation."""
-            history_duration_days: int
-            """Number of (backward) days of data to keep in the model (used to build the estimates for the time forward)."""
-
-        class Args(EnergyEstimator.Args, SignalEnergyProcessor.Args):
-            config: "SignalEnergyEstimator.Config"
-
     DEFAULT_NAME = "Energy estimation"
 
     OPS_DECAY: typing.Final = 0.9
     """Decay factor for the average number of observations per sample."""
-
-    config: "SignalEnergyEstimator.Config"
-    source_entity_id: str
-    tzinfo: dt.tzinfo
 
     @dataclasses.dataclass(slots=True)
     class Sample:
@@ -218,9 +202,22 @@ class SignalEnergyEstimator(EnergyEstimator, SignalEnergyProcessor):
             self.energy = 0
             self.samples = 0
 
-    observed_samples: typing.Final[deque[Sample]]
+    if typing.TYPE_CHECKING:
 
-    _observed_sample_curr: Sample
+        class Config(EnergyEstimator.Config, SignalEnergyProcessor.Config):
+            observation_duration_minutes: int  # minutes
+            """The time window for calculating current energy production from incoming energy observation."""
+            history_duration_days: int
+            """Number of (backward) days of data to keep in the model (used to build the estimates for the time forward)."""
+
+        class Args(EnergyEstimator.Args, SignalEnergyProcessor.Args):
+            config: "SignalEnergyEstimator.Config"
+
+        config: Config
+        source_entity_id: str
+        tzinfo: dt.tzinfo
+        observed_samples: Final[deque[Sample]]
+        _observed_sample_curr: Sample
 
     _SLOTS_ = (
         # configuration
@@ -466,14 +463,6 @@ class EnergyBalanceEstimator(EnergyEstimator):
     This acts as a simpler base for a Battery estimator where the storage must also be taken care of.
     """
 
-    if typing.TYPE_CHECKING:
-
-        class Config(EnergyEstimator.Config):
-            forecast_duration_hours: int
-
-        class Args(EnergyEstimator.Args):
-            config: "EnergyBalanceEstimator.Config"
-
     class Forecast:
 
         time_ts: float
@@ -491,10 +480,19 @@ class EnergyBalanceEstimator(EnergyEstimator):
             self.production = 0
             self.consumption = 0
 
-    production_estimator: "SignalEnergyEstimator | None"
-    consumption_estimator: "SignalEnergyEstimator | None"
+    if typing.TYPE_CHECKING:
 
-    forecasts: list[Forecast]
+        class Config(EnergyEstimator.Config):
+            forecast_duration_hours: int
+
+        class Args(EnergyEstimator.Args):
+            config: "EnergyBalanceEstimator.Config"
+
+        config: Config
+        production_estimator: SignalEnergyEstimator | None
+        consumption_estimator: SignalEnergyEstimator | None
+
+        forecasts: list[Forecast]
 
     _SLOTS_ = (
         "forecast_duration_ts",
@@ -597,7 +595,9 @@ class EnergyBalanceEstimator(EnergyEstimator):
             listener(self)
 
     @typing.override
-    def get_estimated_energy(self, time_begin_ts: float | int, time_end_ts: float | int) -> float:
+    def get_estimated_energy(
+        self, time_begin_ts: float | int, time_end_ts: float | int
+    ) -> float:
         """
         Returns the estimated energy in the (forward) time interval at current estimator state.
         """
@@ -615,15 +615,18 @@ class EnergyBalanceEstimator(EnergyEstimator):
                 continue
 
             if time_end_ts <= forecast_next_ts:
-                energy += (forecast.production - forecast.consumption) * (time_end_ts - time_begin_ts)
+                energy += (forecast.production - forecast.consumption) * (
+                    time_end_ts - time_begin_ts
+                )
                 break
             else:
-                energy += (forecast.production - forecast.consumption) * (forecast_next_ts - time_begin_ts)
+                energy += (forecast.production - forecast.consumption) * (
+                    forecast_next_ts - time_begin_ts
+                )
 
             time_begin_ts = forecast_next_ts
 
         return energy / sampling_interval_ts
-
 
     @typing.override
     def get_estimated_energy_max(
