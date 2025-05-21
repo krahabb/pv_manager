@@ -11,7 +11,7 @@ if typing.TYPE_CHECKING:
 
     from .. import const as pmc
     from ..controller import Controller, Device
-    from ..processors.estimator import Estimator
+    from ..processors import Estimator
 
 
 class ParentAttr(enum.Enum):

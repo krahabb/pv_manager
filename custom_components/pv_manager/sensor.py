@@ -15,7 +15,7 @@ if typing.TYPE_CHECKING:
     from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
     from .controller import Controller, Device
-    from .processors import SignalEnergyProcessor
+    from .processors import EnergyBroadcast, SignalEnergyProcessor
 
     SensorStateType = sensor.StateType | sensor.date | sensor.datetime | sensor.Decimal
 
@@ -113,15 +113,16 @@ class PowerSensor(Sensor):
 
 class EnergySensor(MeteringEntity, Sensor, he.RestoreEntity):
 
+    if typing.TYPE_CHECKING:
+        cycle_mode: Final[CycleMode]
+        energy_dispatcher: Final[EnergyBroadcast]
+
+        _metering_cycle: "MeteringCycle"
+
+        native_value: int
+        _integral_value: float
+
     CycleMode = CycleMode
-
-    cycle_mode: "Final[CycleMode]"
-    energy_processor: "Final[SignalEnergyProcessor]"
-
-    _metering_cycle: "MeteringCycle"
-
-    native_value: int
-    _integral_value: float
 
     _attr_parent_attr = None
 
@@ -131,10 +132,10 @@ class EnergySensor(MeteringEntity, Sensor, he.RestoreEntity):
 
     __slots__ = (
         "cycle_mode",
-        "energy_processor",
+        "energy_dispatcher",
         "last_reset",  # HA property
         "_integral_value",
-        "_meter_energy_unsub_",
+        "_energy_dispatcher_unsub_",
         "_metering_cycle",
         "_next_reset_ts",  # UTC timestamp of next reset
     )
@@ -144,14 +145,14 @@ class EnergySensor(MeteringEntity, Sensor, he.RestoreEntity):
         device: "Device",
         id: str,
         cycle_mode: CycleMode,
-        energy_processor: "SignalEnergyProcessor",
+        energy_dispatcher: "EnergyBroadcast",
         **kwargs: "Unpack[he.Entity.Args]",
     ):
         self.cycle_mode = cycle_mode
-        self.energy_processor = energy_processor
+        self.energy_dispatcher = energy_dispatcher
         self.last_reset = None
         self._integral_value = 0
-        self._meter_energy_unsub_ = None
+        self._energy_dispatcher_unsub_ = None
 
         if cycle_mode == CycleMode.TOTAL:
             self.accumulate = self._accumulate_total
@@ -186,12 +187,14 @@ class EnergySensor(MeteringEntity, Sensor, he.RestoreEntity):
 
         self.native_value = int(self._integral_value)
         await super().async_added_to_hass()
-        self._meter_energy_unsub_ = self.energy_processor.listen_energy(self.accumulate)
+        self._energy_dispatcher_unsub_ = self.energy_dispatcher.listen_energy(
+            self.accumulate
+        )
 
     async def async_will_remove_from_hass(self):
-        if self._meter_energy_unsub_:
-            self._meter_energy_unsub_()
-            self._meter_energy_unsub_ = None
+        if self._energy_dispatcher_unsub_:
+            self._energy_dispatcher_unsub_()
+            self._energy_dispatcher_unsub_ = None
         self._metering_cycle.unregister(self)
         return await super().async_will_remove_from_hass()
 

@@ -199,11 +199,7 @@ class Controller(controller.Controller["EntryConfig"]):
 
     async def async_setup(self):
         if self.weather_entity_id:
-            self.track_state(
-                self.weather_entity_id,
-                self._weather_update,
-                Controller.HassJobType.Callback,
-            )
+            self.track_state(self.weather_entity_id, self._weather_update)
 
         self.track_timer(self.SAMPLING_PERIOD, self._timer_callback)
         await super().async_setup()
@@ -223,7 +219,12 @@ class Controller(controller.Controller["EntryConfig"]):
             # with respect to the plant slope. Here we take a simple approach with
             # slope almost horizontal
             slope = 85
-            pv_power = self.peak_power * math.cos((slope - elevation) * math.pi / 180)
+            pv_power = (
+                self.peak_power
+                * math.cos((slope - elevation) * math.pi / 180)
+                * random.randint(98, 102)
+                / 100
+            )
             if self._weather_state:
 
                 if self._weather_visibility is not None:
@@ -314,6 +315,7 @@ class Controller(controller.Controller["EntryConfig"]):
             round(total_consumption_power - consumption_power, 2)
         )
 
+    @callback
     def _weather_update(self, event: "Event[EventStateChangedData] | Controller.Event"):
         if state := event.data["new_state"]:
             self._weather_state = state.state

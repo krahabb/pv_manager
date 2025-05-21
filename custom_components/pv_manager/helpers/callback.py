@@ -5,6 +5,7 @@ from homeassistant import const as hac
 from homeassistant.core import HassJobType, callback
 from homeassistant.helpers.event import async_track_state_change_event
 
+from . import Loggable
 from .. import const as pmc
 from ..manager import Manager
 
@@ -23,11 +24,11 @@ if typing.TYPE_CHECKING:
     )
 
 
-class CallbackTracker:
+class CallbackTracker(Loggable):
 
     HassJobType = HassJobType
 
-    _callbacks: dict[str, "CALLBACK_TYPE"]
+    _callbacks: dict[str | float, "CALLBACK_TYPE"]
     # This attribute is only created 'on demand'
 
     _SLOTS_ = ("_callbacks",)
@@ -38,6 +39,7 @@ class CallbackTracker:
                 _callback()
         except AttributeError:
             pass
+        super().shutdown()
 
     @callback
     def async_create_task[_R](
@@ -54,7 +56,12 @@ class CallbackTracker:
         except AttributeError:
             self._callbacks = {key: callback}
 
-    def track_timer(self, delay: float, target: "Callable"):
+    def track_timer(
+        self,
+        delay: float,
+        action: "Callable",
+        job_type: HassJobType = HassJobType.Callback,
+    ):
         try:
             _callbacks = self._callbacks
         except AttributeError:
@@ -62,17 +69,23 @@ class CallbackTracker:
 
         # we're using the delay value to mark this remove callback.
         # eventually
-        k = str(delay)
         _call_later = Manager._call_later
 
         def _target():
             _handle = _call_later(delay, _target)
-            _callbacks[k] = lambda: _handle.cancel()
-            target()
+            _callbacks[delay] = lambda: _handle.cancel()
+            if job_type is HassJobType.Callback:
+                action()
+            elif job_type is HassJobType.Coroutinefunction:
+                self.async_create_task(
+                    action(),
+                    f"track_timer({delay})",
+                )
 
         handle = _call_later(delay, _target)
-        _callbacks[k] = lambda: handle.cancel()
+        _callbacks[delay] = lambda: handle.cancel()
 
+    @typing.final
     class Event:
         """Mocks an Event-like object for usage in initial updates of our track_state api.
         This is based on the fact that we're not using all of the event attributes but
@@ -99,7 +112,7 @@ class CallbackTracker:
         self,
         entity_id: str,
         action: "Callable[[Event[EventStateChangedData] | CallbackTracker.Event], Any]",
-        job_type: HassJobType | None,
+        job_type: HassJobType = HassJobType.Callback,
         update: bool = True,
     ):
         """Track a state change for the given entity_id."""

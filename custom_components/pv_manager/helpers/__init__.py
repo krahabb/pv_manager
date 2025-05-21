@@ -262,6 +262,12 @@ class Loggable(abc.ABC):
         proceed only when the logger is in place."""
         pass
 
+    def shutdown(self):
+        self.log(self.DEBUG, "shutdown")
+
+    def __del__(self):
+        self.log(self.DEBUG, "destroy")
+
     def isEnabledFor(self, level: int):
         return self.logger.isEnabledFor(level)
 
@@ -284,6 +290,3 @@ class Loggable(abc.ABC):
             yield
         except Exception as exception:
             self.log_exception(self.WARNING, exception, msg, *args, **kwargs)
-
-    def __del__(self):
-        self.log(self.DEBUG, "destroy")

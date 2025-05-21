@@ -47,10 +47,10 @@ class Controller(controller.Controller["EntryConfig"], SignalEnergyProcessorDevi
             hv.req_config("cycle_modes", config): hv.cycle_modes_selector(),
             hv.opt_config("update_period_seconds", config): hv.time_period_selector(),
             hv.opt_config("maximum_latency_seconds", config): hv.time_period_selector(),
-            hv.opt_config("safe_maximum_power_w", config): hv.number_selector(
+            hv.opt_config("input_max", config): hv.number_selector(
                 unit_of_measurement=hac.UnitOfPower.WATT
             ),
-            hv.opt_config("safe_minimum_power_w", config): hv.number_selector(
+            hv.opt_config("input_min", config): hv.number_selector(
                 unit_of_measurement=hac.UnitOfPower.WATT
             ),
         }

@@ -11,7 +11,7 @@ from homeassistant.util import dt as dt_util
 
 from ..helpers import datetime_from_epoch, validation as hv
 from ..manager import Manager
-from .estimator import SignalEnergyEstimator
+from .estimator_energy import SignalEnergyEstimator
 
 if typing.TYPE_CHECKING:
     from typing import Final, NotRequired, Unpack
@@ -91,33 +91,6 @@ class WeatherSample:
         }
 
 
-@dataclass(slots=True)
-class ObservedPVEnergy(SignalEnergyEstimator.Sample):
-    """PV energy/power history data extraction. This sample is used to build energy production
-    in a time window (1 hour by design) by querying either a PV power sensor or a PV energy sensor.
-    Building from PV power should be preferrable due to the 'failable' nature of energy accumulation.
-    """
-
-    weather: WeatherSample | None
-
-    sun_azimuth: float
-    """Position of the sun (at mid sample interval)"""
-    sun_zenith: float
-    """Position of the sun (at mid sample interval)"""
-
-    SUN_NOT_SET = -360
-
-    def __init__(
-        self,
-        time_ts: int,
-        sampling_interval_ts: int,
-        weather: WeatherSample | None,
-    ):
-        SignalEnergyEstimator.Sample.__init__(self, time_ts, sampling_interval_ts)
-        self.weather = weather
-        self.sun_azimuth = self.sun_zenith = self.SUN_NOT_SET
-
-
 class WeatherModel:
     """Base (abstract) class modeling the influence of weather on PV production."""
 
@@ -169,7 +142,7 @@ class SimpleWeatherModel(WeatherModel):
     ):
         cloud_coverage = weather.cloud_coverage
         if cloud_coverage:
-            error = expected - self.get_energy_estimate(energy_max, weather)
+            error = expected - energy_max * (1 - self.Wc * cloud_coverage)
             self.Wc -= error * cloud_coverage * self.Wc_lr
             if self.Wc > self.Wc_max:
                 self.Wc = self.Wc_max
@@ -257,6 +230,32 @@ class PVEnergyEstimator(SignalEnergyEstimator):
     At the time, lacking any real specialization, the generalization of this class is pretty basic and likely unstable.
     """
 
+    @dataclass(slots=True)
+    class Sample(SignalEnergyEstimator.Sample):
+        """PV energy/power history data extraction. This sample is used to build energy production
+        in a time window (1 hour by design) by querying either a PV power sensor or a PV energy sensor.
+        Building from PV power should be preferrable due to the 'failable' nature of energy accumulation.
+        """
+
+        weather: WeatherSample | None
+
+        sun_azimuth: float
+        """Position of the sun (at mid sample interval)"""
+        sun_zenith: float
+        """Position of the sun (at mid sample interval)"""
+
+        SUN_NOT_SET = -360
+
+        def __init__(
+            self,
+            time_ts: int,
+            sampling_interval_ts: int,
+            weather: WeatherSample | None,
+        ):
+            SignalEnergyEstimator.Sample.__init__(self, time_ts, sampling_interval_ts)
+            self.weather = weather
+            self.sun_azimuth = self.sun_zenith = self.SUN_NOT_SET
+
     if typing.TYPE_CHECKING:
 
         class Config(SignalEnergyEstimator.Config):
@@ -274,14 +273,13 @@ class PVEnergyEstimator(SignalEnergyEstimator):
 
         _solar_forecast: SolarForecastType
 
-    DEFAULT_NAME = "PV energy estimation"
+    DEFAULT_NAME = "PV energy estimator"
 
     WEATHER_MODELS: typing.Final[dict[str | None, type[WeatherModel]]] = {
         None: WeatherModel,
         "simple": SimpleWeatherModel,
         "cubic": CubicWeatherModel,
     }
-
 
     _SLOTS_ = (
         "astral_observer",
@@ -361,7 +359,7 @@ class PVEnergyEstimator(SignalEnergyEstimator):
 
     @typing.override
     def _observed_energy_new(self, time_ts: int):
-        return ObservedPVEnergy(
+        return PVEnergyEstimator.Sample(
             time_ts,
             self.sampling_interval_ts,
             self.get_weather_at(time_ts),
@@ -373,17 +371,6 @@ class PVEnergyEstimator(SignalEnergyEstimator):
         except AttributeError:
             pass
         return super()._observed_energy_daystart(time_ts)
-
-    """
-    def _observed_energy_daystart(self, time_ts: int):
-        Estimator._observed_energy_daystart(self, time_ts)
-        self._noon_ts = self._today_local_ts + 43200
-        # TODO: check this..we assume that the GMT date is the same as local at noon
-        today = helpers.datetime_from_epoch(self._noon_ts)
-        noon = sun.noon(self.astral_observer, today)
-        self._sunrise_ts = int(sun.time_of_transit(self.astral_observer, today, 90.0 + sun.SUN_APPARENT_RADIUS, sun.SunDirection.RISING).timestamp())
-        self._sunset_ts = int(sun.time_of_transit(self.astral_observer, today, 90.0 + sun.SUN_APPARENT_RADIUS, sun.SunDirection.SETTING).timestamp())
-    """
 
     @typing.override
     def _restore_history(self, history_start_time: dt.datetime):
@@ -555,6 +542,9 @@ class PVEnergyEstimator(SignalEnergyEstimator):
 
     def get_solar_forecast(self) -> "SolarForecastType":
         """Returns the forecasts array for HA energy integration"""
+
+        now = dt_util.now().replace(minute=0, second=0, microsecond=0)
+
         try:
             wh_hours = self._solar_forecast["wh_hours"]
             # wh_hours is cached for the day since we want to 'preserve' past forecasts
@@ -565,12 +555,14 @@ class PVEnergyEstimator(SignalEnergyEstimator):
             # on demand
             wh_hours = {}
             self._solar_forecast = {"wh_hours": wh_hours}
+            now = now.replace(hour=0)
 
-        time = dt_util.now().replace(minute=0, second=0, microsecond=0)
-        delta = dt.timedelta(hours=1)
+        time_ts = int(now.astimezone(dt_util.UTC).timestamp())
         for i in range(48):
-            ts = time.timestamp()
-            wh_hours[time.isoformat()] = self.get_estimated_energy(ts, ts + 3600)
-            time = time + delta
+            time_next_ts = time_ts + 3600
+            wh_hours[datetime_from_epoch(time_ts, dt_util.UTC).isoformat()] = (
+                self.get_estimated_energy(time_ts, time_next_ts)
+            )
+            time_ts = time_next_ts
 
         return self._solar_forecast

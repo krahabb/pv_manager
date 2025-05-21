@@ -1,20 +1,22 @@
 from collections import deque
 import typing
 
-from .estimator import SignalEnergyEstimator
+from .estimator_energy import SignalEnergyEstimator
 
 if typing.TYPE_CHECKING:
-    pass
+    from typing import Final, Unpack
 
 
 class EnergyModel:
     """Consumption estimator focusing on base load and average energy consumption."""
 
-    ObservedEnergy = SignalEnergyEstimator.Sample
+    if typing.TYPE_CHECKING:
 
-    samples: list[ObservedEnergy]
-    energy_min: float  # base load in this time frame
-    energy_avg: float  # average energy in this time frame
+        type Sample = "HeuristicConsumptionEstimator.Sample"
+
+        samples: list[Sample]
+        energy_min: float  # base load in this time frame
+        energy_avg: float  # average energy in this time frame
 
     __slots__ = (
         "samples",
@@ -22,18 +24,18 @@ class EnergyModel:
         "energy_avg",
     )
 
-    def __init__(self, sample: ObservedEnergy):
+    def __init__(self, sample: "Sample"):
         self.samples = [sample]
         self.energy_min = sample.energy
         self.energy_avg = sample.energy
 
-    def add_sample(self, sample: ObservedEnergy):
+    def add_sample(self, sample: "Sample"):
         self.samples.append(sample)
         if self.energy_min > sample.energy:
             self.energy_min = sample.energy
         self.energy_avg = self.energy_avg * 0.5 + sample.energy * 0.5
 
-    def pop_sample(self, sample: ObservedEnergy):
+    def pop_sample(self, sample: "Sample"):
         self.samples.remove(sample)
         if self.samples:
             self.energy_min = self.energy_avg = self.samples[0].energy
@@ -60,13 +62,18 @@ class HeuristicConsumptionEstimator(SignalEnergyEstimator):
 
     """
 
-    DEFAULT_NAME = "Consumption estimation"
+    if typing.TYPE_CHECKING:
 
-    class ObservedEnergy(SignalEnergyEstimator.Sample):
-        pass
+        class Sample(SignalEnergyEstimator.Sample):
+            pass
 
-    history_samples: typing.Final[deque[ObservedEnergy]]
-    model: typing.Final[dict[int, EnergyModel]]
+        class Args(SignalEnergyEstimator.Args):
+            pass
+
+        history_samples: Final[deque[Sample]]
+        model: Final[dict[int, EnergyModel]]
+
+    DEFAULT_NAME = "Consumption estimator"
 
     _SLOTS_ = (
         "history_samples",
@@ -77,7 +84,7 @@ class HeuristicConsumptionEstimator(SignalEnergyEstimator):
     def __init__(
         self,
         id,
-        **kwargs: "typing.Unpack[SignalEnergyEstimator.Args]",
+        **kwargs: "Unpack[Args]",
     ):
         self.history_samples = deque()
         self.model = {}
@@ -122,16 +129,9 @@ class HeuristicConsumptionEstimator(SignalEnergyEstimator):
             listener(self)
 
     @typing.override
-    def get_estimated_energy(
-        self, time_begin_ts: float | int, time_end_ts: float | int
-    ):
-
+    def get_estimated_energy(self, time_begin_ts: int, time_end_ts: int):
         energy = 0
-
-        time_begin_ts = int(time_begin_ts)
-        time_end_ts = int(time_end_ts)
         model_time_ts = time_begin_ts - (time_begin_ts % self.sampling_interval_ts)
-
         # We 'blend' in recent 'ratio' of energy production with respect to avg energy.
         # It is hard to say how much
         observed_ratio = self.observed_ratio
@@ -172,15 +172,10 @@ class HeuristicConsumptionEstimator(SignalEnergyEstimator):
         return energy / self.sampling_interval_ts
 
     @typing.override
-    def get_estimated_energy_max(
-        self, time_begin_ts: float | int, time_end_ts: float | int
-    ):
+    def get_estimated_energy_max(self, time_begin_ts: int, time_end_ts: int):
         """Computes the 'maximum' expected energy in the time window."""
         energy = 0
-        time_begin_ts = int(time_begin_ts)
-        time_end_ts = int(time_end_ts)
         model_time_ts = time_begin_ts - (time_begin_ts % self.sampling_interval_ts)
-
         while time_begin_ts < time_end_ts:
             model_time_next_ts = model_time_ts + self.sampling_interval_ts
             try:
@@ -199,15 +194,10 @@ class HeuristicConsumptionEstimator(SignalEnergyEstimator):
         return energy / self.sampling_interval_ts
 
     @typing.override
-    def get_estimated_energy_min(
-        self, time_begin_ts: float | int, time_end_ts: float | int
-    ):
+    def get_estimated_energy_min(self, time_begin_ts: int, time_end_ts: int):
         """Computes the 'maximum' expected energy in the time window."""
         energy = 0
-        time_begin_ts = int(time_begin_ts)
-        time_end_ts = int(time_end_ts)
         model_time_ts = time_begin_ts - (time_begin_ts % self.sampling_interval_ts)
-
         while time_begin_ts < time_end_ts:
             model_time_next_ts = model_time_ts + self.sampling_interval_ts
             try:
@@ -226,7 +216,7 @@ class HeuristicConsumptionEstimator(SignalEnergyEstimator):
         return energy / self.sampling_interval_ts
 
     @typing.override
-    def _observed_energy_history_add(self, history_sample: ObservedEnergy):
+    def _observed_energy_history_add(self, history_sample: "Sample"):
 
         if history_sample.energy:
             self.history_samples.append(history_sample)

@@ -3,105 +3,57 @@ from time import time as TIME_TS
 import typing
 
 from homeassistant import const as hac
-from homeassistant.util.unit_conversion import (
-    ElectricCurrentConverter,
-    ElectricPotentialConverter,
-)
 
 from ... import const as pmc
 from ...helpers import validation as hv
+from ...manager import Manager
 from ...processors import (
-    SAFE_MAXIMUM_POWER_DISABLED,
-    SAFE_MINIMUM_POWER_DISABLED,
+    EnergyBroadcast,
     SignalEnergyProcessor,
 )
-from ...sensor import BatteryChargeSensor, EnergySensor, PowerSensor, Sensor
+from ...processors.battery import BatteryProcessor
+from ...sensor import BatteryChargeSensor, Sensor
 from ..devices import SignalEnergyProcessorDevice
 
 if typing.TYPE_CHECKING:
     from typing import Any, Final, NotRequired, TypedDict, Unpack
 
-    from homeassistant.core import Event, EventStateChangedData
-
     from . import Controller as OffGridManager
-    from ...processors.estimator import SignalEnergyEstimator
+    from ...processors.estimator_energy import SignalEnergyEstimator
 
 
-VOLTAGE_UNIT = hac.UnitOfElectricPotential.VOLT
-CURRENT_UNIT = hac.UnitOfElectricCurrent.AMPERE
-POWER_UNIT = hac.UnitOfPower.WATT
-ENERGY_UNIT = hac.UnitOfEnergy.WATT_HOUR
+SourceType = SignalEnergyProcessorDevice.SourceType
 
 
-class SourceType(enum.StrEnum):
-    BATTERY = enum.auto()
-    BATTERY_IN = enum.auto()
-    BATTERY_OUT = enum.auto()
-    LOAD = enum.auto()
-    LOSSES = enum.auto()
-    PV = enum.auto()
-
-
-class MeterStoreType(typing.TypedDict):
-    time_ts: float | None
-    energy: float
-
-
-class BaseMeter(SignalEnergyProcessor):
+class BaseMeter(EnergyBroadcast):
 
     if typing.TYPE_CHECKING:
 
-        class Config(SignalEnergyProcessor.Config):
+        class StoreType(TypedDict):
             pass
 
-        class Args(SignalEnergyProcessor.Args):
-            device: "MeterDevice"
+        class Args(EnergyBroadcast.Args):
+            pass
 
-    device: "Final[MeterDevice]"
-    metering_source: "Final[SourceType]"
+        id: Final[SourceType]  # type: ignore
 
-    _SLOTS_ = (
-        "device",
-        "metering_source",
-    )
+    def restore(self, data: "StoreType"):
+        pass
 
-    def __init__(self, metering_source: SourceType, **kwargs: "Unpack[Args]"):
-        self.device = kwargs["device"]
-        self.metering_source = metering_source
-        super().__init__(metering_source, **kwargs)
-        controller = self.device.controller
-        controller.energy_meters[metering_source] = self
-        setattr(controller, f"{self.metering_source}_meter", self)
-
-    def shutdown(self):
-        controller = self.device.controller
-        del controller.energy_meters[self.metering_source]
-        setattr(controller, f"{self.metering_source}_meter", None)
-        super().shutdown()
-        self.device = None  # type: ignore
-
-    def load(self, data: MeterStoreType):
-        self.output = data["energy"]
-
-    def save(self):
-        return MeterStoreType(
-            {
-                "time_ts": self.time_ts,
-                "energy": self.output,
-            }
-        )
+    def store(self) -> "StoreType":
+        return {}
 
 
 class MeterDevice(SignalEnergyProcessorDevice, BaseMeter):
     if typing.TYPE_CHECKING:
 
-        class Config(SignalEnergyProcessorDevice.Config, BaseMeter.Config):
+        class Config(SignalEnergyProcessorDevice.Config):
             pass
 
-        class Args(SignalEnergyProcessorDevice.Args, BaseMeter.Args):
+        class Args(SignalEnergyProcessorDevice.Args):
             config: "MeterDevice.Config"
 
-    controller: "Final[OffGridManager]"
+        controller: OffGridManager
 
     def __init__(
         self,
@@ -112,45 +64,35 @@ class MeterDevice(SignalEnergyProcessorDevice, BaseMeter):
         super().__init__(
             metering_source,
             controller=controller,
-            device=self,  # type: ignore
             model=f"{metering_source}_meter",
             config=config,
             name=f"{controller.config.get("name", controller.TYPE)} {metering_source}",
         )
         self.maximum_latency_ts = controller.maximum_latency_ts
+        controller.energy_meters[metering_source] = (self, self)
+
+    def shutdown(self):
+        del self.controller.energy_meters[self.id]
+        setattr(self.controller, f"{self.id}_meter", None)
+        super().shutdown()
 
 
-class BatteryMeter(MeterDevice):
+class BatteryMeter(MeterDevice, BatteryProcessor):
 
     if typing.TYPE_CHECKING:
 
-        class Config(MeterDevice.Config):
-            battery_voltage_entity_id: str
-            battery_current_entity_id: str
-            battery_charge_entity_id: NotRequired[str]
-            battery_capacity: float
+        class Config(MeterDevice.Config, BatteryProcessor.Config):
+            pass
 
-    battery_charge_sensor: BatteryChargeSensor | None
+        class StoreType(BatteryProcessor.StoreType):
+            pass
+
+        battery_charge_sensor: BatteryChargeSensor | None
 
     __slots__ = (
-        # config
-        "battery_voltage_entity_id",
-        "battery_current_entity_id",
-        "battery_charge_entity_id",
-        "battery_capacity",
-        # state
-        "battery_voltage",
-        "battery_current",
-        "_battery_current_last_ts",
-        "battery_charge",
-        "battery_charge_estimate",
-        "battery_capacity_estimate",
-        # meters
-        "in_meter",
-        "out_meter",
         # sensors
         "battery_charge_sensor",
-    )
+    ) + BatteryProcessor._SLOTS_
 
     @staticmethod
     def get_config_schema(config: "Config") -> "pmc.ConfigSchema":
@@ -164,36 +106,25 @@ class BatteryMeter(MeterDevice):
             hv.req_config("battery_capacity", config): hv.positive_number_selector(
                 unit_of_measurement="Ah"
             ),
-            hv.opt_config("safe_maximum_power_w", config): hv.positive_number_selector(
+            hv.opt_config("input_max", config): hv.positive_number_selector(
                 unit_of_measurement=hac.UnitOfPower.WATT
             ),
         }
 
     def __init__(self, controller: "OffGridManager", config: "Config"):
-        self.battery_voltage_entity_id = config["battery_voltage_entity_id"]
-        self.battery_current_entity_id = config["battery_current_entity_id"]
-        self.battery_charge_entity_id = config.get("battery_charge_entity_id")
-        self.battery_capacity = config.get("battery_capacity", 0)
-
-        self.battery_voltage: float = 0
-        self.battery_current: float = 0
-        self._battery_current_last_ts: float = 0
-        self.battery_charge: float = 0
-        self.battery_charge_estimate: float = 0
-        self.battery_capacity_estimate: float = 0
         self.battery_charge_sensor = None
 
         super().__init__(SourceType.BATTERY, controller, config)
-        # our config doesnt carry safe_minimum_power so we'll update it to reflect safe_maximum_power
-        if self.safe_maximum_power != SAFE_MAXIMUM_POWER_DISABLED:
-            self.safe_minimum_power = -self.safe_maximum_power
-            self.safe_minimum_power_cal = self.safe_minimum_power / 3600
 
         self.configure(SignalEnergyProcessor.InputMode.POWER)
-        self.in_meter = BaseMeter(SourceType.BATTERY_IN, device=self, config={})
-        self.out_meter = BaseMeter(SourceType.BATTERY_OUT, device=self, config={})
-        self._energy_listeners.add(self._energy_callback)
-
+        controller.energy_meters[SourceType.BATTERY_IN] = (
+            self.energy_broadcast_in,
+            self,
+        )
+        controller.energy_meters[SourceType.BATTERY_OUT] = (
+            self.energy_broadcast_out,
+            self,
+        )
         # TODO: setup according to some sort of configuration
         BatteryChargeSensor(
             self,
@@ -202,100 +133,20 @@ class BatteryMeter(MeterDevice):
             name="Battery charge",
             parent_attr=Sensor.ParentAttr.DYNAMIC,
         )
-
-    async def async_start(self):
-        self.track_state(
-            self.battery_voltage_entity_id,
-            self._battery_voltage_callback,
-            self.HassJobType.Callback,
+        self.battery_charge_broadcast.listen(
+            lambda battery_charge: (
+                self.battery_charge_sensor.update(battery_charge)
+                if self.battery_charge_sensor
+                else None
+            )
         )
-        self.track_state(
-            self.battery_current_entity_id,
-            self._battery_current_callback,
-            self.HassJobType.Callback,
-        )
-        if self.battery_charge_entity_id:
-            self.track_state(
-                self.battery_charge_entity_id,
-                self._battery_charge_callback,
-                self.HassJobType.Callback,
-            )
 
-    def _energy_callback(self, energy: float, time_ts: float):
-        if energy > 0:
-            in_out_meter = self.out_meter
-        else:
-            in_out_meter = self.in_meter
-            energy = -energy
-        in_out_meter.time_ts = time_ts
-        in_out_meter.input = energy
-        in_out_meter.output += energy
-        for listener in in_out_meter._energy_listeners:
-            listener(energy, time_ts)
-
-    def _battery_voltage_callback(
-        self, event: "Event[EventStateChangedData] | BatteryMeter.Event"
-    ):
-        try:
-            state = event.data["new_state"]
-            self.battery_voltage = ElectricPotentialConverter.convert(
-                float(state.state),  # type: ignore
-                state.attributes["unit_of_measurement"],  # type: ignore
-                VOLTAGE_UNIT,
-            )
-            self.process(
-                self.battery_voltage * self.battery_current, event.time_fired_timestamp
-            )
-        except Exception as e:
-            self.battery_voltage = 0
-            self.process(None, event.time_fired_timestamp)
-            if state and state.state not in (hac.STATE_UNKNOWN, hac.STATE_UNAVAILABLE):
-                self.log_exception(
-                    self.WARNING, e, "_battery_voltage_update(state:%s)", state
-                )
-
-    def _battery_current_callback(
-        self, event: "Event[EventStateChangedData] | BatteryMeter.Event"
-    ):
-        time_ts = event.time_fired_timestamp
-        try:
-            state = event.data["new_state"]
-            battery_current = ElectricCurrentConverter.convert(
-                float(state.state),  # type: ignore
-                state.attributes["unit_of_measurement"],  # type: ignore
-                CURRENT_UNIT,
-            )
-        except Exception as e:
-            battery_current = 0
-            if state and state.state not in (hac.STATE_UNKNOWN, hac.STATE_UNAVAILABLE):
-                self.log_exception(
-                    self.WARNING, e, "_battery_current_update(state:%s)", state
-                )
-
-        # left rectangle integration
-        # We assume 'generator convention' for current
-        # i.e. positive current = discharging
-        d_time = time_ts - self._battery_current_last_ts
-        if 0 < d_time < self.maximum_latency_ts:
-            charge_out = self.battery_current * d_time / 3600
-            self.battery_charge_estimate -= charge_out
-            if self.battery_charge_estimate > self.battery_capacity_estimate:
-                self.battery_capacity_estimate = self.battery_charge_estimate
-            elif self.battery_charge_estimate < 0:
-                self.battery_capacity_estimate -= self.battery_charge_estimate
-                self.battery_charge_estimate = 0
-            if self.battery_charge_sensor:
-                self.battery_charge_sensor.update(self.battery_charge_estimate)
-
-        self.battery_current = battery_current
-        self._battery_current_last_ts = time_ts
-
-        self.process(self.battery_current * self.battery_voltage, time_ts)
-
-    def _battery_charge_callback(
-        self, event: "Event[EventStateChangedData] | BatteryMeter.Event"
-    ):
-        pass
+    @typing.override
+    def shutdown(self):
+        meters = self.controller.energy_meters
+        del meters[SourceType.BATTERY_OUT]
+        del meters[SourceType.BATTERY_IN]
+        super().shutdown()
 
 
 class EnergyEstimatorMeterDevice(MeterDevice):
@@ -315,14 +166,15 @@ class EnergyEstimatorMeterDevice(MeterDevice):
             hv.opt_config("source_entity_id", config): hv.sensor_selector(
                 device_class=Sensor.DeviceClass.POWER
             ),
-            hv.opt_config("safe_maximum_power_w", config): hv.positive_number_selector(
+            hv.opt_config("input_max", config): hv.positive_number_selector(
                 unit_of_measurement=hac.UnitOfPower.WATT
             ),
         }
 
     def __init__(self, metering_source, controller, config):
         super().__init__(metering_source, controller, config)
-        self.safe_minimum_power = 0
+        self.input_min = 0
+        self.energy_min = 0
 
 
 class PvMeter(EnergyEstimatorMeterDevice):
@@ -349,47 +201,144 @@ class LoadMeter(EnergyEstimatorMeterDevice):
 
 class LossesMeter(BaseMeter):
 
+    if typing.TYPE_CHECKING:
+
+        class StoreType(BaseMeter.StoreType):
+            battery_energy: float
+            battery_in_energy: float
+            battery_out_energy: float
+            load_energy: float
+            pv_energy: float
+            losses_energy: float  # redundant tho
+
+        controller: Final[OffGridManager]
+        battery_meter: Final[BatteryMeter]
+        load_meter: Final[LoadMeter]
+        pv_meter: Final[PvMeter]
+        battery_meter_old: float
+        battery_meter_in_old: float
+        battery_meter_out_old: float
+        load_meter_old: float
+        pv_meter_old: float
+
     __slots__ = (
+        # config
+        "controller",
+        "battery_meter",
+        "load_meter",
+        "pv_meter",
+        "update_period_ts",
+        # counters
         "battery_energy",
         "battery_in_energy",
         "battery_out_energy",
         "load_energy",
         "pv_energy",
+        "losses_energy",
+        # cached previous samples from meters
+        "battery_meter_old",
+        "battery_meter_in_old",
+        "battery_meter_out_old",
+        "load_meter_old",
+        "pv_meter_old",
+        # state
+        "_timer_unsub",
     )
 
     def __init__(self, controller: "OffGridManager", update_period_seconds: float):
-        super().__init__(
-            SourceType.LOSSES,
-            device=controller,  # type: ignore
-            config={"update_period_seconds": update_period_seconds},
-        )
+        self.controller = controller
+        self.battery_meter = controller.battery_meter
+        self.load_meter = controller.load_meter
+        self.pv_meter = controller.pv_meter
+        self.update_period_ts = update_period_seconds
 
-    async def async_start(self):
+        # set in case load is not called when new
+        self.battery_energy = 0
+        self.battery_in_energy = 0
+        self.battery_out_energy = 0
+        self.load_energy = 0
+        self.pv_energy = 0
+        self.losses_energy = 0
+
+        self._timer_unsub = None
+        super().__init__(SourceType.LOSSES, logger=controller)
+        controller.energy_meters[SourceType.LOSSES] = (self, controller)
+
+    def start(self):
         self._losses_compute()
         self.time_ts = TIME_TS()
-        await super().async_start()
+        self.battery_meter_old = self.battery_meter.energy
+        self.battery_meter_in_old = self.battery_meter.energy_in
+        self.battery_meter_out_old = self.battery_meter.energy_out
+        self.load_meter_old = self.load_meter.energy
+        self.pv_meter_old = self.pv_meter.energy
+        self._timer_unsub = Manager.schedule(
+            self.update_period_ts, self._timer_callback
+        )
 
-    def _update_callback(self):
+    def shutdown(self):
+        if self._timer_unsub:
+            self._timer_unsub.cancel()
+            self._timer_unsub = None
+        del self.controller.energy_meters[self.id]
+        setattr(self.controller, f"{self.id}_meter", None)
+        super().shutdown()
+        self.controller = None  # type: ignore
+        self.battery_meter = None  # type: ignore
+        self.load_meter = None  # type: ignore
+        self.pv_meter = None  # type: ignore
+
+    @typing.override
+    def restore(self, data: "StoreType"):
+        with self.exception_warning("loading meter data"):
+            self.battery_energy = data["battery_energy"]
+            self.battery_in_energy = data["battery_in_energy"]
+            self.battery_out_energy = data["battery_out_energy"]
+            self.load_energy = data["load_energy"]
+            self.pv_energy = data["pv_energy"]
+            self.losses_energy = data["losses_energy"]
+
+    @typing.override
+    def store(self) -> "StoreType":
+        return {
+            "battery_energy": self.battery_energy,
+            "battery_in_energy": self.battery_in_energy,
+            "battery_out_energy": self.battery_out_energy,
+            "load_energy": self.load_energy,
+            "pv_energy": self.pv_energy,
+            "losses_energy": self.losses_energy,
+        }
+
+    def _timer_callback(self):
+        self._timer_unsub = Manager.schedule(
+            self.update_period_ts, self._timer_callback
+        )
         time_ts = TIME_TS()
-        controller = self.device.controller
-        battery_old = self.battery_energy
-        battery_in_old = self.battery_in_energy
-        battery_out_old = self.battery_out_energy
-        load_old = self.load_energy
-        pv_old = self.pv_energy
-        losses_old = self.output
         # get the 'new' total
-        controller.battery_meter.update(time_ts)
-        controller.load_meter.update(time_ts)
-        controller.pv_meter.update(time_ts)
+        battery_meter = self.battery_meter
+        battery_meter.update(time_ts)
+        self.battery_energy += battery_meter.energy - self.battery_meter_old
+        self.battery_meter_old = battery_meter.energy
+        load_meter = self.load_meter
+        load_meter.update(time_ts)
+        d_load = load_meter.energy - self.load_meter_old
+        self.load_energy += d_load
+        self.load_meter_old = load_meter.energy
+        pv_meter = self.pv_meter
+        pv_meter.update(time_ts)
+        self.pv_energy += pv_meter.energy - self.pv_meter_old
+        self.pv_meter_old = pv_meter.energy
+
+        losses_old = self.losses_energy
         self._losses_compute()
         # compute delta to get the average power in the sampling period
         # we don't check maximum_latency here since it has already been
-        # managed in pc, load and battery meters
-        d_losses = self.output - losses_old
-        for energy_listener in self._energy_listeners:
+        # managed in pv, load and battery meters
+        d_losses = self.losses_energy - losses_old
+        for energy_listener in self.energy_listeners:
             energy_listener(d_losses, time_ts)
 
+        controller = self.controller
         if controller.losses_power_sensor:
             d_time = time_ts - self.time_ts
             if 0 < d_time < controller.maximum_latency_ts:
@@ -397,12 +346,10 @@ class LossesMeter(BaseMeter):
             else:
                 controller.losses_power_sensor.update(None)
 
-        self.input = d_losses
         self.time_ts = time_ts
 
         if controller.conversion_yield_actual_sensor:
             try:
-                d_load = self.load_energy - load_old
                 controller.conversion_yield_actual_sensor.update(
                     round(d_load * 100 / (d_load + d_losses))
                 )
@@ -410,25 +357,26 @@ class LossesMeter(BaseMeter):
                 controller.conversion_yield_actual_sensor.update(None)
 
     def _losses_compute(self):
-        controller = self.device.controller
-        battery_meter = controller.battery_meter
-        self.battery_energy = battery = battery_meter.output
-        self.battery_in_energy = battery_in = controller.battery_in_meter.output
-        self.battery_out_energy = battery_out = controller.battery_out_meter.output
-        self.load_energy = load = controller.load_meter.output
-        self.pv_energy = pv = controller.pv_meter.output
-        self.output = losses = pv + battery - load
+
+        battery = self.battery_energy
+        battery_in = self.battery_in_energy
+        battery_out = self.battery_out_energy
+        load = self.load_energy
+        pv = self.pv_energy
+        self.losses_energy = losses = pv + battery - load
 
         # Estimate energy actually stored in the battery:
         # in the long term -> battery_in > battery_out with the difference being the energy 'eaten up'
         # battery_yield = battery_out / (battery_in - battery_stored_energy)
         # battery_stored_energy is hard to compute since it depends on the discharge current/voltage
         # we'll use a conservative approach with the following formula. It's contribution to
-        # battery_yeild will nevertheless decay as far as battery_in, battery_out will increase
+        # battery_yield will nevertheless decay as far as battery_in, battery_out will increase
+        battery_meter = self.battery_meter
         battery_stored = (
-            battery_meter.battery_charge_estimate * battery_meter.battery_voltage * 0.9
+            battery_meter.battery_charge_estimate * (battery_meter.battery_voltage or 0) * 0.9
         )
 
+        controller = self.controller
         if controller.conversion_yield_sensor:
             try:
                 conversion_yield = load / (load + losses)

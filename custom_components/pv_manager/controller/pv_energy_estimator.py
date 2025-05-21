@@ -17,7 +17,7 @@ from .devices.estimator_processor import SignalEnergyEstimatorDevice
 if typing.TYPE_CHECKING:
     from typing import Any, Callable, Final, Unpack
 
-    from ..processors.estimator import Estimator
+    from ..processors import Estimator
     from .devices.estimator_processor import EnergyEstimatorDevice
 
 

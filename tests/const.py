@@ -123,7 +123,7 @@ CE_CONSUMPTION_ESTIMATOR = ConfigEntriesItem(
             "history_duration_days": 1,
             "update_period_seconds": OptionalFloat(5),
             "maximum_latency_seconds": 10,
-            "safe_maximum_power_w": OptionalFloat(1000),
+            "input_max": OptionalFloat(1000),
         },
     }
 )
@@ -138,7 +138,7 @@ CE_PVENERGY_HEURISTIC_ESTIMATOR = ConfigEntriesItem(
             "history_duration_days": 1,
             "update_period_seconds": OptionalFloat(5),
             "maximum_latency_seconds": 10,
-            "safe_maximum_power_w": OptionalFloat(1000),
+            "input_max": OptionalFloat(1000),
         },
     }
 )

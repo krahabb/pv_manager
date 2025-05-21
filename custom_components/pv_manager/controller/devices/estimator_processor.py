@@ -6,7 +6,11 @@ from . import ProcessorDevice, SignalEnergyProcessorDevice
 from ... import const as pmc
 from ...helpers import validation as hv
 from ...helpers.entity import EstimatorEntity
-from ...processors.estimator import EnergyEstimator, Estimator, SignalEnergyEstimator
+from ...processors.estimator_energy import (
+    EnergyEstimator,
+    Estimator,
+    SignalEnergyEstimator,
+)
 from ...sensor import Sensor
 
 if typing.TYPE_CHECKING:
@@ -36,7 +40,8 @@ class EnergyEstimatorSensor(EstimatorEntity, Sensor):
         class Args(Entity.Args):
             pass
 
-    device: "EnergyEstimatorDevice"
+        device: "EnergyEstimatorDevice"
+        forecast_duration_ts: int
 
     _attr_device_class = Sensor.DeviceClass.ENERGY
     _attr_native_unit_of_measurement = hac.UnitOfEnergy.WATT_HOUR
@@ -51,7 +56,7 @@ class EnergyEstimatorSensor(EstimatorEntity, Sensor):
         forecast_duration_ts: float = 0,
         **kwargs: "Unpack[Args]",
     ):
-        self.forecast_duration_ts = forecast_duration_ts
+        self.forecast_duration_ts = int(forecast_duration_ts)
         super().__init__(
             device,
             id,
@@ -183,7 +188,7 @@ class SignalEnergyEstimatorDevice(
             hv.opt_config("maximum_latency_seconds", config): hv.time_period_selector(
                 unit_of_measurement=hac.UnitOfTime.SECONDS
             ),
-            hv.opt_config("safe_maximum_power_w", config): hv.positive_number_selector(
+            hv.opt_config("input_max", config): hv.positive_number_selector(
                 unit_of_measurement=hac.UnitOfPower.WATT
             ),
         }

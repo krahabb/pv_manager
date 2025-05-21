@@ -8,10 +8,10 @@ import typing
 from astral import sun
 
 from ..helpers import datetime_from_epoch
-from .estimator_pvenergy import ObservedPVEnergy, PVEnergyEstimator, WeatherModel
+from .estimator_pvenergy import PVEnergyEstimator, WeatherModel
 
 if typing.TYPE_CHECKING:
-    pass
+    from typing import Final, Unpack
 
 
 class TimeSpanEnergyModel:
@@ -30,12 +30,14 @@ class TimeSpanEnergyModel:
     - Wc is global for the whole model (of EnergyModels)
     """
 
-    weather_model: typing.Final[WeatherModel]
-    samples: list[ObservedPVEnergy]
+    if typing.TYPE_CHECKING:
+        type Sample = "HeuristicPVEnergyEstimator.Sample"
+        weather_model: Final[WeatherModel]
+        samples: list[Sample]
 
-    sample_max: ObservedPVEnergy
+        sample_max: Sample
 
-    energy_max: float
+        energy_max: float
 
     __slots__ = (
         "weather_model",
@@ -44,7 +46,7 @@ class TimeSpanEnergyModel:
         "energy_max",
     )
 
-    def __init__(self, weather_model: WeatherModel, sample: ObservedPVEnergy):
+    def __init__(self, weather_model: WeatherModel, sample: "Sample"):
         self.weather_model = weather_model
         self.samples = [sample]
         self.sample_max = sample
@@ -57,7 +59,7 @@ class TimeSpanEnergyModel:
             "energy_max": self.energy_max,
         }
 
-    def add_sample(self, sample: ObservedPVEnergy):
+    def add_sample(self, sample: "Sample"):
         self.samples.append(sample)
         if sample.energy > self.sample_max.energy:
             self.sample_max = sample
@@ -69,7 +71,7 @@ class TimeSpanEnergyModel:
                 self.energy_max, sample.weather, sample.energy
             )
 
-    def pop_sample(self, sample: ObservedPVEnergy):
+    def pop_sample(self, sample: "Sample"):
         self.samples.remove(sample)
         if self.samples:
             # Energy max is slowly varying and linked to sunny days when yield is at maximum.
@@ -111,8 +113,10 @@ class HeuristicPVEnergyEstimator(PVEnergyEstimator):
         class Args(PVEnergyEstimator.Args):
             pass
 
-    history_samples: typing.Final[deque[ObservedPVEnergy]]
-    energy_model: typing.Final[dict[int, TimeSpanEnergyModel]]
+        type Sample = PVEnergyEstimator.Sample
+
+        history_samples: Final[deque[Sample]]
+        energy_model: Final[dict[int, TimeSpanEnergyModel]]
 
     _SLOTS_ = (
         "history_samples",
@@ -124,7 +128,7 @@ class HeuristicPVEnergyEstimator(PVEnergyEstimator):
     def __init__(
         self,
         id,
-        **kwargs: "typing.Unpack[Args]",
+        **kwargs: "Unpack[Args]",
     ):
         self.history_samples = deque()
         self.energy_model = {}
@@ -177,7 +181,6 @@ class HeuristicPVEnergyEstimator(PVEnergyEstimator):
         - d_ratio = sum((observed_energy - energy_max) * (energy_max / _model_energy_max)) / sum(energy_max)
 
         """
-
         sum_energy_max = 0
         sum_observed_weighted = 0
         try:
@@ -196,19 +199,12 @@ class HeuristicPVEnergyEstimator(PVEnergyEstimator):
             listener(self)
 
     @typing.override
-    def get_estimated_energy(
-        self, time_begin_ts: float | int, time_end_ts: float | int
-    ) -> float:
-
+    def get_estimated_energy(self, time_begin_ts: int, time_end_ts: int) -> float:
         weather_forecast = self.get_weather_forecast_at(time_begin_ts)
         if weather_forecast:
             weather_forecast_next = weather_forecast.next
             energy = 0
-
-            time_begin_ts = int(time_begin_ts)
-            time_end_ts = int(time_end_ts)
             model_time_ts = time_begin_ts - (time_begin_ts % self.sampling_interval_ts)
-
             # we 'blend' in recent 'ratio' of energy production with respect to max energy
             # end 'dumb' weather based estimations on the long term. It is hard to say how much
             # this blending should last but the heuristic tells us the, despite weather forecasts,
@@ -280,15 +276,10 @@ class HeuristicPVEnergyEstimator(PVEnergyEstimator):
             )
 
     @typing.override
-    def get_estimated_energy_max(
-        self, time_begin_ts: float | int, time_end_ts: float | int
-    ):
+    def get_estimated_energy_max(self, time_begin_ts: int, time_end_ts: int):
         """Computes the 'maximum' expected energy in the time window."""
         energy = 0
-        time_begin_ts = int(time_begin_ts)
-        time_end_ts = int(time_end_ts)
         model_time_ts = time_begin_ts - (time_begin_ts % self.sampling_interval_ts)
-
         while time_begin_ts < time_end_ts:
             model_time_next_ts = model_time_ts + self.sampling_interval_ts
             try:
@@ -301,47 +292,40 @@ class HeuristicPVEnergyEstimator(PVEnergyEstimator):
             except KeyError:
                 # no energy in model
                 pass
-
             time_begin_ts = model_time_ts = model_time_next_ts
 
         return energy / self.sampling_interval_ts
 
     @typing.override
-    def get_estimated_energy_min(
-        self, time_begin_ts: float | int, time_end_ts: float | int
-    ):
+    def get_estimated_energy_min(self, time_begin_ts: int, time_end_ts: int):
         return 0
 
     @typing.override
-    def _observed_energy_history_add(self, history_sample: ObservedPVEnergy):
+    def _observed_energy_history_add(self, sample: "Sample"):
 
-        if history_sample.energy:
+        if sample.energy:
             # Our model only contains data when energy is being produced leaving the model 'empty'
             # for time with no production
-            self.history_samples.append(history_sample)
+            self.history_samples.append(sample)
 
-            history_sample.sun_zenith, history_sample.sun_azimuth = (
-                sun.zenith_and_azimuth(
-                    self.astral_observer,
-                    datetime_from_epoch(
-                        (history_sample.time_ts + history_sample.time_next_ts) / 2
-                    ),
-                )
+            sample.sun_zenith, sample.sun_azimuth = sun.zenith_and_azimuth(
+                self.astral_observer,
+                datetime_from_epoch((sample.time_ts + sample.time_next_ts) / 2),
             )
 
             try:
-                model = self.energy_model[history_sample.time_ts % 86400]
-                model.add_sample(history_sample)
+                model = self.energy_model[sample.time_ts % 86400]
+                model.add_sample(sample)
             except KeyError as e:
-                self.energy_model[history_sample.time_ts % 86400] = model = (
-                    TimeSpanEnergyModel(self.weather_model, history_sample)
+                self.energy_model[sample.time_ts % 86400] = model = TimeSpanEnergyModel(
+                    self.weather_model, sample
                 )
             if self._model_energy_max < model.energy_max:
                 self._model_energy_max = model.energy_max
 
         # flush history
         recalc_energy_max = False
-        history_min_ts = history_sample.time_ts - self.history_duration_ts
+        history_min_ts = sample.time_ts - self.history_duration_ts
         try:
             while self.history_samples[0].time_ts < history_min_ts:
                 discarded_sample = self.history_samples.popleft()
