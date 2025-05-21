@@ -138,8 +138,13 @@ class Controller(EnergyEstimatorController["Controller.Config"], HeuristicPVEner
             ): HeuristicPVEnergyEstimator.weather_model_selector(),
         }
 
+    @typing.override
     def _create_diagnostic_entities(self):
         diagnostic_entities = self.diagnostic_entities
         for d_e_d in DIAGNOSTIC_DESCR.values():
             if d_e_d.id not in diagnostic_entities:
                 d_e_d.init(self)
+
+    @typing.override
+    def get_solar_forecast(self):
+        return HeuristicPVEnergyEstimator.get_solar_forecast(self)

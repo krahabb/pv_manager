@@ -16,6 +16,7 @@ from .devices.estimator_processor import (
 if typing.TYPE_CHECKING:
     from typing import Any, Callable, ClassVar, Coroutine, Final, TypedDict, Unpack
 
+    from homeassistant.components.energy.types import SolarForecastType
     from homeassistant.config_entries import ConfigEntry, ConfigSubentry
     from homeassistant.core import HomeAssistant, State
     from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
@@ -210,6 +211,12 @@ class Controller[_ConfigT: pmc.EntryConfig](Device):
             if entities:
                 add_entities(entities, config_subentry_id=subentry_id)
 
+    def get_solar_forecast(self) -> "SolarForecastType | None":
+        """Returns the forecasts array for HA energy integration.
+        This is here to setup the entry-point to be called by the energy platform.
+        Specialized controllers should point this to an actual implementation."""
+        return None
+
     async def _entry_update_listener(
         self, hass: "HomeAssistant", config_entry: "ConfigEntry"
     ):
@@ -316,6 +323,7 @@ class EnergyEstimatorController[_ConfigT: "EnergyEstimatorController.Config"](  
         return {}
 
     # interface: Controller
+    @typing.override
     def _subentry_add(
         self, subentry_id: str, entry_data: "EntryData[EnergyEstimatorSensor.Config]"
     ):
@@ -334,6 +342,7 @@ class EnergyEstimatorController[_ConfigT: "EnergyEstimatorController.Config"](  
                     * 3600,
                 )
 
+    @typing.override
     async def _async_subentry_update(self, subentry_id: str, entry_data: EntryData):
         match entry_data.subentry_type:
             case pmc.ConfigSubentryType.ENERGY_ESTIMATOR_SENSOR:
@@ -346,5 +355,3 @@ class EnergyEstimatorController[_ConfigT: "EnergyEstimatorController.Config"](  
                         entry_data.config.get("forecast_duration_hours", 1) * 3600
                     )
                     entity.on_estimator_update(self)
-
-    # interface: self
