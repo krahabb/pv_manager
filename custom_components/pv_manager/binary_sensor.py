@@ -7,7 +7,7 @@ from .helpers.entity import Entity
 from .processors import ProcessorWarning
 
 if typing.TYPE_CHECKING:
-    from typing import Callable, Iterable, Unpack
+    from typing import Callable, Final, Iterable, Unpack
 
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
@@ -75,11 +75,9 @@ class ProcessorWarningBinarySensor(BinarySensor):
     _attr_entity_category = BinarySensor.EntityCategory.DIAGNOSTIC
     _attr_parent_attr = None
 
-    _processor_warnings: "Iterable[ProcessorWarning]"
+    _processor_warnings: "Final[Iterable[ProcessorWarning]]"
+    _processor_warning: "Final[ProcessorWarning | None]"
     _processor_warnings_unsub: "Iterable[Callable[[], None]]"
-
-    # optimized properties for the case where we only have one
-    _processor_warning: "ProcessorWarning | None"
 
     __slots__ = (
         "_processor_warnings",

@@ -15,7 +15,7 @@ if typing.TYPE_CHECKING:
     from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
     from .controller import Controller, Device
-    from .processors import EnergyBroadcast, SignalEnergyProcessor
+    from .processors import EnergyBroadcast
 
     SensorStateType = sensor.StateType | sensor.date | sensor.datetime | sensor.Decimal
 

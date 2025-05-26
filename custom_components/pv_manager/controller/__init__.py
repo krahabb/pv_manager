@@ -8,7 +8,7 @@ from ..helpers import validation as hv
 from ..manager import Manager
 from ..sensor import Sensor
 from .devices import Device
-from .devices.estimator_processor import (
+from .devices.estimator_device import (
     EnergyEstimatorDevice,
     EnergyEstimatorSensor,
 )
@@ -307,7 +307,7 @@ class EnergyEstimatorController[_ConfigT: "EnergyEstimatorController.Config"](  
             case pmc.ConfigSubentryType.ENERGY_ESTIMATOR_SENSOR:
                 if not config:
                     config = {
-                        "name": "Energy estimation",
+                        "name": "Energy forecast",
                         "forecast_duration_hours": 1,
                     }
                 return hv.entity_schema(

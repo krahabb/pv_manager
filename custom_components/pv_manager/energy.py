@@ -4,8 +4,8 @@ from . import const as pmc
 
 if typing.TYPE_CHECKING:
     from homeassistant.components.energy.types import SolarForecastType
-    from homeassistant.core import HomeAssistant
     from homeassistant.config_entries import ConfigEntry
+    from homeassistant.core import HomeAssistant
 
     from .controller import Controller
 

@@ -12,13 +12,13 @@ from ..helpers import validation as hv
 from ..manager import Manager
 from ..processors.estimator_pvenergy_heuristic import HeuristicPVEnergyEstimator
 from ..sensor import DiagnosticSensor, EstimatorDiagnosticSensor
-from .devices.estimator_processor import SignalEnergyEstimatorDevice
+from .devices.estimator_device import SignalEnergyEstimatorDevice
 
 if typing.TYPE_CHECKING:
     from typing import Any, Callable, Final, Unpack
 
     from ..processors import Estimator
-    from .devices.estimator_processor import EnergyEstimatorDevice
+    from .devices.estimator_device import EnergyEstimatorDevice
 
 
 # TODO: create a global generalization for diagnostic sensors linked to estimator

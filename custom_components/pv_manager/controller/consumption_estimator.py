@@ -6,7 +6,7 @@ from ..helpers import validation as hv
 from ..processors.estimator_consumption_heuristic import (
     HeuristicConsumptionEstimator,
 )
-from .devices.estimator_processor import SignalEnergyEstimatorDevice
+from .devices.estimator_device import SignalEnergyEstimatorDevice
 
 if typing.TYPE_CHECKING:
     from typing import Unpack
