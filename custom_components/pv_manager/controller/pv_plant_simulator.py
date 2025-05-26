@@ -203,10 +203,10 @@ class Controller(controller.Controller["EntryConfig"]):
 
         self.track_timer(self.SAMPLING_PERIOD, self._timer_callback)
         await super().async_setup()
-        self._timer_callback()
+        self._timer_callback(0)
 
     @callback
-    def _timer_callback(self):
+    def _timer_callback(self, time_ts: float, /):
         sun_zenith, sun_azimuth = sun.zenith_and_azimuth(
             self.astral_observer,
             dt_util.now(),

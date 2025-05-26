@@ -8,7 +8,6 @@ estimators which should always include a signal processor to be feeded
 
 import abc
 import enum
-from time import time as TIME_TS
 import typing
 
 from homeassistant import const as hac
@@ -27,6 +26,7 @@ if typing.TYPE_CHECKING:
         ClassVar,
         Final,
         Iterable,
+        Mapping,
         NotRequired,
         TypedDict,
         Unpack,
@@ -37,20 +37,19 @@ if typing.TYPE_CHECKING:
     from .. import const as pmc
 
 
-class GenericBroadcast(Loggable):
+class GenericBroadcast[*_argsT]:
 
     if typing.TYPE_CHECKING:
-        LISTENER_TYPE = Callable[..., Any]
+        type LISTENER_TYPE = Callable[[*_argsT], Any]
         _listeners: set[LISTENER_TYPE]
 
-    _SLOTS_ = ("_listeners",)
+    __slots__ = ("_listeners",)
 
     def shutdown(self):
         try:
             self._listeners.clear()
         except AttributeError:
             pass
-        super().shutdown()
 
     def listen(self, callback_func: "LISTENER_TYPE"):
         try:
@@ -68,7 +67,7 @@ class GenericBroadcast(Loggable):
 
         return _unsub
 
-    def broadcast(self, *args):
+    def broadcast(self, *args: *_argsT):
         try:
             for listener in self._listeners:
                 listener(*args)
@@ -106,34 +105,52 @@ class EnergyBroadcast(Loggable):
 
 
 class ProcessorWarning:
+    """This class represent a warning signal controlled by any owning class instance.
+    This is typically a Processor but it could be anything in theory. It manipulates a bit
+    the owning instance attributes to speed up access and creates some 'friedly'.
+    In fact, some of it's state is held there."""
 
-    CALLBACK_TYPE = typing.Callable[[bool], None]
+    if typing.TYPE_CHECKING:
 
-    processor: "BaseProcessor"
-    id: str  # could be any object but it should have a 'proper' str behaviour
-    on: bool
-    _listeners: set[CALLBACK_TYPE]
+        type ACTIVATE_TYPE = Callable[[], None]
+        type DEACTIVATE_TYPE = Callable[[], None]
+
+        processor: "BaseProcessor"
+        id: str  # could be any object but it should have a 'proper' str behaviour
+
+        type CALLBACK_TYPE = Callable[[bool], None]
+        _listeners: set[CALLBACK_TYPE]
 
     __slots__ = (
         "processor",
         "id",
-        "on",
         "_listeners",
     )
 
     def __init__(self, processor: "BaseProcessor", id):
         self.processor = processor
         self.id = id
-        self.on = False
         self._listeners = set()
         setattr(processor, f"warning_{id}", self)
+        setattr(processor, f"warning_{id}_on", False)
+        setattr(processor, f"warning_{id}_activate", self.activate)
+        setattr(processor, f"warning_{id}_deactivate", self.deactivate)
 
     def shutdown(self):
         self._listeners.clear()
-        setattr(self.processor, f"warning_{self.id}", None)
+        processor = self.processor
+        id = self.id
+        delattr(processor, f"warning_{id}")
+        delattr(processor, f"warning_{id}_on")
+        delattr(processor, f"warning_{id}_activate")
+        delattr(processor, f"warning_{id}_deactivate")
         self.processor = None  # type: ignore
 
-    def listen(self, callback_func: CALLBACK_TYPE):
+    @property
+    def on(self):
+        return getattr(self.processor, f"warning_{self.id}_on")
+
+    def listen(self, callback_func: "CALLBACK_TYPE", /):
         self._listeners.add(callback_func)
 
         def _unsub():
@@ -144,25 +161,18 @@ class ProcessorWarning:
 
         return _unsub
 
-    def toggle(self):
-        self.on = not self.on
+    def activate(self):
+        setattr(self.processor, f"warning_{self.id}_on", True)
         for listener in self._listeners:
-            listener(self.on)
+            listener(True)
+
+    def deactivate(self):
+        setattr(self.processor, f"warning_{self.id}_on", False)
+        for listener in self._listeners:
+            listener(False)
 
 
 class BaseProcessor(CallbackTracker, Loggable):
-
-    @typing.final
-    class Unit(enum.StrEnum):
-        """Default units being used in our processing."""
-
-        VOLTAGE_UNIT = hac.UnitOfElectricPotential.VOLT
-        CURRENT_UNIT = hac.UnitOfElectricCurrent.AMPERE
-        POWER_UNIT = hac.UnitOfPower.WATT
-        ENERGY_UNIT = hac.UnitOfEnergy.WATT_HOUR
-
-    Converter: typing.Final = unit_conversion
-    """Access to the homeassistant.util.unit_conversion module to reach a unit converter."""
 
     class SourceType(enum.StrEnum):
         BATTERY = enum.auto()
@@ -182,8 +192,6 @@ class BaseProcessor(CallbackTracker, Loggable):
 
         class StoreType(TypedDict):
             pass
-
-        type ConvertFuncType = Callable[[float, str | None, str | None], float]
 
         DEFAULT_NAME: ClassVar[str]
 
@@ -228,18 +236,84 @@ class BaseProcessor(CallbackTracker, Loggable):
     def get_state_dict(self):
         """Returns a synthetic state dict.
         Used for debugging purposes."""
-        return {
-            "warnings": {warning.id: warning.on for warning in self.warnings},
-        }
+        return {}
 
-    def restore(self, data: "StoreType"):
+    def restore(self, data: "StoreType", /):
         pass
 
     def store(self) -> "StoreType":
         return {}
 
 
+class UnitOfElectricCharge(enum.StrEnum):
+    AMPERE_HOUR = "Ah"
+
+
+class ElectricChargeConverter(unit_conversion.BaseUnitConverter):
+    """Utility to convert electric potential values."""
+
+    UNIT_CLASS = "charge"
+    _UNIT_CONVERSION: dict[str | None, float] = {
+        UnitOfElectricCharge.AMPERE_HOUR: 1,
+    }
+    VALID_UNITS = {
+        UnitOfElectricCharge.AMPERE_HOUR,
+    }
+
+
+class _UnitDef:
+    if typing.TYPE_CHECKING:
+        units: Final[type[enum.StrEnum]]
+        default: Final[enum.StrEnum]
+        converter: Final[type[unit_conversion.BaseUnitConverter]]
+        convert: Final["SignalProcessor.ConvertFuncType"]
+        convert_to_default: Final[Mapping[str | None, float]]
+
+    __slots__ = (
+        "units",
+        "default",
+        "converter",
+        "convert",
+        "convert_to_default",
+        "_name_",
+        "_value_",
+        "__dict__",
+    )
+
+    def __init__(
+        self, default: enum.StrEnum, converter: type[unit_conversion.BaseUnitConverter]
+    ):
+        self.units = type(default)
+        self.default = default
+        self.converter = converter
+        self.convert = converter.convert
+        self.convert_to_default = {
+            unit: converter.get_unit_ratio(default, unit)
+            for unit in converter.VALID_UNITS
+        }
+        self._value_ = self
+
+
 class SignalProcessor[_input_t](BaseProcessor):
+
+    @typing.final
+    class Unit(_UnitDef, enum.Enum):
+        """Default units being used in our signal processing."""
+
+        def __new__(cls, *values):
+            return _UnitDef(*values)
+
+        VOLTAGE = (
+            hac.UnitOfElectricPotential.VOLT,
+            unit_conversion.ElectricPotentialConverter,
+        )
+        CURRENT = (
+            hac.UnitOfElectricCurrent.AMPERE,
+            unit_conversion.ElectricCurrentConverter,
+        )
+        POWER = (hac.UnitOfPower.WATT, unit_conversion.PowerConverter)
+        ENERGY = (hac.UnitOfEnergy.WATT_HOUR, unit_conversion.EnergyConverter)
+        CHARGE = (UnitOfElectricCharge.AMPERE_HOUR, ElectricChargeConverter)
 
     if typing.TYPE_CHECKING:
 
@@ -250,20 +324,29 @@ class SignalProcessor[_input_t](BaseProcessor):
         class Args(BaseProcessor.Args):
             config: "SignalProcessor.Config"
 
-    config: "Config"
-    time_ts: float
-    input: _input_t | None
+        type ConvertFuncType = Callable[[float, str | None, str | None], float]
+
+        config: "Config"
+        time_ts: float
+        input: _input_t | None
+        unit: Final[Unit]
+        input_unit: Final[str | None]
+        input_convert: Final[Mapping[str | None, float]]
 
     _SLOTS_ = (
         "source_entity_id",
         "update_period_ts",
+        "unit",
         "time_ts",
         "input",
+        "unit",
+        "input_unit",
+        "input_convert",
     )
 
     @classmethod
     @typing.override
-    def get_config_schema(cls, config: "Config | None") -> "pmc.ConfigSchema":
+    def get_config_schema(cls, config: "Config | None", /) -> "pmc.ConfigSchema":
         if config is None:
             config = {}
         return {
@@ -273,9 +356,10 @@ class SignalProcessor[_input_t](BaseProcessor):
             ),
         }
 
-    def __init__(self, id, **kwargs: "Unpack[Args]"):
+    def __init__(self, id, /, **kwargs: "Unpack[Args]"):
         self.time_ts = None  # type: ignore
         self.input = None
+        self.input_unit = None
         super().__init__(id, **kwargs)
         self.source_entity_id = self.config.get("source_entity_id")
         self.update_period_ts = self.config.get("update_period_seconds", 0)
@@ -296,25 +380,89 @@ class SignalProcessor[_input_t](BaseProcessor):
             "update_period_ts": self.update_period_ts,
         }
 
-    def process(self, input: _input_t, time_ts: float) -> typing.Any:
+    def configure(self, unit: Unit, /):
+        self.unit = unit  # type: ignore
+        self.input_unit = unit.default  # type: ignore
+        self.input_convert = unit.convert_to_default  # type: ignore
+        self._source_convert = unit.convert
+
+    def process(self, input: _input_t | None, time_ts: float, /) -> typing.Any:
         self.time_ts = time_ts
         self.input = input
 
-    def update(self, time_ts: float):
+    def update(self, time_ts: float, /):
         self.time_ts = time_ts
-
-    def _source_convert(self, value: float, from_unit: str | None, to_unit: str | None):
-        pass
 
     @callback
     def _source_entity_update(
-        self, event: "Event[EventStateChangedData] | CallbackTracker.Event"
+        self, event: "Event[EventStateChangedData] | CallbackTracker.Event", /
     ):
-        pass
+        try:
+            state = event.data["new_state"]
+            self.process(
+                float(state.state) * self.input_convert[state.attributes["unit_of_measurement"]],  # type: ignore
+                event.time_fired_timestamp,
+            )  # type: ignore
+            return
+        except AttributeError as e:
+            if e.name == "input_convert":
+                exception = self.configure_source(state, event.time_fired_timestamp)
+                if not exception:
+                    return
+            else:
+                exception = e
+        except Exception as e:
+            exception = e
+
+        # this is expected and silently managed when state == None or 'unknown'
+        self.process(None, event.time_fired_timestamp)
+        if state and state.state not in (hac.STATE_UNKNOWN, hac.STATE_UNAVAILABLE):
+            self.log_exception(
+                self.WARNING,
+                exception,
+                "_source_entity_update (state:%s)",
+                state,
+            )
+
+    def configure_source(self, state: "State | None", time_ts: float):
+        """Called in an AttributerError handler when (at start) we need to configure unit conversion."""
+        from_unit = state.attributes["unit_of_measurement"]  # type: ignore
+        for unit in SignalProcessor.Unit:
+            if from_unit in unit.units:
+                self.configure(unit)
+                try:
+                    self.process(
+                        float(state.state) * self.input_convert[from_unit],  # type: ignore
+                        time_ts,
+                    )
+                    return None
+                except KeyError:
+                    return ValueError(
+                        f"No conversion available from '{from_unit}' to '{self.input_unit}'"
+                    )
+        else:
+            return ValueError(f"Unit '{from_unit}' not supported")
+
+    def _source_convert(
+        self, value: float, from_unit: str | None, to_unit: str | None, /
+    ) -> float:
+        """Installed as _source_convert at init time this will detect the type of source entity
+        by inspecting the unit and install the proper converter.
+        This is an helping method used in conjunction with tracking an HA entity"""
+        for unit in SignalProcessor.Unit:
+            if from_unit in unit.units:
+                self.configure(unit)
+                # TODO: setup a local dict of coefficients to map conversion without
+                # having to invoke the HA lib convert function every time.
+                # This would allow us to invert signals by inverting the map in place
+                # and not going through an additional multiplication
+                return self._source_convert(value, from_unit, self.input_unit)
+
+        raise ValueError(f"Unsupported unit of measurement '{from_unit}'")
 
     @callback
-    def _update_callback(self):
-        self.update(TIME_TS())
+    def _update_callback(self, time_ts: float, /):
+        self.update(time_ts)
 
 
 class SignalEnergyProcessor(SignalProcessor[float], EnergyBroadcast):
@@ -340,11 +488,26 @@ class SignalEnergyProcessor(SignalProcessor[float], EnergyBroadcast):
         class Args(SignalProcessor.Args):
             config: "SignalEnergyProcessor.Config"
 
-        input_mode: Final[bool]
-        input_unit: Final[str | None]
-        """input_mode is not implicitly initialized since it must be configured by calling
+        ENERGY_UNITS: Final
+
+        # built and set automatically on super().__init__
+        warning_no_signal: ProcessorWarning
+        warning_no_signal_on: bool
+        warning_no_signal_activate: ProcessorWarning.ACTIVATE_TYPE
+        warning_no_signal_deactivate: ProcessorWarning.DEACTIVATE_TYPE
+        warning_maximum_latency: ProcessorWarning
+        warning_maximum_latency_on: bool
+        warning_maximum_latency_activate: ProcessorWarning.ACTIVATE_TYPE
+        warning_maximum_latency_deactivate: ProcessorWarning.DEACTIVATE_TYPE
+        warning_out_of_range: ProcessorWarning
+        warning_out_of_range_on: bool
+        warning_out_of_range_activate: ProcessorWarning.ACTIVATE_TYPE
+        warning_out_of_range_deactivate: ProcessorWarning.DEACTIVATE_TYPE
+
+        _differential_mode: bool
+        """_differential_mode is not implicitly initialized since it must be configured by calling
         configure() before process()."""
-        energy: float
+        output: float
 
     # these defaults are applied when the corresponding config option is not set or is 0
     # they means by default we're measuring positive energies with (almost) no latency checks
@@ -354,17 +517,12 @@ class SignalEnergyProcessor(SignalProcessor[float], EnergyBroadcast):
     SAFE_MAXIMUM_POWER_DISABLED = 1e6
     SAFE_MINIMUM_POWER_DISABLED = -1e6
 
-    class InputMode(enum.Enum):
-        POWER = (False, BaseProcessor.Unit.POWER_UNIT)
-        ENERGY = (True, BaseProcessor.Unit.ENERGY_UNIT)
+    ENERGY_UNITS = (SignalProcessor.Unit.ENERGY, SignalProcessor.Unit.CHARGE)
 
     class WARNINGS(enum.StrEnum):
+        no_signal = enum.auto()
         maximum_latency = enum.auto()
         out_of_range = enum.auto()
-
-    # built and set automatically on super().__init__
-    warning_maximum_latency: ProcessorWarning
-    warning_out_of_range: ProcessorWarning
 
     _SLOTS_ = (
         "maximum_latency_ts",
@@ -372,16 +530,16 @@ class SignalEnergyProcessor(SignalProcessor[float], EnergyBroadcast):
         "energy_max",
         "input_min",
         "energy_min",
-        "input_mode",
-        "input_unit",
+        "_differential_mode",
         "energy",
+        "warning_no_signal",
         "warning_maximum_latency",
         "warning_out_of_range",
     )
 
     @classmethod
     @typing.override
-    def get_config_schema(cls, config: "Config | None") -> "pmc.ConfigSchema":
+    def get_config_schema(cls, config: "Config | None", /) -> "pmc.ConfigSchema":
         if config is None:
             config = {}
         return {
@@ -421,9 +579,9 @@ class SignalEnergyProcessor(SignalProcessor[float], EnergyBroadcast):
             "input_min", SignalEnergyProcessor.SAFE_MINIMUM_POWER_DISABLED
         )
         self.energy_min = self.input_min / 3600
-        self.input_unit = None
-        self.energy = 0
+        self.output = 0
         super().__init__(id, **kwargs)
+        self.warning_no_signal_on = True
 
     @typing.override
     def as_dict(self):
@@ -446,126 +604,96 @@ class SignalEnergyProcessor(SignalProcessor[float], EnergyBroadcast):
             ),
         }
 
-    def configure(self, input_mode: InputMode):
-        self.input_mode, self.input_unit = input_mode.value  # type: ignore
+    @typing.override
+    def configure(self, unit: SignalProcessor.Unit, /):
+        super().configure(unit)
+        self._differential_mode = unit in SignalEnergyProcessor.ENERGY_UNITS
 
     @typing.override
-    def process(self, input: float | None, time_ts: float) -> float | None:
+    def process(self, input: float | None, time_ts: float, /) -> float | None:
 
         try:
             d_ts = time_ts - self.time_ts
             if 0 <= d_ts < self.maximum_latency_ts:
 
-                if self.warning_maximum_latency.on:
-                    self.warning_maximum_latency.toggle()
+                if self.warning_maximum_latency_on:
+                    self.warning_maximum_latency_deactivate()
 
-                if self.input_mode:
+                if self._differential_mode:
                     energy = input - self.input  # type: ignore
                     if self.energy_min <= energy / d_ts <= self.energy_max:
-                        if self.warning_out_of_range.on:
-                            self.warning_out_of_range.toggle()
-                        self.energy += energy
+                        if self.warning_out_of_range_on:
+                            self.warning_out_of_range_deactivate()
+                        self.output += energy
                         for energy_listener in self.energy_listeners:
                             energy_listener(energy, time_ts)
                     else:
                         # assume an energy reset or out of range
                         energy = None
-                        if not self.warning_out_of_range.on:
-                            self.warning_out_of_range.toggle()
+                        if not self.warning_out_of_range_on:
+                            self.warning_out_of_range_activate()
                 else:
                     # power left rect integration
-                    if self.input_min <= self.input <= self.input_max:  # type: ignore
-                        if self.warning_out_of_range.on:
-                            self.warning_out_of_range.toggle()
-                        energy = self.input * d_ts / 3600  # type: ignore
-                        self.energy += energy
-                        for energy_listener in self.energy_listeners:
-                            energy_listener(energy, time_ts)
+                    energy = self.input * d_ts / 3600  # type: ignore
+                    self.output += energy
+                    for energy_listener in self.energy_listeners:
+                        energy_listener(energy, time_ts)
+                    if self.input_min <= input <= self.input_max:  # type: ignore
+                        if self.warning_out_of_range_on:
+                            self.warning_out_of_range_deactivate()
                     else:
                         # discard the out of range observation
-                        energy = None
-                        if not self.warning_out_of_range.on:
-                            self.warning_out_of_range.toggle()
+                        input = None
+                        if not self.warning_out_of_range_on:
+                            self.warning_out_of_range_activate()
 
             else:
                 energy = None
-                if not self.warning_maximum_latency.on:
-                    self.warning_maximum_latency.toggle()
+                if not self.warning_maximum_latency_on:
+                    self.warning_maximum_latency_activate()
 
             self.input = input
             self.time_ts = time_ts
             return energy
 
         except TypeError as error:
-            # expected when input or self.input are 'None'
-            # TODO: add a warning processor for signaling 'input unavailable'
+            # This code path 'must' be executed whenever input or self.input are 'None'
+            # in order to correctly manage the warning
+            # The context should be like:
+            # - self.time_ts == None -> start of processing (equivalent to returning from loss of signal)
+            # - input == None -> loss of signal
+            # - self.input == None -> previous reading was unavailable due to
+            # recovering from loss of signal or any other condition
+            if input is None:
+                if not self.warning_no_signal_on:
+                    self.warning_no_signal_activate()
+            else:
+                if self.warning_no_signal_on:
+                    self.warning_no_signal_deactivate()
             self.input = input
             self.time_ts = time_ts
             return None
         except AttributeError as error:
-            if error.name == "input_mode":
+            if error.name == "_differential_mode":
                 raise Exception("configure() need to be called before process()")
             raise error
 
     @typing.override
-    def update(self, time_ts: float):
-        try:
-            if self.input_mode:
-                # TODO: interpolate energy
-                pass
-            else:
-                self.process(self.input, time_ts)
-        except Exception as e:
-            # This might happen if we use interpolation on 'invalid' states
-            # i.e. when entities don't update or we've still not fully initialized
-            # This might be a subtle error though but we just log when debugging
-            self.log_exception(self.DEBUG, e, "calling update()", timeout=1800)
-
-    @callback
-    @typing.override
-    def _source_entity_update(
-        self, event: "Event[EventStateChangedData] | CallbackTracker.Event"
-    ):
-        try:
-            state = event.data["new_state"]
-            self.process(
-                self._source_convert(
-                    float(state.state),  # type: ignore
-                    state.attributes["unit_of_measurement"],  # type: ignore
-                    self.input_unit,
-                ),
-                event.time_fired_timestamp,
-            )  # type: ignore
-        except Exception as e:
-            # this is expected and silently managed when state == None or 'unknown'
-            # TODO: put the BaseProcessor in warning like if it was a maximum_latency
-            # or set a new warning id like no_signal
-            self.process(None, event.time_fired_timestamp)
-            if state and state.state not in (hac.STATE_UNKNOWN, hac.STATE_UNAVAILABLE):
-                self.log_exception(
-                    self.WARNING,
-                    e,
-                    "track_state (state:%s)",
-                    state,
-                )
-
-    @typing.override
-    def _source_convert(
-        self, value: float, from_unit: str | None, to_unit: str | None
-    ) -> float:
-        """Installed as _source_convert at init time this will detect the type of source entity
-        by inspecting the unit and install the proper converter."""
-        if from_unit in hac.UnitOfPower:
-            self._source_convert = BaseProcessor.Converter.PowerConverter.convert
-            self.configure(self.InputMode.POWER)
-        elif from_unit in hac.UnitOfEnergy:
-            self._source_convert = BaseProcessor.Converter.EnergyConverter.convert
-            self.configure(self.InputMode.ENERGY)
+    def update(self, time_ts: float, /):
+        if self._differential_mode:
+            # TODO: interpolate energy
+            pass
         else:
-            # TODO: raise issue?
-            raise ValueError(f"Unsupported unit of measurement '{from_unit}'")
-        return self._source_convert(value, from_unit, self.input_unit)
+            self.process(self.input, time_ts)
 
+    # interface: self
+    def reset(self, /):
+        """Called to stop accumulation up until time_ts (see energy estimators) without raising any warning or
+        dispatching any current accumulated energy."""
+        # This should do the job:
+        # Now the state is almost like at start and the first sample being processed will
+        # start a new accumulation (provided it is a valid value though)
+        self.input = None
 
 class Estimator(BaseProcessor):
 
@@ -604,7 +732,7 @@ class Estimator(BaseProcessor):
         }
 
     # interface: self
-    def listen_update(self, callback_func: "UPDATE_LISTENER_TYPE"):
+    def listen_update(self, callback_func: "UPDATE_LISTENER_TYPE", /):
         self._update_listeners.add(callback_func)
 
         def _unsub():

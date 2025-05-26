@@ -7,14 +7,13 @@ import enum
 from time import time
 import typing
 
-from homeassistant.core import HassJob, HassJobType, callback
 from homeassistant.util import dt as dt_util
 
 from ..helpers import Loggable, datetime_from_epoch
 from ..manager import Manager
 
 if typing.TYPE_CHECKING:
-    from typing import ClassVar, Final
+    from typing import Final
 
 
 class CycleMode(enum.StrEnum):
@@ -46,17 +45,22 @@ class MeteringCycle(Loggable):
     time has passed.
     """
 
-    _entities: set[MeteringEntity]
-    _cycles: "ClassVar[dict[CycleMode, MeteringCycle]]" = {}
+    if typing.TYPE_CHECKING:
+        cycle_mode: Final[CycleMode]
+        is_total: Final[bool]
+        _entities: set[MeteringEntity]
+        _CYCLES: Final[dict[CycleMode, "MeteringCycle"]]
+
+    _CYCLES = {}
 
     __slots__ = (
         "cycle_mode",
+        "is_total",
         "last_reset_dt",
         "last_reset_ts",  # UTC timestamp of last reset
         "next_reset_dt",
         "next_reset_ts",  # UTC timestamp of next reset
         "_entities",
-        "_reset_cycle_job",
         "_reset_cycle_unsub",
     )
 
@@ -64,20 +68,23 @@ class MeteringCycle(Loggable):
     def register(entity: MeteringEntity):
         time_ts = time()
         try:
-            metering_cycle = MeteringCycle._cycles[entity.cycle_mode]
+            metering_cycle = MeteringCycle._CYCLES[entity.cycle_mode]
             if time_ts >= metering_cycle.next_reset_ts:
-                if metering_cycle.cycle_mode == CycleMode.TOTAL:
+                if metering_cycle.is_total:
                     # Houston we have a problem
                     metering_cycle.log(Loggable.CRITICAL, "Time overflow")
                 else:
                     metering_cycle.update(time_ts)
         except KeyError:
-            metering_cycle = MeteringCycle(entity.cycle_mode, time_ts)
+            # ensure we pass in a 'true' CycleMode
+            metering_cycle = MeteringCycle(CycleMode(entity.cycle_mode), time_ts)
 
         metering_cycle.log(Loggable.WARNING, "Registering entity: %s", entity.logtag)
         metering_cycle._entities.add(entity)
-        if metering_cycle._reset_cycle_job and not metering_cycle._reset_cycle_unsub:
-            metering_cycle._reset_cycle_unsub = Manager.schedule_at(metering_cycle.next_reset_dt, metering_cycle._reset_cycle_job)  # type: ignore
+        if not (metering_cycle.is_total or metering_cycle._reset_cycle_unsub):
+            metering_cycle._reset_cycle_unsub = Manager.schedule(
+                metering_cycle.next_reset_ts - time_ts, metering_cycle.update, None
+            )
             metering_cycle.log(
                 Loggable.WARNING, "Scheduled cycle at: %s", metering_cycle.next_reset_dt
             )
@@ -88,48 +95,45 @@ class MeteringCycle(Loggable):
         self.cycle_mode = cycle_mode
         self._entities = set()
         self._reset_cycle_unsub = None
-        if cycle_mode == CycleMode.TOTAL:
-            self._reset_cycle_job = None
+        if cycle_mode is CycleMode.TOTAL:
+            self.is_total = True
             self.last_reset_dt = None
             self.last_reset_ts = 0
             self.next_reset_dt = None
             self.next_reset_ts = 2147483647
         else:
-            self._reset_cycle_job = HassJob(
-                self.update,
-                f"MeteringCycle({self.cycle_mode})",
-                job_type=HassJobType.Callback,
-            )
-            self.update(datetime_from_epoch(time_ts))
-        MeteringCycle._cycles[cycle_mode] = self
+            self.is_total = False
+            self.update(None)
+        MeteringCycle._CYCLES[cycle_mode] = self
 
-    def update(self, dt_or_ts: datetime | float):
-        """dt_or_ts time is now as an UTC datetime or unix epoch.
-        This is actually called with a datetime only by the hass event callback or the constructor
+    def update(self, time_ts: float | None):
+        """This is actually called with None only by the loop timer callback or the constructor
         so we know the TimerHandle needs not to be cancelled. When called with a timestamp (float)
         it means the cycle reset/update is 'async' so we'll check for cancellation of the eventually
         active callback."""
 
-        if type(dt_or_ts) is not datetime:
-            dt_or_ts = datetime_from_epoch(dt_or_ts)
+        if time_ts:
             if self._reset_cycle_unsub:
-                self._reset_cycle_unsub()
+                self._reset_cycle_unsub.cancel()
                 self._reset_cycle_unsub = None
+        else:
+            time_ts = time()
+        dt_utc = datetime_from_epoch(time_ts)
 
-        if self.cycle_mode == CycleMode.HOURLY:
+        if self.cycle_mode is CycleMode.HOURLY:
             # fast track in UTC
             # this also avoids possible issues at DST transitions
             self.last_reset_dt = datetime(
-                year=dt_or_ts.year,
-                month=dt_or_ts.month,
-                day=dt_or_ts.day,
-                hour=dt_or_ts.hour,
-                tzinfo=dt_or_ts.tzinfo,
+                year=dt_utc.year,
+                month=dt_utc.month,
+                day=dt_utc.day,
+                hour=dt_utc.hour,
+                tzinfo=dt_utc.tzinfo,
             )
             self.next_reset_dt = self.last_reset_dt + timedelta(hours=1)
 
         else:
-            now = dt_or_ts.astimezone(dt_util.get_default_time_zone())
+            now = dt_utc.astimezone(dt_util.get_default_time_zone())
             match self.cycle_mode:
                 case CycleMode.YEARLY:
                     last_reset_dt = datetime(
@@ -163,13 +167,15 @@ class MeteringCycle(Loggable):
         for entity in self._entities:
             entity._reset_cycle(self)
 
-        self._reset_cycle_unsub = Manager.schedule_at(self.next_reset_dt, self._reset_cycle_job)  # type: ignore
+        self._reset_cycle_unsub = Manager.schedule(
+            self.next_reset_ts - time_ts, self.update, None
+        )
         self.log(Loggable.WARNING, "Scheduled cycle at: %s", self.next_reset_dt)
 
     def unregister(self, entity: MeteringEntity):
         self.log(Loggable.WARNING, "Unregistering entity: %s", entity.logtag)
         self._entities.remove(entity)
         if self._reset_cycle_unsub and not self._entities:
-            self._reset_cycle_unsub()
+            self._reset_cycle_unsub.cancel()
             self._reset_cycle_unsub = None
             self.log(Loggable.WARNING, "Cancelled cycle at: %s", self.next_reset_dt)

@@ -248,12 +248,9 @@ class PVEnergyEstimator(SignalEnergyEstimator):
 
         def __init__(
             self,
-            time_ts: int,
-            sampling_interval_ts: int,
-            weather: WeatherSample | None,
-        ):
-            SignalEnergyEstimator.Sample.__init__(self, time_ts, sampling_interval_ts)
-            self.weather = weather
+            time_ts: float, estimator: "PVEnergyEstimator", /):
+            SignalEnergyEstimator.Sample.__init__(self, time_ts, estimator)
+            self.weather = estimator.get_weather_at(time_ts)
             self.sun_azimuth = self.sun_zenith = self.SUN_NOT_SET
 
     if typing.TYPE_CHECKING:
@@ -356,14 +353,6 @@ class PVEnergyEstimator(SignalEnergyEstimator):
             "weather_model": self.weather_model.as_dict(),
             "weather": self.get_weather_at(self.estimation_time_ts),
         }
-
-    @typing.override
-    def _observed_energy_new(self, time_ts: int):
-        return PVEnergyEstimator.Sample(
-            time_ts,
-            self.sampling_interval_ts,
-            self.get_weather_at(time_ts),
-        )
 
     def _observed_energy_daystart(self, time_ts: int):
         try:

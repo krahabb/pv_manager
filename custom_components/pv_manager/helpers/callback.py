@@ -59,7 +59,7 @@ class CallbackTracker(Loggable):
     def track_timer(
         self,
         delay: float,
-        action: "Callable",
+        action: "Callable[[float], Any]",
         job_type: HassJobType = HassJobType.Callback,
     ):
         try:
@@ -75,10 +75,10 @@ class CallbackTracker(Loggable):
             _handle = _call_later(delay, _target)
             _callbacks[delay] = lambda: _handle.cancel()
             if job_type is HassJobType.Callback:
-                action()
+                action(time())
             elif job_type is HassJobType.Coroutinefunction:
                 self.async_create_task(
-                    action(),
+                    action(time()),
                     f"track_timer({delay})",
                 )
 
@@ -96,8 +96,8 @@ class CallbackTracker(Loggable):
             class DataType(typing.TypedDict):
                 new_state: State
 
-        data: "DataType"
-        time_fired_timestamp: float
+            data: "DataType"
+            time_fired_timestamp: float
 
         __slots__ = (
             "data",
@@ -116,13 +116,10 @@ class CallbackTracker(Loggable):
         update: bool = True,
     ):
         """Track a state change for the given entity_id."""
-        _callback = async_track_state_change_event(
-            Manager.hass, entity_id, action, job_type
+        self.track_callback(
+            entity_id,
+            async_track_state_change_event(Manager.hass, entity_id, action, job_type),
         )
-        try:
-            self._callbacks[entity_id] = _callback
-        except AttributeError:
-            self._callbacks = {entity_id: _callback}
 
         if update:
             state = Manager.hass.states.get(entity_id)

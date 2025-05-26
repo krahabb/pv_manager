@@ -185,7 +185,7 @@ class HeuristicPVEnergyEstimator(PVEnergyEstimator):
         sum_observed_weighted = 0
         try:
             for observed_energy in self.observed_samples:
-                model = self.energy_model[observed_energy.time_ts % 86400]
+                model = self.energy_model[observed_energy.time_begin_ts % 86400]
                 sum_energy_max += model.energy_max
                 sum_observed_weighted += (observed_energy.energy - model.energy_max) * (
                     model.energy_max / self._model_energy_max
@@ -310,26 +310,26 @@ class HeuristicPVEnergyEstimator(PVEnergyEstimator):
 
             sample.sun_zenith, sample.sun_azimuth = sun.zenith_and_azimuth(
                 self.astral_observer,
-                datetime_from_epoch((sample.time_ts + sample.time_next_ts) / 2),
+                datetime_from_epoch((sample.time_begin_ts + sample.time_end_ts) / 2),
             )
 
             try:
-                model = self.energy_model[sample.time_ts % 86400]
+                model = self.energy_model[sample.time_begin_ts % 86400]
                 model.add_sample(sample)
             except KeyError as e:
-                self.energy_model[sample.time_ts % 86400] = model = TimeSpanEnergyModel(
-                    self.weather_model, sample
+                self.energy_model[sample.time_begin_ts % 86400] = model = (
+                    TimeSpanEnergyModel(self.weather_model, sample)
                 )
             if self._model_energy_max < model.energy_max:
                 self._model_energy_max = model.energy_max
 
         # flush history
         recalc_energy_max = False
-        history_min_ts = sample.time_ts - self.history_duration_ts
+        history_min_ts = sample.time_begin_ts - self.history_duration_ts
         try:
-            while self.history_samples[0].time_ts < history_min_ts:
+            while self.history_samples[0].time_begin_ts < history_min_ts:
                 discarded_sample = self.history_samples.popleft()
-                sample_time_of_day_ts = discarded_sample.time_ts % 86400
+                sample_time_of_day_ts = discarded_sample.time_begin_ts % 86400
                 model = self.energy_model[sample_time_of_day_ts]
                 if model.energy_max == self._model_energy_max:
                     recalc_energy_max = True

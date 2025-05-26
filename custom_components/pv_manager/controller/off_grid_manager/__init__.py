@@ -13,7 +13,7 @@ from ...processors.battery import BatteryEstimator
 from ...processors.estimator_consumption_heuristic import HeuristicConsumptionEstimator
 from ...processors.estimator_pvenergy_heuristic import HeuristicPVEnergyEstimator
 from ...sensor import EnergySensor, PowerSensor, Sensor
-from ..devices.estimator_processor import (
+from ..devices.estimator_device import (
     EnergyEstimatorDevice,
     SignalEnergyEstimatorDevice,
 )
@@ -401,7 +401,7 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
             self._final_write_unsub()
             self._final_write_unsub = None
 
-        await self._async_store_save(0)
+        await self._async_store_save(None)
 
         for energy_meter_tuple in tuple(reversed(self.energy_meters.values())):
             energy_meter_tuple[0].shutdown()
@@ -409,6 +409,7 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
 
         await super().async_shutdown()
 
+    @typing.override
     def _subentry_add(self, subentry_id: str, entry_data: "EntryData"):
         match entry_data.subentry_type:
             case pmc.ConfigSubentryType.MANAGER_ENERGY_SENSOR:
@@ -460,6 +461,7 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
                 if self.config_entry.state == ConfigEntryState.LOADED:
                     energy_meter.start()
 
+    @typing.override
     async def _async_subentry_update(self, subentry_id: str, entry_data: "EntryData"):
         match entry_data.subentry_type:
             case pmc.ConfigSubentryType.MANAGER_ENERGY_SENSOR:
@@ -548,6 +550,7 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
                         name=losses_config[yield_sensor_id],  # type: ignore
                     )
 
+    @typing.override
     async def _async_subentry_remove(self, subentry_id: str, entry_data: "EntryData"):
         match entry_data.subentry_type:
             case pmc.ConfigSubentryType.MANAGER_ENERGY_SENSOR:
@@ -558,14 +561,13 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
                 self.losses_meter.shutdown()
 
     # interface: self
-    async def _async_store_save(self, *args):
+    async def _async_store_save(self, time_or_event_or_none, /):
         # args depends on the source of this call:
-        # no args means we're being called by the loop scheduler i.e. periodic save
-        # args[0] == event means we're in the final write stage of HA shutting down
-        # args[0] == 0 means we're unloading the controller
-        if args:
-            if args[0]:
-                self._final_write_unsub = None
+        # None: means we're unloading the controller
+        # event: means we're in the final write stage of HA shutting down
+        # float: schueduled timer
+        if time_or_event_or_none and type(time_or_event_or_none) != float:
+            self._final_write_unsub = None
 
         now = dt_util.now()
         data: "ControllerStoreType" = {

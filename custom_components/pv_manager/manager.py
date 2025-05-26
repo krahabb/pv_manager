@@ -1,7 +1,7 @@
 """
 The component global api.
 """
-
+from time import time
 import typing
 
 from homeassistant import const as hac
@@ -69,7 +69,7 @@ class ManagerClass(Loggable):
                 Manager.hass = None  # type: ignore
                 Manager.device_registry = None  # type: ignore
                 Manager.entity_registry = None  # type: ignore
-                Manager._call_later = None  # type: ignore
+                Manager._call_later = lambda *args: Manager.log(Manager.DEBUG, "call_later called while shutting down (args:%s)", args)  # type: ignore
 
             hass.bus.async_listen_once(hac.EVENT_HOMEASSISTANT_STOP, _async_unload)
 
@@ -109,6 +109,12 @@ class ManagerClass(Loggable):
         target: "HassJob[[datetime], Coroutine[Any, Any, None] | None] | Callable[[datetime], Coroutine[Any, Any, None] | None]",
     ):
         return event.async_track_point_in_utc_time(self.hass, target, dt)
+
+    def schedule_at_epoch(self, epoch: float, target: "Callable", *args):
+        # fragile api: this doesn't really care about the loop drifting or so.
+        # schedule_at is better at doing the job (relying on the HA api for that) but bulkier.
+        # Either way, we're concerned with what happens when the loop restarts after a power suspend.
+        return self._call_later(epoch - time(), target, *args)
 
     def lookup_estimator_controller(
         self, entity_id: str, entry_type: pmc.ConfigEntryType | None = None

@@ -117,7 +117,7 @@ class HeuristicConsumptionEstimator(SignalEnergyEstimator):
         sum_observed_weighted = 0
         try:
             for observed_energy in self.observed_samples:
-                model = self.model[observed_energy.time_ts % 86400]
+                model = self.model[observed_energy.time_begin_ts % 86400]
                 sum_energy_max += model.energy_avg
                 sum_observed_weighted += observed_energy.energy - model.energy_avg
             self.observed_ratio = 1 + (sum_observed_weighted / sum_energy_max)
@@ -222,19 +222,19 @@ class HeuristicConsumptionEstimator(SignalEnergyEstimator):
             self.history_samples.append(history_sample)
 
             try:
-                model = self.model[history_sample.time_ts % 86400]
+                model = self.model[history_sample.time_begin_ts % 86400]
                 model.add_sample(history_sample)
             except KeyError as e:
-                self.model[history_sample.time_ts % 86400] = model = EnergyModel(
+                self.model[history_sample.time_begin_ts % 86400] = model = EnergyModel(
                     history_sample
                 )
 
         # flush history
-        history_min_ts = history_sample.time_ts - self.history_duration_ts
+        history_min_ts = history_sample.time_begin_ts - self.history_duration_ts
         try:
-            while self.history_samples[0].time_ts < history_min_ts:
+            while self.history_samples[0].time_begin_ts < history_min_ts:
                 discarded_sample = self.history_samples.popleft()
-                sample_time_of_day_ts = discarded_sample.time_ts % 86400
+                sample_time_of_day_ts = discarded_sample.time_begin_ts % 86400
                 model = self.model[sample_time_of_day_ts]
                 if model.pop_sample(discarded_sample):
                     del self.model[sample_time_of_day_ts]

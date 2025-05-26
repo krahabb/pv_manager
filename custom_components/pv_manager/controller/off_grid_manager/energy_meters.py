@@ -1,5 +1,5 @@
 import enum
-from time import time as TIME_TS
+from time import time
 import typing
 
 from homeassistant import const as hac
@@ -116,7 +116,6 @@ class BatteryMeter(MeterDevice, BatteryProcessor):
 
         super().__init__(SourceType.BATTERY, controller, config)
 
-        self.configure(SignalEnergyProcessor.InputMode.POWER)
         controller.energy_meters[SourceType.BATTERY_IN] = (
             self.energy_broadcast_in,
             self,
@@ -133,9 +132,9 @@ class BatteryMeter(MeterDevice, BatteryProcessor):
             name="Battery charge",
             parent_attr=Sensor.ParentAttr.DYNAMIC,
         )
-        self.battery_charge_broadcast.listen(
-            lambda battery_charge: (
-                self.battery_charge_sensor.update(battery_charge)
+        self.charge_processor.listen_energy(
+            lambda charge, time_ts: (
+                self.battery_charge_sensor.accumulate(-charge)
                 if self.battery_charge_sensor
                 else None
             )
@@ -266,12 +265,12 @@ class LossesMeter(BaseMeter):
 
     def start(self):
         self._losses_compute()
-        self.time_ts = TIME_TS()
-        self.battery_meter_old = self.battery_meter.energy
+        self.time_ts = time()
+        self.battery_meter_old = self.battery_meter.output
         self.battery_meter_in_old = self.battery_meter.energy_in
         self.battery_meter_out_old = self.battery_meter.energy_out
-        self.load_meter_old = self.load_meter.energy
-        self.pv_meter_old = self.pv_meter.energy
+        self.load_meter_old = self.load_meter.output
+        self.pv_meter_old = self.pv_meter.output
         self._timer_unsub = Manager.schedule(
             self.update_period_ts, self._timer_callback
         )
@@ -313,21 +312,21 @@ class LossesMeter(BaseMeter):
         self._timer_unsub = Manager.schedule(
             self.update_period_ts, self._timer_callback
         )
-        time_ts = TIME_TS()
+        time_ts = time()
         # get the 'new' total
         battery_meter = self.battery_meter
         battery_meter.update(time_ts)
-        self.battery_energy += battery_meter.energy - self.battery_meter_old
-        self.battery_meter_old = battery_meter.energy
+        self.battery_energy += battery_meter.output - self.battery_meter_old
+        self.battery_meter_old = battery_meter.output
         load_meter = self.load_meter
         load_meter.update(time_ts)
-        d_load = load_meter.energy - self.load_meter_old
+        d_load = load_meter.output - self.load_meter_old
         self.load_energy += d_load
-        self.load_meter_old = load_meter.energy
+        self.load_meter_old = load_meter.output
         pv_meter = self.pv_meter
         pv_meter.update(time_ts)
-        self.pv_energy += pv_meter.energy - self.pv_meter_old
-        self.pv_meter_old = pv_meter.energy
+        self.pv_energy += pv_meter.output - self.pv_meter_old
+        self.pv_meter_old = pv_meter.output
 
         losses_old = self.losses_energy
         self._losses_compute()
@@ -373,7 +372,9 @@ class LossesMeter(BaseMeter):
         # battery_yield will nevertheless decay as far as battery_in, battery_out will increase
         battery_meter = self.battery_meter
         battery_stored = (
-            battery_meter.battery_charge_estimate * (battery_meter.battery_voltage or 0) * 0.9
+            battery_meter.charge_processor.output
+            * (battery_meter.battery_voltage or 0)
+            * -0.9
         )
 
         controller = self.controller
