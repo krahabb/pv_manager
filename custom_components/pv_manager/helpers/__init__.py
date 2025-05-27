@@ -244,11 +244,7 @@ class Loggable(abc.ABC):
         "__dict__",
     )
 
-    def __init__(
-        self,
-        id,
-        **kwargs: "Unpack[Args]",
-    ):
+    def __init__(self, id, /, **kwargs: "Unpack[Args]"):
         self.id: typing.Final = id
         self.logger = kwargs.get("logger", LOGGER)
         self.logtag = f"{self.__class__.__name__}({self.id})"
@@ -268,14 +264,14 @@ class Loggable(abc.ABC):
     def __del__(self):
         self.log(self.DEBUG, "destroy")
 
-    def isEnabledFor(self, level: int):
+    def isEnabledFor(self, level: int, /):
         return self.logger.isEnabledFor(level)
 
-    def log(self, level: int, msg: str, *args, **kwargs):
+    def log(self, level: int, msg: str, /, *args, **kwargs):
         self.logger.log(level, f"{self.logtag}: {msg}", *args, **kwargs)
 
     def log_exception(
-        self, level: int, exception: Exception, msg: str, *args, **kwargs
+        self, level: int, exception: Exception, msg: str, /, *args, **kwargs
     ):
         self.log(
             level,
@@ -285,7 +281,7 @@ class Loggable(abc.ABC):
         )
 
     @contextmanager
-    def exception_warning(self, msg: str, *args, **kwargs):
+    def exception_warning(self, msg: str, /, *args, **kwargs):
         try:
             yield
         except Exception as exception:

@@ -4,7 +4,7 @@ import enum
 import typing
 
 from custom_components.pv_manager import const as pmc
-from custom_components.pv_manager.helpers import metering
+from custom_components.pv_manager.manager import MeteringCycle
 
 if typing.TYPE_CHECKING:
     from typing import Iterable, NotRequired
@@ -106,7 +106,7 @@ CE_ENERGY_CALCULATOR = ConfigEntriesItem(
         "data": {
             "name": "Energy calculator",
             "source_entity_id": EntityIdEnum.LOAD_POWER,
-            "cycle_modes": list(metering.CycleMode),
+            "cycle_modes": list(MeteringCycle.Mode),
             "update_period_seconds": 5,
             "maximum_latency_seconds": 10,
         },

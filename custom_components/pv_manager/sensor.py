@@ -5,7 +5,7 @@ from homeassistant.components import sensor
 
 from . import const as pmc
 from .helpers import entity as he
-from .helpers.metering import CycleMode, MeteringCycle, MeteringEntity
+from .manager import Manager, MeteringCycle
 
 if typing.TYPE_CHECKING:
     from typing import ClassVar, Final, NotRequired, Unpack
@@ -67,12 +67,7 @@ class Sensor(he.Entity, sensor.SensorEntity):
         "native_unit_of_measurement",
     )
 
-    def __init__(
-        self,
-        device: "Device",
-        id: str,
-        **kwargs: "Unpack[Args]",
-    ):
+    def __init__(self, device: "Device", id: str, /, **kwargs: "Unpack[Args]"):
         self.device_class = kwargs.pop("device_class", self._attr_device_class)
         self.native_value = kwargs.pop("native_value", self._attr_native_value)
         self.native_unit_of_measurement = kwargs.pop(
@@ -84,12 +79,14 @@ class Sensor(he.Entity, sensor.SensorEntity):
             self.state_class = self.DEVICE_CLASS_TO_STATE_CLASS.get(self.device_class)
         super().__init__(device, id, **kwargs)
 
-    def update(self, native_value: "SensorStateType"):
+    @typing.override
+    def update(self, native_value: "SensorStateType", /):
         if self.native_value != native_value:
             self.native_value = native_value
             self._async_write_ha_state()
 
-    def update_safe(self, native_value: "SensorStateType"):
+    @typing.override
+    def update_safe(self, native_value: "SensorStateType", /):
         if self.native_value != native_value:
             self.native_value = native_value
             if self.added_to_hass:
@@ -111,7 +108,9 @@ class PowerSensor(Sensor):
     _attr_native_unit_of_measurement = Sensor.hac.UnitOfPower.WATT
 
 
-class EnergySensor(MeteringEntity, Sensor, he.RestoreEntity):
+class EnergySensor(MeteringCycle.Sink, Sensor, he.RestoreEntity):
+
+    CycleMode = MeteringCycle.Mode
 
     if typing.TYPE_CHECKING:
         cycle_mode: Final[CycleMode]
@@ -121,8 +120,6 @@ class EnergySensor(MeteringEntity, Sensor, he.RestoreEntity):
 
         native_value: int
         _integral_value: float
-
-    CycleMode = CycleMode
 
     _attr_parent_attr = None
 
@@ -146,6 +143,7 @@ class EnergySensor(MeteringEntity, Sensor, he.RestoreEntity):
         id: str,
         cycle_mode: CycleMode,
         energy_dispatcher: "EnergyBroadcast",
+        /,
         **kwargs: "Unpack[he.Entity.Args]",
     ):
         self.cycle_mode = cycle_mode
@@ -154,7 +152,7 @@ class EnergySensor(MeteringEntity, Sensor, he.RestoreEntity):
         self._integral_value = 0
         self._energy_dispatcher_unsub_ = None
 
-        if cycle_mode == CycleMode.TOTAL:
+        if cycle_mode == MeteringCycle.Mode.TOTAL:
             self.accumulate = self._accumulate_total
         else:
             name = kwargs.pop("name") or id
@@ -169,7 +167,7 @@ class EnergySensor(MeteringEntity, Sensor, he.RestoreEntity):
         )
 
     async def async_added_to_hass(self):
-        self._metering_cycle = metering_cycle = MeteringCycle.register(self)
+        self._metering_cycle = metering_cycle = Manager.register_metering_synk(self)
         self._next_reset_ts = metering_cycle.next_reset_ts
         self.last_reset = metering_cycle.last_reset_dt
 
@@ -203,10 +201,10 @@ class EnergySensor(MeteringEntity, Sensor, he.RestoreEntity):
         return he.ExtraStoredDataDict({"native_value": self._integral_value})
 
     # interface: self
-    def formatted_name(self, name: str):
+    def formatted_name(self, name: str, /):
         return f"{name} ({self.cycle_mode})"
 
-    def accumulate(self, energy_wh: float, time_ts: float):
+    def accumulate(self, energy_wh: float, time_ts: float, /):
         # assert self.added_to_hass
         self._integral_value += energy_wh
         if time_ts >= self._next_reset_ts:
@@ -219,7 +217,7 @@ class EnergySensor(MeteringEntity, Sensor, he.RestoreEntity):
             self.native_value = _rounded
             self._async_write_ha_state()
 
-    def _accumulate_total(self, energy_wh: float, time_ts: float):
+    def _accumulate_total(self, energy_wh: float, time_ts: float, /):
         """Custom 'accumulate' installed when cycle_mode == TOTAL"""
         # assert self.added_to_hass
         self._integral_value += energy_wh
@@ -228,7 +226,8 @@ class EnergySensor(MeteringEntity, Sensor, he.RestoreEntity):
             self.native_value = _rounded
             self._async_write_ha_state()
 
-    def _reset_cycle(self, metering_cycle: MeteringCycle):
+    @typing.override
+    def _reset_cycle(self, metering_cycle: MeteringCycle, /):
         self._next_reset_ts = metering_cycle.next_reset_ts
         self.last_reset = metering_cycle.last_reset_dt
         self._integral_value -= self.native_value
@@ -256,6 +255,7 @@ class BatteryChargeSensor(Sensor, he.RestoreEntity):
         self,
         device: "Device",
         id: str,
+        /,
         *,
         capacity: float,
         native_value: float = 0,
@@ -288,17 +288,18 @@ class BatteryChargeSensor(Sensor, he.RestoreEntity):
     def extra_restore_state_data(self):
         return he.ExtraStoredDataDict({"native_value": self.charge})
 
-    def update(self, value: float):
+    @typing.override
+    def update(self, value: float, /):
         self.charge = value
         _rounded = round(self.charge, 1)
         if self.native_value != _rounded:
             self.native_value = _rounded
             self._async_write_ha_state()
 
-    def accumulate(self, value: float):
+    def accumulate(self, value: float, /):
         self.update(self.charge + value)
 
-    def update_current(self, current: float):
+    def update_current(self, current: float, /):
         now_ts = time.monotonic()
         if self._current_ts:
             charge = self.charge - (self._current * (now_ts - self._current_ts) / 3600)

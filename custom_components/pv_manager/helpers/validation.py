@@ -5,7 +5,7 @@ from homeassistant.helpers import selector
 import voluptuous as vol
 
 from .. import const as pmc
-from .metering import CycleMode
+from ..manager import MeteringCycle
 
 if typing.TYPE_CHECKING:
     from enum import StrEnum
@@ -67,7 +67,7 @@ def select_selector(**kwargs: "Unpack[selector.SelectSelectorConfig]"):
 def cycle_modes_selector():
     return selector.SelectSelector(
         {
-            "options": list(CycleMode),
+            "options": list(MeteringCycle.Mode),
             "multiple": True,
             "mode": selector.SelectSelectorMode.DROPDOWN,
         }
