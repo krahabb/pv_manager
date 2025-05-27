@@ -5,7 +5,8 @@ Base estimator model common to all types of estimators
 import abc
 from collections import deque
 import dataclasses
-from datetime import UTC, datetime, timedelta, tzinfo
+from datetime import datetime
+from itertools import chain
 from time import time
 import typing
 
@@ -21,7 +22,9 @@ from ..helpers import datetime_from_epoch
 from ..manager import Manager
 
 if typing.TYPE_CHECKING:
-    from typing import ClassVar, Final, NotRequired, Unpack
+    from typing import ClassVar, Final, Iterable, NotRequired, Unpack
+
+    from datetime import tzinfo
 
 
 class EnergyEstimator(Estimator):
@@ -32,11 +35,16 @@ class EnergyEstimator(Estimator):
         for reuse in calculations. They're invalidated whenever estimation_time updates.
         """
 
-        time_begin_ts: int
-        time_end_ts: int
-        energy: float
-        energy_min: float
-        energy_max: float
+        if typing.TYPE_CHECKING:
+            time_begin_ts: int
+            time_end_ts: int
+            energy: float
+            energy_min: float
+            energy_max: float
+            # list of all the slots in the hierarchy
+            _slots: ClassVar[tuple[str, ...]]
+            # list of the slots to avoid serializing
+            _slots_excluded: ClassVar[tuple[str, ...]]
 
         __slots__ = (
             "time_begin_ts",
@@ -45,6 +53,11 @@ class EnergyEstimator(Estimator):
             "energy_min",
             "energy_max",
         )
+        _slots = __slots__
+        _slots_excluded = (
+            "time_begin_ts",
+            "time_end_ts",
+        )
 
         def __init__(self, time_begin_ts: int, time_end_ts: int, /):
             self.time_begin_ts = time_begin_ts
@@ -52,6 +65,15 @@ class EnergyEstimator(Estimator):
             self.energy = 0
             self.energy_min = 0
             self.energy_max = 0
+
+        def __init_subclass__(cls):
+            cls._slots = tuple(
+                chain.from_iterable(
+                    getattr(c, "__slots__")
+                    for c in reversed(cls.__mro__)
+                    if c is not object
+                )
+            )
 
         def add(self, forecast: "EnergyEstimator.Forecast", /):
             self.energy += forecast.energy
@@ -62,6 +84,29 @@ class EnergyEstimator(Estimator):
             self.energy += forecast.energy * ratio
             self.energy_min += forecast.energy_min * ratio
             self.energy_max += forecast.energy_max * ratio
+
+        def as_dict(self):
+            return {slot: getattr(self, slot) for slot in self.__class__._slots}
+
+        def as_formatted_dict(self, tz: "tzinfo", /):
+            _format_slot_attr = self._format_slot_attr
+            cls = self.__class__
+            result = {
+                "time_begin": datetime_from_epoch(self.time_begin_ts, tz).isoformat(),
+                "time_end": datetime_from_epoch(self.time_end_ts, tz).isoformat(),
+            } | {
+                slot: _format_slot_attr(slot)
+                for slot in cls._slots
+                if slot not in cls._slots_excluded
+            }
+            return result
+
+        def _format_slot_attr(self, slot: str, /):
+            value = getattr(self, slot)
+            _type = type(value)
+            if _type == float:
+                return round(value, 2)
+            return value
 
     if typing.TYPE_CHECKING:
 
@@ -127,15 +172,13 @@ class EnergyEstimator(Estimator):
 
     @typing.override
     def get_state_dict(self):
-        forecast = self.get_forecast(self.estimation_time_ts, self.tomorrow_ts)
         return super().get_state_dict() | {
             "today": datetime_from_epoch(self.today_ts).isoformat(),
-            "tomorrow": datetime_from_epoch(self.tomorrow_ts).isoformat(),
             "observations_per_sample_avg": self.observations_per_sample_avg,
             "today_measured": self.today_energy,
-            "today_forecast": self.today_energy + forecast.energy,
-            "today_forecast_min": self.today_energy + forecast.energy_min,
-            "today_forecast_max": self.today_energy + forecast.energy_max,
+            "forecast": self.get_forecast(
+                self.estimation_time_ts, self.tomorrow_ts
+            ).as_formatted_dict(self.tz),
         }
 
     @typing.override
@@ -678,7 +721,7 @@ class EnergyBalanceEstimator(EnergyEstimator):
             production_estimator: NotRequired[EnergyEstimator]
             consumption_estimator: NotRequired[EnergyEstimator]
 
-        _FAKE_ESTIMATOR: ClassVar
+        _FAKE_ESTIMATOR: ClassVar[_FakeEstimator]
 
         config: Config  # (override base typehint)
         forecasts: Final[list[Forecast]]  # type: ignore (override base typehint)

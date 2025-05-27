@@ -255,7 +255,8 @@ class PVEnergyEstimator(SignalEnergyEstimator):
 
         weather: WeatherSample | None
 
-        __slots__ = "weather"
+        __slots__ = ("weather",)
+        _slots_excluded = SignalEnergyEstimator.Forecast._slots_excluded + __slots__
 
         def __init__(self, time_begin_ts: int, time_end_ts: int, /):
             SignalEnergyEstimator.Forecast.__init__(self, time_begin_ts, time_end_ts)

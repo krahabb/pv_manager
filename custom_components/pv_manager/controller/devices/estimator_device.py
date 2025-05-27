@@ -43,6 +43,15 @@ class EnergyEstimatorSensor(EstimatorEntity, Sensor):
         device: "EnergyEstimatorDevice"
         forecast_duration_ts: int
 
+    _unrecorded_attributes = frozenset(
+        (
+            "estimation_time",
+            "today",
+            "observations_per_sample_avg",
+            "today_measured",
+            "forecast",
+        )
+    )
     _attr_device_class = Sensor.DeviceClass.ENERGY
     _attr_native_unit_of_measurement = hac.UnitOfEnergy.WATT_HOUR
 
