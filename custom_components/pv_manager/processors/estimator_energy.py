@@ -24,7 +24,6 @@ if typing.TYPE_CHECKING:
     from typing import ClassVar, Final, NotRequired, Unpack
 
 
-
 class EnergyEstimator(Estimator):
 
     class Forecast:
@@ -104,9 +103,13 @@ class EnergyEstimator(Estimator):
         super().__init__(id, **kwargs)
         config = self.config
         self.sampling_interval_ts = (
-            (int(config.get("sampling_interval_minutes", 0)) * 60)
-            // EnergyEstimator.SAMPLING_INTERVAL_MODULO
-        ) * EnergyEstimator.SAMPLING_INTERVAL_MODULO or EnergyEstimator.SAMPLING_INTERVAL_MODULO
+            (
+                (int(config.get("sampling_interval_minutes", 0)) * 60)
+                // EnergyEstimator.SAMPLING_INTERVAL_MODULO
+            )
+            * EnergyEstimator.SAMPLING_INTERVAL_MODULO
+            or EnergyEstimator.SAMPLING_INTERVAL_MODULO
+        )
         self.tz = dt_util.get_default_time_zone()
         self.observations_per_sample_avg = 0
         self.today_ts = 0
@@ -283,13 +286,9 @@ class EnergyEstimator(Estimator):
 
     def _observed_energy_daystart(self, time_ts: int, /):
         """Called when starting a new day in observations."""
-        # TODO: use a centralized cache since all of the running estimators will reset
-        # at midnight and they could 'share' these info's (to avoid repeating the same calc)
-        time = datetime_from_epoch(time_ts, self.tz)
-        today = datetime(time.year, time.month, time.day, tzinfo=self.tz)
-        tomorrow = today + timedelta(days=1)
-        self.today_ts = int(today.astimezone(UTC).timestamp())
-        self.tomorrow_ts = int(tomorrow.astimezone(UTC).timestamp())
+        ds = Manager.get_daystart(time_ts, self.tz)
+        self.today_ts = ds.today_ts
+        self.tomorrow_ts = ds.tomorrow_ts
         self.today_energy = 0
 
 
@@ -650,6 +649,7 @@ class EnergyBalanceEstimator(EnergyEstimator):
         """An 'empty' implementation to be placed in production and consumption estimators members
         at start so that we can avoid checks when any of those is not binded to an actual estimator.
         This class should mock an estimator which doesn't estimate anything."""
+
         _empty_forecast = EnergyEstimator.Forecast(0, 0)
 
         def _ensure_forecasts(self, count: int, /):
@@ -661,8 +661,10 @@ class EnergyBalanceEstimator(EnergyEstimator):
 
         def get_estimated_energy(self, time_begin_ts: int, time_end_ts: int, /):
             return 0
+
         def get_estimated_energy_max(self, time_begin_ts: int, time_end_ts: int, /):
             return 0
+
         def get_estimated_energy_min(self, time_begin_ts: int, time_end_ts: int, /):
             return 0
 
@@ -696,8 +698,12 @@ class EnergyBalanceEstimator(EnergyEstimator):
     )
 
     def __init__(self, id, **kwargs: "Unpack[Args]"):
-        self.production_estimator = kwargs.pop("production_estimator", self.__class__._FAKE_ESTIMATOR)
-        self.consumption_estimator = kwargs.pop("consumption_estimator", self.__class__._FAKE_ESTIMATOR)
+        self.production_estimator = kwargs.pop(
+            "production_estimator", self.__class__._FAKE_ESTIMATOR
+        )
+        self.consumption_estimator = kwargs.pop(
+            "consumption_estimator", self.__class__._FAKE_ESTIMATOR
+        )
         self._production_estimator_unsub = None
         self._consumption_estimator_unsub = None
         super().__init__(id, **kwargs)
@@ -717,8 +723,8 @@ class EnergyBalanceEstimator(EnergyEstimator):
         if self._consumption_estimator_unsub:
             self._consumption_estimator_unsub()
             self._consumption_estimator_unsub = None
-        self.production_estimator = None # type: ignore
-        self.consumption_estimator = None # type: ignore
+        self.production_estimator = None  # type: ignore
+        self.consumption_estimator = None  # type: ignore
         return super().shutdown()
 
     def connect_production(self, estimator: "EnergyEstimator"):

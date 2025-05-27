@@ -2,8 +2,11 @@
 The component global api.
 """
 
-from datetime import datetime, timedelta
+from collections import deque
+from datetime import datetime, timedelta, UTC
+from dataclasses import dataclass
 import enum
+from threading import Lock
 from time import time
 import typing
 
@@ -22,6 +25,7 @@ from .helpers import Loggable, datetime_from_epoch
 
 if typing.TYPE_CHECKING:
     from asyncio.events import TimerHandle
+    from datetime import tzinfo
     from logging import Logger
     from typing import Any, Callable, Coroutine, Final, Iterable
 
@@ -179,6 +183,18 @@ class ManagerClass(Loggable):
     Singleton global manager/helper class
     """
 
+    @dataclass(slots=True)
+    class _DayStart:
+        today_ts: "Final[int]"
+        tomorrow_ts: "Final[int]"
+
+        def __init__(self, time_ts: float, tz: "tzinfo", /):
+            time = datetime_from_epoch(time_ts, tz)
+            today = datetime(time.year, time.month, time.day, tzinfo=tz)
+            tomorrow = today + timedelta(days=1)
+            self.today_ts = int(today.astimezone(UTC).timestamp())
+            self.tomorrow_ts = int(tomorrow.astimezone(UTC).timestamp())
+
     if typing.TYPE_CHECKING:
         logger: Logger
         hass: "Final[HomeAssistant]"
@@ -186,6 +202,8 @@ class ManagerClass(Loggable):
         entity_registry: "Final[er.EntityRegistry]"
         _call_later: "Final[Callable[[float, Callable, ], TimerHandle]]"
         _metering_cycles: Final[dict[MeteringCycle.Mode, MeteringCycle]]
+        _daystart_cache: Final[dict[tzinfo, deque["ManagerClass._DayStart"]]]
+        _lock: Lock
 
     __slots__ = (
         "hass",
@@ -193,6 +211,8 @@ class ManagerClass(Loggable):
         "entity_registry",
         "_call_later",
         "_metering_cycles",
+        "_daystart_cache",
+        "_lock",
     )
 
     @staticmethod
@@ -221,6 +241,8 @@ class ManagerClass(Loggable):
     def __init__(self, /):
         super().__init__(None)
         self._metering_cycles = {}
+        self._daystart_cache = {}
+        self._lock = Lock()
 
     # interface: Loggable
     def log(self, level: int, msg: str, /, *args, **kwargs):
@@ -289,6 +311,40 @@ class ManagerClass(Loggable):
                 Loggable.WARNING, "Scheduled cycle at: %s", metering_cycle.next_reset_dt
             )
         return metering_cycle
+
+    def get_daystart(self, time_ts: float, tz: "tzinfo", /):
+        with self._lock:
+            # locking here is required since this could be called in the context
+            # of recorder executor threads when history is loaded.
+            try:
+                ds_queue = self._daystart_cache[tz]
+                index = 0
+                for ds in ds_queue:
+                    if time_ts < ds.today_ts:
+                        ds = ManagerClass._DayStart(time_ts, tz)
+                        ds_queue.insert(index, ds)
+                        # this branch would skip dequeue clipping: we hope
+                        # data are not always loaded going back in time
+                        return ds
+                    if time_ts < ds.tomorrow_ts:
+                        return ds
+                    index += 1
+                # set a reasonable limit for the cache:
+                # the deque need to grow when loading histories and we should preserve
+                # the calculations so that (at start) when multiple load history
+                # are carried on, we can reuse the data in cache. Since our
+                # histories should be more or less capped at 14 days we set 15
+                # as max length for the dequeue
+                while len(ds_queue) > 14:
+                    ds_queue.popleft()
+
+            except KeyError:
+                ds_queue = deque()
+                self._daystart_cache[tz] = ds_queue
+
+            ds = ManagerClass._DayStart(time_ts, tz)
+            ds_queue.append(ds)
+            return ds
 
     def lookup_estimator_controller(
         self, entity_id: str, entry_type: pmc.ConfigEntryType | None = None
