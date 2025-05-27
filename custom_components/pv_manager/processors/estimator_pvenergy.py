@@ -246,12 +246,20 @@ class PVEnergyEstimator(SignalEnergyEstimator):
 
         SUN_NOT_SET = -360
 
-        def __init__(
-            self,
-            time_ts: float, estimator: "PVEnergyEstimator", /):
+        def __init__(self, time_ts: float, estimator: "PVEnergyEstimator", /):
             SignalEnergyEstimator.Sample.__init__(self, time_ts, estimator)
             self.weather = estimator.get_weather_at(time_ts)
             self.sun_azimuth = self.sun_zenith = self.SUN_NOT_SET
+
+    class Forecast(SignalEnergyEstimator.Forecast):
+
+        weather: WeatherSample | None
+
+        __slots__ = "weather"
+
+        def __init__(self, time_begin_ts: int, time_end_ts: int, /):
+            SignalEnergyEstimator.Forecast.__init__(self, time_begin_ts, time_end_ts)
+            self.weather = None
 
     if typing.TYPE_CHECKING:
 
@@ -262,7 +270,10 @@ class PVEnergyEstimator(SignalEnergyEstimator):
         class Args(SignalEnergyEstimator.Args):
             config: "PVEnergyEstimator.Config"
 
-        config: Config
+        config: Config  # (override base typehint)
+        forecasts: Final[list[Forecast]]  # type: ignore (override base typehint)
+        _forecasts_recycle: Final[list[Forecast]]  # type: ignore override (override base typehint)
+
         weather_entity_id: str
         weather_model: Final[WeatherModel]
         weather_history: Final[deque[WeatherSample]]

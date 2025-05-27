@@ -743,7 +743,8 @@ class Estimator(BaseProcessor):
 
         return _unsub
 
-    @abc.abstractmethod
     def update_estimate(self):
+        """Called (internally) whenever we need to update the estimate
+        based on new data entering the model."""
         for listener in self._update_listeners:
             listener(self)

@@ -115,41 +115,49 @@ class HeuristicConsumptionEstimator(SignalEnergyEstimator):
 
         sum_energy_max = 0
         sum_observed_weighted = 0
+        model = self.model
         try:
             for observed_energy in self.observed_samples:
-                model = self.model[observed_energy.time_begin_ts % 86400]
-                sum_energy_max += model.energy_avg
-                sum_observed_weighted += observed_energy.energy - model.energy_avg
+                _model = model[observed_energy.time_begin_ts % 86400]
+                sum_energy_max += _model.energy_avg
+                sum_observed_weighted += observed_energy.energy - _model.energy_avg
             self.observed_ratio = 1 + (sum_observed_weighted / sum_energy_max)
         except (KeyError, ZeroDivisionError):
             # no data or invalid
             self.observed_ratio = 1
 
-        for listener in self._update_listeners:
-            listener(self)
+        super().update_estimate()
 
     @typing.override
-    def get_estimated_energy(self, time_begin_ts: int, time_end_ts: int):
-        energy = 0
-        model_time_ts = time_begin_ts - (time_begin_ts % self.sampling_interval_ts)
+    def _ensure_forecasts(self, count: int, /):
+        estimation_time_ts = self.estimation_time_ts
+        sampling_interval_ts = self.sampling_interval_ts
+        observed_ratio = self.observed_ratio
+        forecasts = self.forecasts
+        _forecasts_recycle = self._forecasts_recycle
+        model = self.model
+
+        time_ts = estimation_time_ts + len(forecasts) * sampling_interval_ts
+        time_end_ts = estimation_time_ts + count * sampling_interval_ts
         # We 'blend' in recent 'ratio' of energy production with respect to avg energy.
         # It is hard to say how much
-        observed_ratio = self.observed_ratio
-        weight_or = 1  # if time_begin_ts == self.observed_ratio_ts
-        weight_or_decay = self.sampling_interval_ts / (3600 * 2)  # fixed 2 hours decay
-        if time_begin_ts > self.estimation_time_ts:
-            weight_or -= (
-                (time_begin_ts - self.estimation_time_ts) / self.sampling_interval_ts
-            ) * weight_or_decay
-            if weight_or < weight_or_decay:
-                weight_or = 0
+        weight_or_decay = sampling_interval_ts / (3600 * 2)  # fixed 2 hours decay
+        weight_or = 1 - (len(forecasts) * weight_or_decay)
+        if weight_or < weight_or_decay:
+            weight_or = 0
 
-        while time_begin_ts < time_end_ts:
-            model_time_next_ts = model_time_ts + self.sampling_interval_ts
+        while time_ts < time_end_ts:
+            time_next_ts = time_ts + sampling_interval_ts
             try:
-                model = self.model[model_time_ts % 86400]
+                _f = _forecasts_recycle.pop()
+                _f.__init__(time_ts, time_next_ts)
+            except IndexError:
+                _f = self.__class__.Forecast(time_ts, time_next_ts)
+
+            try:
+                _model = model[time_ts % 86400]
                 if weight_or:
-                    model_energy = model.energy_avg * (
+                    _f.energy = _model.energy_avg * (
                         observed_ratio * weight_or + (1 - weight_or)
                     )
                     if weight_or > weight_or_decay:
@@ -157,63 +165,16 @@ class HeuristicConsumptionEstimator(SignalEnergyEstimator):
                     else:
                         weight_or = 0
                 else:  # save some calc when not blending anymore
-                    model_energy = model.energy_avg
-                if time_end_ts < model_time_next_ts:
-                    energy += model_energy * (time_end_ts - time_begin_ts)
-                    break
-                else:
-                    energy += model_energy * (model_time_next_ts - time_begin_ts)
+                    _f.energy = _model.energy_avg
+
+                _f.energy_min = _model.energy_min
+                _f.energy_max = _model.energy_avg
             except KeyError:
                 # no energy in model
                 pass
 
-            time_begin_ts = model_time_ts = model_time_next_ts
-
-        return energy / self.sampling_interval_ts
-
-    @typing.override
-    def get_estimated_energy_max(self, time_begin_ts: int, time_end_ts: int):
-        """Computes the 'maximum' expected energy in the time window."""
-        energy = 0
-        model_time_ts = time_begin_ts - (time_begin_ts % self.sampling_interval_ts)
-        while time_begin_ts < time_end_ts:
-            model_time_next_ts = model_time_ts + self.sampling_interval_ts
-            try:
-                model = self.model[model_time_ts % 86400]
-                if time_end_ts < model_time_next_ts:
-                    energy += model.energy_avg * (time_end_ts - time_begin_ts)
-                    break
-                else:
-                    energy += model.energy_avg * (model_time_next_ts - time_begin_ts)
-            except KeyError:
-                # no energy in model
-                pass
-
-            time_begin_ts = model_time_ts = model_time_next_ts
-
-        return energy / self.sampling_interval_ts
-
-    @typing.override
-    def get_estimated_energy_min(self, time_begin_ts: int, time_end_ts: int):
-        """Computes the 'maximum' expected energy in the time window."""
-        energy = 0
-        model_time_ts = time_begin_ts - (time_begin_ts % self.sampling_interval_ts)
-        while time_begin_ts < time_end_ts:
-            model_time_next_ts = model_time_ts + self.sampling_interval_ts
-            try:
-                model = self.model[model_time_ts % 86400]
-                if time_end_ts < model_time_next_ts:
-                    energy += model.energy_min * (time_end_ts - time_begin_ts)
-                    break
-                else:
-                    energy += model.energy_min * (model_time_next_ts - time_begin_ts)
-            except KeyError:
-                # no energy in model
-                pass
-
-            time_begin_ts = model_time_ts = model_time_next_ts
-
-        return energy / self.sampling_interval_ts
+            forecasts.append(_f)
+            time_ts = time_next_ts
 
     @typing.override
     def _observed_energy_history_add(self, history_sample: "Sample"):

@@ -202,7 +202,6 @@ class BatteryProcessor(SignalEnergyProcessor):
         self.battery_current = battery_current
         self.charge_processor.process(battery_current, time_ts)
 
-
     @callback
     def _voltage_callback(
         self, event: "Event[EventStateChangedData] | BatteryProcessor.Event"
@@ -231,7 +230,7 @@ class BatteryProcessor(SignalEnergyProcessor):
         self.battery_voltage = battery_voltage
 
 
-class BatteryEstimator(EnergyBalanceEstimator, SignalEnergyEstimator, BatteryProcessor):# type: ignore
+class BatteryEstimator(EnergyBalanceEstimator, SignalEnergyEstimator, BatteryProcessor):  # type: ignore
 
     @dataclass(slots=True)
     class Sample(SignalEnergyEstimator.Sample):
@@ -248,20 +247,49 @@ class BatteryEstimator(EnergyBalanceEstimator, SignalEnergyEstimator, BatteryPro
             self.battery_energy_in = self.battery_energy_out = 0
             self.battery_charge_begin = -estimator.charge_processor.output
             self.battery_charge_in = self.battery_charge_out = 0
-            self.source_energy = (
-                estimator.production_estimator.output
-                if estimator.production_estimator
-                else 0
-            )
-            self.load_energy = (
-                estimator.consumption_estimator.output
-                if estimator.consumption_estimator
-                else 0
-            )
+            self.source_energy = estimator.production_estimator.output
+            self.load_energy = estimator.consumption_estimator.output
 
     class Forecast(EnergyBalanceEstimator.Forecast):
 
-        __slots__ = ()
+        losses: float
+        losses_min: float
+        losses_max: float
+
+        __slots__ = (
+            "losses",
+            "losses_min",
+            "losses_max",
+        )
+
+        def __init__(self, time_begin_ts: int, time_end_ts: int, /):
+            EnergyBalanceEstimator.Forecast.__init__(self, time_begin_ts, time_end_ts)
+            self.losses = 0
+            self.losses_min = 0
+            self.losses_max = 0
+
+        def add(self, forecast: "BatteryEstimator.Forecast", /):
+            EnergyBalanceEstimator.Forecast.add(self, forecast)
+            self.losses += forecast.losses
+            self.losses_min += forecast.losses_min
+            self.losses_max += forecast.losses_max
+
+        def addmul(self, forecast: "BatteryEstimator.Forecast", ratio: float, /):
+            EnergyBalanceEstimator.Forecast.addmul(self, forecast, ratio)
+            self.losses += forecast.losses * ratio
+            self.losses_min += forecast.losses_min * ratio
+            self.losses_max += forecast.losses_max * ratio
+
+    class _FakeEstimator(EnergyBalanceEstimator._FakeEstimator, SignalEnergyEstimator):
+        def _check_sample_curr(self, time_ts: float, /):
+            self._sample_curr.__init__(time_ts, self)
+            return self._sample_curr
+
+        def _process_sample_curr(
+            self, sample_curr: SignalEnergyEstimator.Sample, time_ts: float, /
+        ):
+            sample_curr.__init__(time_ts, self)
+            return sample_curr
 
     if typing.TYPE_CHECKING:
 
@@ -282,8 +310,13 @@ class BatteryEstimator(EnergyBalanceEstimator, SignalEnergyEstimator, BatteryPro
             conversion_yield_avg: float
             conversion_yield_total: float
 
+        # (override base typehint)
         config: Config
-        forecasts: list[Forecast]
+        forecasts: Final[list[Forecast]]  # type: ignore
+        _forecasts_recycle: Final[list[Forecast]]  # type: ignore
+        production_estimator: SignalEnergyEstimator
+        consumption_estimator: SignalEnergyEstimator
+        _sample_curr: Sample
 
         # losses are computed as: source + battery - load
         # where:
@@ -302,14 +335,28 @@ class BatteryEstimator(EnergyBalanceEstimator, SignalEnergyEstimator, BatteryPro
         conversion_yield_avg: float  # avg of conversion_yield
         conversion_yield_total: float  # computed over the whole accumulation
 
-        # until we better manage this with Generics...
-        _sample_curr: Sample
         def _check_sample_curr(self, time_ts: float, /) -> Sample:
-            return super()._check_sample_curr(time_ts) # type: ignore
+            return super()._check_sample_curr(time_ts)  # type: ignore
 
     DEFAULT_NAME = "Battery estimator"
 
-    _SLOTS_ = ()
+    _FAKE_ESTIMATOR = _FakeEstimator(
+        "",
+        config={
+            "history_duration_days": 0,
+            "observation_duration_minutes": 0,
+            "sampling_interval_minutes": SignalEnergyEstimator.SAMPLING_INTERVAL_MODULO,
+        },
+    )
+
+    _SLOTS_ = (
+        "source",
+        "load",
+        "losses",
+        "conversion_yield",
+        "conversion_yield_avg",
+        "conversion_yield_total",
+    )
 
     def __init__(self, id, **kwargs: "Unpack[Args]"):
         super().__init__(id, **kwargs)
@@ -322,6 +369,19 @@ class BatteryEstimator(EnergyBalanceEstimator, SignalEnergyEstimator, BatteryPro
         self.charge_processor.listen_energy(self._charge_callback)
 
     # interface: Estimator
+    async def async_start(self):
+        await super().async_start()
+        # since we're not (yet?) restoring history for battery estimation we have to
+        # fix today_energy since it gets lost when unloading the entry.
+        # We could eventually store the estimator state but that's another story
+        # since most of its state is initialized in async_init and that's actually called
+        # after restoring (we have to think about this. TODO)
+        # BEWARE: ensure the battery estimator is started after the production/consumption
+        self.today_energy = self.consumption_estimator.today_energy
+        if self.conversion_yield_avg:
+            self.today_energy /= self.conversion_yield_avg
+        self.today_energy -= self.production_estimator.today_energy
+
     def get_state_dict(self):
         """Returns a synthetic state string for the estimator.
         Used for debugging purposes."""
@@ -359,9 +419,8 @@ class BatteryEstimator(EnergyBalanceEstimator, SignalEnergyEstimator, BatteryPro
         # the storage
         sample_curr = self._sample_curr
         return super().store() | {  # type: ignore
-            "battery_energy": self.output - (
-                sample_curr.battery_energy_out - sample_curr.battery_energy_in
-            ),
+            "battery_energy": self.output
+            - (sample_curr.battery_energy_out - sample_curr.battery_energy_in),
             "battery_energy_in": self.energy_in - sample_curr.battery_energy_in,
             "battery_energy_out": self.energy_out - sample_curr.battery_energy_out,
             "source_energy": self.source,
@@ -413,79 +472,98 @@ class BatteryEstimator(EnergyBalanceEstimator, SignalEnergyEstimator, BatteryPro
             )
             # TODO: update any parameter (likely yields...) from new sample (sample_curr)
             # before discarding the sample...(or store it)
-            if self.production_estimator:
-                sample_curr.source_energy = source = (
-                    self.production_estimator.output - sample_curr.source_energy
-                )
-                self.source += source
-            else:
-                source = 0
-            if self.consumption_estimator:
-                sample_curr.load_energy = load = (
-                    self.consumption_estimator.output - sample_curr.load_energy
-                )
-                self.load += load
-                losses = source + battery - load
-                self.losses += losses
-                try:
-                    if load:
-                        self.conversion_yield = load / (load + losses)
-                        self.conversion_yield_avg = (
-                            self.conversion_yield_avg * EnergyBalanceEstimator.OPS_DECAY
-                            + self.conversion_yield
-                            * (1 - EnergyBalanceEstimator.OPS_DECAY)
-                        )
-                    self.conversion_yield_total = self.load / (self.load + self.losses)
-                except:
-                    # just protect in case something goes to 0
-                    pass
+            sample_curr.source_energy = source = (
+                self.production_estimator.output - sample_curr.source_energy
+            )
+            self.source += source
+            sample_curr.load_energy = load = (
+                self.consumption_estimator.output - sample_curr.load_energy
+            )
+            self.load += load
+            losses = source + battery - load
+            self.losses += losses
+            try:
+                if load:
+                    self.conversion_yield = load / (load + losses)
+                    self.conversion_yield_avg = (
+                        self.conversion_yield_avg * EnergyBalanceEstimator.OPS_DECAY
+                        + self.conversion_yield * (1 - EnergyBalanceEstimator.OPS_DECAY)
+                    )
+                self.conversion_yield_total = self.load / (self.load + self.losses)
+            except:
+                # just protect in case something goes to 0
+                pass
         else:
             # trigger a reset since previous sample did not collect any data
             time_end_curr_ts = 0
 
         # since we're discarding the old sample we try this hack
         sample_curr.__init__(time_ts, self)
-        time_begin_next_ts = sample_curr.time_begin_ts
-        self.estimation_time_ts = time_begin_next_ts
-        if time_begin_next_ts >= self.tomorrow_ts:
-            # new day
-            self._observed_energy_daystart(time_begin_next_ts)
-
-        if time_end_curr_ts != time_begin_next_ts:
+        if time_end_curr_ts != sample_curr.time_begin_ts:
+            # when samples are not consecutive
             self.reset()
 
+        # make sure those are time aligned else the estimate calculations will mess up
+        self.production_estimator._check_sample_curr(time_ts)
+        self.consumption_estimator._check_sample_curr(time_ts)
         self.update_estimate()
 
         return sample_curr
 
     @typing.override
     def update_estimate(self):
+        # bypass EnergyBalanceEstimator raw estimate
+        SignalEnergyEstimator.update_estimate(self)
 
+    @typing.override
+    def _ensure_forecasts(self, count: int, /):
+        estimation_time_ts = self.estimation_time_ts
+        sampling_interval_ts = self.sampling_interval_ts
+        forecasts = self.forecasts
+        _forecasts_recycle = self._forecasts_recycle
         production_estimator = self.production_estimator
         consumption_estimator = self.consumption_estimator
 
-        forecast_ts = self.estimation_time_ts
-        sampling_interval_ts = self.sampling_interval_ts
-        for forecast in self.forecasts:
-            forecast_next_ts = forecast_ts + sampling_interval_ts
-            forecast.time_ts = forecast_ts
-            if production_estimator:
-                forecast.production = production_estimator.get_estimated_energy(
-                    forecast_ts, forecast_next_ts
-                )
-            else:
-                forecast.production = 0
-            if consumption_estimator:
-                forecast.consumption = consumption_estimator.get_estimated_energy(
-                    forecast_ts, forecast_next_ts
-                )
-                if self.conversion_yield_avg:
-                    forecast.consumption = (
-                        forecast.consumption / self.conversion_yield_avg
-                    )
-            else:
-                forecast.consumption = 0
-            forecast_ts = forecast_next_ts
+        time_ts = estimation_time_ts + len(forecasts) * sampling_interval_ts
+        time_end_ts = estimation_time_ts + count * sampling_interval_ts
 
-        for listener in self._update_listeners:
-            listener(self)
+        while time_ts < time_end_ts:
+            time_next_ts = time_ts + sampling_interval_ts
+            try:
+                _f = _forecasts_recycle.pop()
+                _f.__init__(time_ts, time_next_ts)
+            except IndexError:
+                _f = self.__class__.Forecast(time_ts, time_next_ts)
+
+            _f_p = production_estimator.get_forecast(time_ts, time_next_ts)
+            _f.production = _f_p.energy
+            _f.production_min = _f_p.energy_min
+            _f.production_max = _f_p.energy_max
+
+            _f_c = consumption_estimator.get_forecast(time_ts, time_next_ts)
+            _f.consumption = _f_c.energy
+            _f.consumption_min = _f_c.energy_min
+            _f.consumption_max = _f_c.energy_max
+
+            losses_ratio = (
+                (1 / self.conversion_yield_avg) - 1 if self.conversion_yield_avg else 0
+            )
+            _f.losses = _f.consumption * losses_ratio
+            _f.losses_min = _f.consumption_min * losses_ratio
+            _f.losses_max = _f.consumption_max * losses_ratio
+
+            _f.energy = _f.consumption + _f.losses - _f.production
+            _f.energy_min = _f.consumption_min + _f.losses_min - _f.production_max
+            _f.energy_max = _f.consumption_max + _f.losses_max - _f.production_min
+
+            forecasts.append(_f)
+            time_ts = time_next_ts
+
+    # interface: EnergyBalanceEstimator
+    @typing.override
+    def connect_production(self, estimator: "SignalEnergyEstimator"):
+        self.production_estimator = estimator
+
+    @typing.override
+    def connect_consumption(self, estimator: "SignalEnergyEstimator"):
+        self.consumption_estimator = estimator
