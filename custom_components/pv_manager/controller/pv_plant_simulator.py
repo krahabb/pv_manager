@@ -61,6 +61,7 @@ class Controller(controller.Controller["EntryConfig"]):
         "weather_entity_id",
         "battery_voltage",
         "battery_capacity",
+        "battery_charge",
         "consumption_baseload_power_w",
         "consumption_daily_extra_power_w",
         "consumption_daily_fill_factor",
@@ -142,6 +143,7 @@ class Controller(controller.Controller["EntryConfig"]):
 
         self.battery_voltage = config.get("battery_voltage", 0)
         self.battery_capacity = config.get("battery_capacity", 0)
+        self.battery_charge = self.battery_capacity / 2
         self.battery_voltage_sensor: Sensor | None = None
         self.battery_current_sensor: Sensor | None = None
         self.battery_charge_sensor: BatteryChargeSensor | None = None
@@ -170,7 +172,7 @@ class Controller(controller.Controller["EntryConfig"]):
                     "battery_charge",
                     name="Battery charge",
                     capacity=self.battery_capacity,
-                    native_value=self.battery_capacity / 2,
+                    native_value=self.battery_charge,
                     parent_attr=Sensor.ParentAttr.DYNAMIC,
                 )
 
@@ -281,26 +283,30 @@ class Controller(controller.Controller["EntryConfig"]):
 
         if self.battery_voltage:
             # assume a voltage drop of 5% of the battery voltage at 1C
+            battery_capacity = self.battery_capacity
             battery_resistance = self.battery_voltage / (
-                20 * (self.battery_capacity or 100)
+                20 * (battery_capacity or 100)
             )
             battery_power = total_consumption_power - pv_power
             battery_current = battery_power / self.battery_voltage
             battery_voltage = (
                 self.battery_voltage - battery_resistance * battery_current
             )
+            # adjust battery voltage by 5% at maximum/minimum charge
+            battery_voltage += battery_voltage * 0.05 * (self.battery_charge - battery_capacity / 2) / (battery_capacity / 2)
             battery_current = battery_power / battery_voltage
             if self.battery_charge_sensor:
-                battery_charge = self.battery_charge_sensor.update_current(
-                    battery_current
+                self.battery_charge = battery_charge = (
+                    self.battery_charge_sensor.update_current(battery_current)
                 )
                 if battery_charge == 0:
                     self._inverter_on = False
-                elif battery_charge == self.battery_capacity:
+                elif battery_charge == battery_capacity:
                     pv_power = total_consumption_power
                     battery_current = 0
+                    self._inverter_on = True
                 elif not self._inverter_on:
-                    if battery_charge > (self.battery_capacity * 0.1):
+                    if battery_charge > (battery_capacity * 0.1):
                         self._inverter_on = True
             else:
                 self._inverter_on = True
