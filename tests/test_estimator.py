@@ -41,7 +41,7 @@ async def test_estimator_pv_energy_heuristic(
         data["source_entity_id"] = (
             pv_simulator_controller.pv_power_simulator_sensor.entity_id
         )
-        data["maximum_latency_seconds"] = SIMULATOR_DATA_RATE_PERIOD * 2
+        data["maximum_latency"] = SIMULATOR_DATA_RATE_PERIOD * 2
         async with helpers.ConfigEntryMocker(
             hass,
             tc.ConfigEntriesItem(

@@ -92,7 +92,7 @@ class BatteryProcessor(SignalEnergyProcessor):
             "charge_processor",
             logger=self,
             config={
-                "maximum_latency_seconds": self.maximum_latency_ts,
+                "maximum_latency": self.maximum_latency_ts,
             },
         )
         self.charge_processor.listen_energy(self._charge_callback)

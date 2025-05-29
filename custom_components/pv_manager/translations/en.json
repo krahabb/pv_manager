@@ -23,8 +23,8 @@
                     "name": "Entity name(s)",
                     "source_entity_id": "Source entity",
                     "cycle_modes": "Set of 'metering' entities to create",
-                    "update_period_seconds": "Integration period",
-                    "maximum_latency_seconds": "Maximum latency"
+                    "update_period": "Integration period",
+                    "maximum_latency": "Maximum latency"
                 }
             },
             "consumption_estimator": {
@@ -36,8 +36,8 @@
                     "sampling_interval_minutes": "Sampling interval",
                     "observation_duration_minutes": "Observation period",
                     "history_duration_days": "History length",
-                    "update_period_seconds": "Refresh interval",
-                    "maximum_latency_seconds": "Maximum latency"
+                    "update_period": "Refresh interval",
+                    "maximum_latency": "Maximum latency"
                 }
             },
             "pv_energy_estimator": {
@@ -50,8 +50,8 @@
                     "sampling_interval_minutes": "Sampling interval",
                     "observation_duration_minutes": "Observation period",
                     "history_duration_days": "History length",
-                    "update_period_seconds": "Refresh interval",
-                    "maximum_latency_seconds": "Maximum latency"
+                    "update_period": "Refresh interval",
+                    "maximum_latency": "Maximum latency"
                 }
             },
             "pv_plant_simulator": {

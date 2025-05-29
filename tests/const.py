@@ -96,7 +96,7 @@ CE_OFF_GRID_MANAGER = ConfigEntriesItem(
                 "observation_duration_minutes": 30,
                 "weather_model": "cubic",
             },
-            "maximum_latency_seconds": 10,
+            "maximum_latency": 10,
         },
     }
 )
@@ -107,8 +107,8 @@ CE_ENERGY_CALCULATOR = ConfigEntriesItem(
             "name": "Energy calculator",
             "source_entity_id": EntityIdEnum.LOAD_POWER,
             "cycle_modes": list(MeteringCycle.Mode),
-            "update_period_seconds": 5,
-            "maximum_latency_seconds": 10,
+            "update_period": 5,
+            "maximum_latency": 10,
         },
     }
 )
@@ -121,8 +121,8 @@ CE_CONSUMPTION_ESTIMATOR = ConfigEntriesItem(
             "sampling_interval_minutes": 10,
             "observation_duration_minutes": 60,
             "history_duration_days": 1,
-            "update_period_seconds": OptionalFloat(5),
-            "maximum_latency_seconds": 10,
+            "update_period": OptionalFloat(5),
+            "maximum_latency": 10,
             "input_max": OptionalFloat(1000),
         },
     }
@@ -136,8 +136,8 @@ CE_PVENERGY_HEURISTIC_ESTIMATOR = ConfigEntriesItem(
             "sampling_interval_minutes": 10,
             "observation_duration_minutes": 60,
             "history_duration_days": 1,
-            "update_period_seconds": OptionalFloat(5),
-            "maximum_latency_seconds": 10,
+            "update_period": OptionalFloat(5),
+            "maximum_latency": 10,
             "input_max": OptionalFloat(1000),
         },
     }

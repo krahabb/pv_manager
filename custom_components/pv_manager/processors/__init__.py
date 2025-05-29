@@ -313,7 +313,7 @@ class SignalProcessor[_input_t](BaseProcessor):
 
         class Config(BaseProcessor.Config):
             source_entity_id: NotRequired[str | None]
-            update_period_seconds: NotRequired[float | None]
+            update_period: NotRequired[float | None]
 
         class Args(BaseProcessor.Args):
             config: "SignalProcessor.Config"
@@ -345,7 +345,7 @@ class SignalProcessor[_input_t](BaseProcessor):
             config = {}
         return {
             hv.req_config("source_entity_id", config): hv.sensor_selector(),
-            hv.opt_config("update_period_seconds", config): hv.time_period_selector(
+            hv.opt_config("update_period", config): hv.time_period_selector(
                 unit_of_measurement=hac.UnitOfTime.SECONDS
             ),
         }
@@ -356,7 +356,7 @@ class SignalProcessor[_input_t](BaseProcessor):
         self.input_unit = None
         super().__init__(id, **kwargs)
         self.source_entity_id = self.config.get("source_entity_id")
-        self.update_period_ts = self.config.get("update_period_seconds", 0)
+        self.update_period_ts = self.config.get("update_period", 0)
 
     @typing.override
     async def async_start(self):
@@ -472,7 +472,7 @@ class SignalEnergyProcessor(SignalProcessor[float], EnergyBroadcast):
     if typing.TYPE_CHECKING:
 
         class Config(SignalProcessor.Config):
-            maximum_latency_seconds: NotRequired[float]
+            maximum_latency: NotRequired[float]
             """Maximum time between source pv power/energy samples before considering an error in data sampling."""
             input_max: NotRequired[float]
             """Maximum power expected at the input used to filter out outliers from processing. If not set disables the check."""
@@ -539,10 +539,10 @@ class SignalEnergyProcessor(SignalProcessor[float], EnergyBroadcast):
             hv.opt_config("source_entity_id", config): hv.sensor_selector(
                 device_class=[Sensor.DeviceClass.POWER, Sensor.DeviceClass.ENERGY]
             ),
-            hv.opt_config("update_period_seconds", config): hv.time_period_selector(
+            hv.opt_config("update_period", config): hv.time_period_selector(
                 unit_of_measurement=hac.UnitOfTime.SECONDS
             ),
-            hv.opt_config("maximum_latency_seconds", config): hv.time_period_selector(
+            hv.opt_config("maximum_latency", config): hv.time_period_selector(
                 unit_of_measurement=hac.UnitOfTime.SECONDS
             ),
             hv.opt_config("input_max", config): hv.number_selector(
@@ -561,7 +561,7 @@ class SignalEnergyProcessor(SignalProcessor[float], EnergyBroadcast):
 
         config = kwargs["config"]
         self.maximum_latency_ts = (
-            config.get("maximum_latency_seconds", 0)
+            config.get("maximum_latency", 0)
             or SignalEnergyProcessor.MAXIMUM_LATENCY_DISABLED
         )
         self.input_max = config.get(
@@ -578,7 +578,7 @@ class SignalEnergyProcessor(SignalProcessor[float], EnergyBroadcast):
     @typing.override
     def as_diagnostic_dict(self):
         return {
-            "maximum_latency_seconds": (
+            "maximum_latency": (
                 None
                 if self.maximum_latency_ts
                 is SignalEnergyProcessor.MAXIMUM_LATENCY_DISABLED

@@ -45,8 +45,8 @@ class Controller(controller.Controller["EntryConfig"], SignalEnergyProcessorDevi
                 device_class=EnergySensor.DeviceClass.POWER
             ),
             hv.req_config("cycle_modes", config): hv.cycle_modes_selector(),
-            hv.opt_config("update_period_seconds", config): hv.time_period_selector(),
-            hv.opt_config("maximum_latency_seconds", config): hv.time_period_selector(),
+            hv.opt_config("update_period", config): hv.time_period_selector(),
+            hv.opt_config("maximum_latency", config): hv.time_period_selector(),
             hv.opt_config("input_max", config): hv.number_selector(
                 unit_of_measurement=hac.UnitOfPower.WATT
             ),
@@ -65,7 +65,7 @@ class Controller(controller.Controller["EntryConfig"], SignalEnergyProcessorDevi
         for cycle_mode in config["cycle_modes"]:
             EnergySensor(
                 self,
-                "pv_energy_sensor",
+                "energy_sensor",
                 cycle_mode,
                 self,
                 name=name,

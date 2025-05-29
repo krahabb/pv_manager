@@ -206,12 +206,12 @@ class LossesMeter(BaseProcessor, EnergyBroadcast):
         "_pv_callback_unsub",
     )
 
-    def __init__(self, controller: "OffGridManager", update_period_seconds: float):
+    def __init__(self, controller: "OffGridManager", update_period: float):
         self.controller = controller
         self.battery_meter = controller.battery_meter
         self.load_meter = controller.load_meter
         self.pv_meter = controller.pv_meter
-        self.update_period_ts = update_period_seconds
+        self.update_period_ts = update_period
 
         self._timer_unsub = None
         super().__init__(SourceType.LOSSES, logger=controller, config={})

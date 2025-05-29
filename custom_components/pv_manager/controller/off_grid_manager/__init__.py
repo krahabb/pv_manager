@@ -113,7 +113,7 @@ class ManagerLossesConfig(pmc.EntityConfig, pmc.SubentryConfig):
     cycle_modes: list[EnergySensor.CycleMode]
     """For energy losses sensor(s)"""
 
-    sampling_interval_seconds: int
+    update_period: int
 
     # Yield sensors names/enabler
     system_yield: "NotRequired[str]"
@@ -139,7 +139,7 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
             pv: PvMeter.Config
             load: LoadMeter.Config
             estimator: "Controller.EstimatorConfig"
-            maximum_latency_seconds: NotRequired[int]
+            maximum_latency: NotRequired[int]
             """Maximum time between source power/energy samples before considering an error in data sampling."""
 
         config: Config
@@ -243,7 +243,7 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
             hv.vol.Required("estimator"): hv.section(
                 _estimator_schema(config.get("estimator")),
             ),
-            hv.opt_config("maximum_latency_seconds", config): hv.time_period_selector(
+            hv.opt_config("maximum_latency", config): hv.time_period_selector(
                 unit_of_measurement=hac.UnitOfTime.SECONDS
             ),
         }
@@ -287,7 +287,7 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
                 if not config:
                     config = {
                         "name": "Losses",
-                        "sampling_interval_seconds": 10,
+                        "update_period": 10,
                         "system_yield": "System yield",
                         "battery_yield": "Battery yield",
                         "conversion_yield": "Conversion yield",
@@ -298,7 +298,7 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
                     | {
                         hv.req_config("cycle_modes", config): hv.cycle_modes_selector(),
                         hv.req_config(
-                            "sampling_interval_seconds", config
+                            "update_period", config
                         ): hv.time_period_selector(),
                     }
                     | {
@@ -331,7 +331,7 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
     def _on_init(self):
         config: "Controller.Config" = self.config  # type: ignore
         self.maximum_latency_ts = (
-            config.get("maximum_latency_seconds") or PvMeter.MAXIMUM_LATENCY_DISABLED
+            config.get("maximum_latency") or PvMeter.MAXIMUM_LATENCY_DISABLED
         )
 
         # we need to build meters here since they need to be in place when the controller
@@ -434,7 +434,7 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
                 assert not self.losses_meter
                 losses_config: ManagerLossesConfig = entry_data.config  # type: ignore
                 self.losses_meter = energy_meter = LossesMeter(
-                    self, losses_config["sampling_interval_seconds"]
+                    self, losses_config["update_period"]
                 )
                 name = losses_config["name"]
                 PowerSensor(
@@ -495,9 +495,7 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
                 losses_config: ManagerLossesConfig = entry_data.config  # type: ignore
                 name = losses_config["name"]
                 # TODO: retrigger the track_timer
-                energy_meter.update_period_ts = losses_config[
-                    "sampling_interval_seconds"
-                ]
+                energy_meter.update_period_ts = losses_config["update_period"]
                 entities = entry_data.entities
                 # update PowerSensor
                 if entity := entities.get("losses_power"):
