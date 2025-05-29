@@ -142,15 +142,15 @@ class HeuristicPVEnergyEstimator(PVEnergyEstimator):
         super().__init__(id, **kwargs)
 
     # interface: PVEnergyEstimator
-    def as_dict(self):
-        return super().as_dict() | {
+    def as_diagnostic_dict(self):
+        return super().as_diagnostic_dict() | {
             "energy_model": self.energy_model,
         }
 
-    def get_state_dict(self):
+    def as_state_dict(self):
         """Returns a synthetic state string for the estimator.
         Used for debugging purposes."""
-        return super().get_state_dict() | {
+        return super().as_state_dict() | {
             "history_samples": len(self.history_samples),
             "model_energy_max": self._model_energy_max,
             "observed_ratio": self.observed_ratio,
@@ -189,9 +189,9 @@ class HeuristicPVEnergyEstimator(PVEnergyEstimator):
             for observed_energy in self.observed_samples:
                 _model = model[observed_energy.time_begin_ts % 86400]
                 sum_energy_max += _model.energy_max
-                sum_observed_weighted += (observed_energy.energy - _model.energy_max) * (
-                    _model.energy_max / _model_energy_max
-                )
+                sum_observed_weighted += (
+                    observed_energy.energy - _model.energy_max
+                ) * (_model.energy_max / _model_energy_max)
             self.observed_ratio = 1 + (sum_observed_weighted / sum_energy_max)
         except (KeyError, ZeroDivisionError):
             # no data or invalid

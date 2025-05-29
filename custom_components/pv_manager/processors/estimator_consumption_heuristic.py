@@ -92,13 +92,13 @@ class HeuristicConsumptionEstimator(SignalEnergyEstimator):
         super().__init__(id, **kwargs)
 
     # interface: Estimator
-    def as_dict(self):
-        return super().as_dict() | {"model": self.model}
+    def as_diagnostic_dict(self):
+        return super().as_diagnostic_dict() | {"model": self.model}
 
-    def get_state_dict(self):
+    def as_state_dict(self):
         """Returns a synthetic state string for the estimator.
         Used for debugging purposes."""
-        return super().get_state_dict() | {
+        return super().as_state_dict() | {
             "observed_ratio": self.observed_ratio,
         }
 

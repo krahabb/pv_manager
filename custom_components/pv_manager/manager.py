@@ -3,8 +3,8 @@ The component global api.
 """
 
 from collections import deque
-from datetime import datetime, timedelta, UTC
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 import enum
 from threading import Lock
 from time import time
@@ -183,7 +183,7 @@ class ManagerClass(Loggable):
     Singleton global manager/helper class
     """
 
-    @dataclass(slots=True)
+    @dataclass(slots=True, eq=False)
     class _DayStart:
         today_ts: "Final[int]"
         tomorrow_ts: "Final[int]"

@@ -7,7 +7,9 @@ estimators which should always include a signal processor to be feeded
 """
 
 import abc
+from dataclasses import asdict, dataclass
 import enum
+import inspect
 import typing
 
 from homeassistant import const as hac
@@ -16,6 +18,7 @@ from homeassistant.util import unit_conversion
 
 from ..helpers import Loggable, datetime_from_epoch, validation as hv
 from ..helpers.callback import CallbackTracker
+from ..helpers.dataattr import DataAttrClass
 from ..manager import Manager
 from ..sensor import Sensor
 
@@ -83,7 +86,7 @@ class EnergyBroadcast(Loggable):
 
     _SLOTS_ = ("energy_listeners",)
 
-    def __init__(self, id, **kwargs):
+    def __init__(self, id, **kwargs: "Unpack[Loggable.Args]"):
         self.energy_listeners = set()
         super().__init__(id, **kwargs)
 
@@ -172,7 +175,7 @@ class ProcessorWarning:
             listener(False)
 
 
-class BaseProcessor(CallbackTracker, Loggable):
+class BaseProcessor(CallbackTracker, Loggable, DataAttrClass):
 
     class SourceType(enum.StrEnum):
         BATTERY = enum.auto()
@@ -216,7 +219,7 @@ class BaseProcessor(CallbackTracker, Loggable):
         super().__init__(id, **kwargs)
         self.config = kwargs["config"]
         self.warnings = {
-            ProcessorWarning(self, warning_id) for warning_id in self.WARNINGS
+            ProcessorWarning(self, warning_id) for warning_id in self.__class__.WARNINGS
         }
 
     async def async_start(self):
@@ -228,20 +231,14 @@ class BaseProcessor(CallbackTracker, Loggable):
         for warning in self.warnings:
             warning.shutdown()
 
-    def as_dict(self):
+    def as_diagnostic_dict(self):
         """Used for serialization to debug files or so.
         Returns the configuration."""
         return {}
 
-    def get_state_dict(self):
+    def as_state_dict(self):
         """Returns a synthetic state dict.
         Used for debugging purposes."""
-        return {}
-
-    def restore(self, data: "StoreType", /):
-        pass
-
-    def store(self) -> "StoreType":
         return {}
 
 
@@ -372,7 +369,7 @@ class SignalProcessor[_input_t](BaseProcessor):
             self.track_timer(self.update_period_ts, self._update_callback)
 
     @typing.override
-    def as_dict(self):
+    def as_diagnostic_dict(self):
         """Used for serialization to debug files or so.
         Returns the configuration."""
         return {
@@ -507,7 +504,6 @@ class SignalEnergyProcessor(SignalProcessor[float], EnergyBroadcast):
         _differential_mode: bool
         """_differential_mode is not implicitly initialized since it must be configured by calling
         configure() before process()."""
-        output: float
 
     # these defaults are applied when the corresponding config option is not set or is 0
     # they means by default we're measuring positive energies with (almost) no latency checks
@@ -531,11 +527,11 @@ class SignalEnergyProcessor(SignalProcessor[float], EnergyBroadcast):
         "input_min",
         "energy_min",
         "_differential_mode",
-        "energy",
         "warning_no_signal",
         "warning_maximum_latency",
         "warning_out_of_range",
     )
+    # TODO: move warnings related slots to automatic class post_init in BaseProcessor
 
     @classmethod
     @typing.override
@@ -579,12 +575,11 @@ class SignalEnergyProcessor(SignalProcessor[float], EnergyBroadcast):
             "input_min", SignalEnergyProcessor.SAFE_MINIMUM_POWER_DISABLED
         )
         self.energy_min = self.input_min / 3600
-        self.output = 0
         super().__init__(id, **kwargs)
         self.warning_no_signal_on = True
 
     @typing.override
-    def as_dict(self):
+    def as_diagnostic_dict(self):
         return {
             "maximum_latency_seconds": (
                 None
@@ -624,7 +619,6 @@ class SignalEnergyProcessor(SignalProcessor[float], EnergyBroadcast):
                     if self.energy_min <= energy / d_ts <= self.energy_max:
                         if self.warning_out_of_range_on:
                             self.warning_out_of_range_deactivate()
-                        self.output += energy
                         for energy_listener in self.energy_listeners:
                             energy_listener(energy, time_ts)
                     else:
@@ -635,7 +629,6 @@ class SignalEnergyProcessor(SignalProcessor[float], EnergyBroadcast):
                 else:
                     # power left rect integration
                     energy = self.input * d_ts / 3600  # type: ignore
-                    self.output += energy
                     for energy_listener in self.energy_listeners:
                         energy_listener(energy, time_ts)
                     if self.input_min <= input <= self.input_max:  # type: ignore
@@ -695,6 +688,7 @@ class SignalEnergyProcessor(SignalProcessor[float], EnergyBroadcast):
         # start a new accumulation (provided it is a valid value though)
         self.input = None
 
+
 class Estimator(BaseProcessor):
 
     if typing.TYPE_CHECKING:
@@ -726,8 +720,8 @@ class Estimator(BaseProcessor):
         super().shutdown()
 
     @typing.override
-    def get_state_dict(self):
-        return super().get_state_dict() | {
+    def as_state_dict(self):
+        return super().as_state_dict() | {
             "estimation_time": datetime_from_epoch(self.estimation_time_ts).isoformat(),
         }
 

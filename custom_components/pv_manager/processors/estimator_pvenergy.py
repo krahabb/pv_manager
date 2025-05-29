@@ -10,6 +10,7 @@ from homeassistant.helpers import sun as sun_helpers
 from homeassistant.util import dt as dt_util
 
 from ..helpers import datetime_from_epoch, validation as hv
+from ..helpers.dataattr import DataAttr, DataAttrClass, DataAttrParam
 from ..manager import Manager
 from .estimator_energy import SignalEnergyEstimator
 
@@ -40,7 +41,7 @@ _WEATHER_CONDITION_TO_CLOUD: typing.Final[dict[str | None, float | None]] = {
 }
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, eq=False)
 class WeatherSample:
     time: dt.datetime
     time_ts: float
@@ -91,13 +92,9 @@ class WeatherSample:
         }
 
 
-class WeatherModel:
+class WeatherModel(DataAttrClass):
+    # TODO: inherit from dataattr class to automatically provide as_dict behavior
     """Base (abstract) class modeling the influence of weather on PV production."""
-
-    __slots__ = ()
-
-    def as_dict(self):
-        return {}
 
     def get_param(self, *args):
         """Generic inspector for model parameters (state)"""
@@ -113,30 +110,29 @@ class WeatherModel:
 class SimpleWeatherModel(WeatherModel):
     """Basic 1st order based on clouds with naive gradient descent."""
 
-    Wc: float
-    Wc_max: typing.Final = 0.8  # maximum 80% pv power derate when 100% clouds
-    Wc_min: typing.Final = 0.4  # minimum 40% pv power derate when 100% clouds
-    Wc_lr: typing.Final = 0.00000005  # 'learning rate'
+    if typing.TYPE_CHECKING:
+        Wc_max: Final
+        Wc_min: Final
+        Wc_lr: Final
 
-    __slots__ = ("Wc",)
+    Wc_max = 0.8  # maximum 80% pv power derate when 100% clouds
+    Wc_min = 0.4  # minimum 40% pv power derate when 100% clouds
+    Wc_lr = 0.00000005  # 'learning rate'
 
-    def __init__(self):
-        self.Wc = (self.Wc_max + self.Wc_min) / 2
+    Wc: DataAttr[float] = (Wc_max + Wc_min) / 2
 
-    def as_dict(self):
-        return {
-            "cloud_weight": self.Wc,
-        }
-
+    @typing.override
     def get_param(self, *args):
         return self.Wc
 
+    @typing.override
     def get_energy_estimate(self, energy_max: float, weather: WeatherSample):
         cloud_coverage = weather.cloud_coverage
         if cloud_coverage:
             return energy_max * (1 - self.Wc * cloud_coverage)
         return energy_max
 
+    @typing.override
     def update_estimate(
         self, energy_max: float, weather: WeatherSample, expected: float
     ):
@@ -160,30 +156,24 @@ class CubicWeatherModel(WeatherModel):
 
     2nd order is not convex enough in my opinion so we're testing right 3rd order
     """
-    Wc1: float
-    Wc3: float
-    Wc_max: typing.Final = 0.8  # maximum 80% pv power derate when 100% clouds
-    Wc_min: typing.Final = 0.4  # minimum 40% pv power derate when 100% clouds
-    Wc_lr: typing.Final = 0.0000000005  # 'learning rate'
 
-    __slots__ = (
-        "Wc1",
-        "Wc3",
-    )
+    if typing.TYPE_CHECKING:
+        Wc_max: Final
+        Wc_min: Final
+        Wc_lr: Final
 
-    def __init__(self):
-        self.Wc1 = 0
-        self.Wc3 = (self.Wc_max + self.Wc_min) / 2
+    Wc_max = 0.8  # maximum 80% pv power derate when 100% clouds
+    Wc_min = 0.4  # minimum 40% pv power derate when 100% clouds
+    Wc_lr = 0.0000000005  # 'learning rate'
 
-    def as_dict(self):
-        return {
-            "cloud_weight_1": self.Wc1,
-            "cloud_weight_3": self.Wc3,
-        }
+    Wc1: DataAttr[float] = 0
+    Wc3: DataAttr[float] = (Wc_max + Wc_min) / 2
 
+    @typing.override
     def get_param(self, n, *args):
         return self.Wc3 if n else self.Wc1
 
+    @typing.override
     def get_energy_estimate(self, energy_max: float, weather: WeatherSample):
         cloud_coverage = weather.cloud_coverage
         if cloud_coverage:
@@ -194,6 +184,7 @@ class CubicWeatherModel(WeatherModel):
             )
         return energy_max
 
+    @typing.override
     def update_estimate(
         self, energy_max: float, weather: WeatherSample, expected: float
     ):
@@ -230,7 +221,7 @@ class PVEnergyEstimator(SignalEnergyEstimator):
     At the time, lacking any real specialization, the generalization of this class is pretty basic and likely unstable.
     """
 
-    @dataclass(slots=True)
+    @dataclass(slots=True, eq=False)
     class Sample(SignalEnergyEstimator.Sample):
         """PV energy/power history data extraction. This sample is used to build energy production
         in a time window (1 hour by design) by querying either a PV power sensor or a PV energy sensor.
@@ -253,14 +244,7 @@ class PVEnergyEstimator(SignalEnergyEstimator):
 
     class Forecast(SignalEnergyEstimator.Forecast):
 
-        weather: WeatherSample | None
-
-        __slots__ = ("weather",)
-        _slots_excluded = SignalEnergyEstimator.Forecast._slots_excluded + __slots__
-
-        def __init__(self, time_begin_ts: int, time_end_ts: int, /):
-            SignalEnergyEstimator.Forecast.__init__(self, time_begin_ts, time_end_ts)
-            self.weather = None
+        weather: DataAttr[WeatherSample | None, DataAttrParam.hide] = None
 
     if typing.TYPE_CHECKING:
 
@@ -350,19 +334,19 @@ class PVEnergyEstimator(SignalEnergyEstimator):
                 PVEnergyEstimator.HassJobType.Coroutinefunction,
             )
 
-    def as_dict(self):
-        return super().as_dict() | {
+    def as_diagnostic_dict(self):
+        return super().as_diagnostic_dict() | {
             "weather_entity_id": self.weather_entity_id,
-            "weather_model": self.weather_model.as_dict(),
+            "weather_model": self.weather_model.as_formatted_dict(),
             "weather_history": list(self.weather_history),
             "weather_forecasts": self.weather_forecasts,
         }
 
-    def get_state_dict(self):
+    def as_state_dict(self):
         """Returns a synthetic state string for the estimator.
         Used for debugging purposes."""
-        return super().get_state_dict() | {
-            "weather_model": self.weather_model.as_dict(),
+        return super().as_state_dict() | {
+            "weather_model": self.weather_model.as_formatted_dict(),
             "weather": self.get_weather_at(self.estimation_time_ts),
         }
 

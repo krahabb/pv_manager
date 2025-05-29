@@ -4,7 +4,7 @@ Base estimator model common to all types of estimators
 
 import abc
 from collections import deque
-import dataclasses
+from dataclasses import dataclass
 from datetime import datetime
 from itertools import chain
 from time import time
@@ -12,101 +12,56 @@ import typing
 
 from homeassistant import const as hac
 from homeassistant.components.recorder import get_instance as recorder_instance, history
-from homeassistant.core import HassJob, HassJobType, callback
+from homeassistant.core import callback
 from homeassistant.helpers.json import save_json
 from homeassistant.util import dt as dt_util
 
 from . import Estimator, SignalEnergyProcessor
 from .. import const as pmc
 from ..helpers import datetime_from_epoch
+from ..helpers.dataattr import DataAttr, DataAttrClass, timestamp_i
 from ..manager import Manager
 
 if typing.TYPE_CHECKING:
-    from typing import ClassVar, Final, Iterable, NotRequired, Unpack
-
     from datetime import tzinfo
+    from typing import ClassVar, Final, Iterable, NotRequired, Self, Unpack
 
 
 class EnergyEstimator(Estimator):
 
-    class Forecast:
+    class Forecast(DataAttrClass):
         """Cached forecast sample calculated once per 'update_estimate'.
         forecasts are built on demand and cached in the forecasts container
         for reuse in calculations. They're invalidated whenever estimation_time updates.
         """
 
-        if typing.TYPE_CHECKING:
-            time_begin_ts: int
-            time_end_ts: int
-            energy: float
-            energy_min: float
-            energy_max: float
-            # list of all the slots in the hierarchy
-            _slots: ClassVar[tuple[str, ...]]
-            # list of the slots to avoid serializing
-            _slots_excluded: ClassVar[tuple[str, ...]]
-
-        __slots__ = (
-            "time_begin_ts",
-            "time_end_ts",
-            "energy",
-            "energy_min",
-            "energy_max",
-        )
-        _slots = __slots__
-        _slots_excluded = (
-            "time_begin_ts",
-            "time_end_ts",
-        )
+        time_begin_ts: DataAttr[timestamp_i]
+        time_end_ts: DataAttr[timestamp_i]
+        energy: DataAttr[float] = 0
+        energy_min: DataAttr[float] = 0
+        energy_max: DataAttr[float] = 0
 
         def __init__(self, time_begin_ts: int, time_end_ts: int, /):
+            DataAttrClass.__init__(self)
             self.time_begin_ts = time_begin_ts
             self.time_end_ts = time_end_ts
-            self.energy = 0
-            self.energy_min = 0
-            self.energy_max = 0
 
-        def __init_subclass__(cls):
-            cls._slots = tuple(
-                chain.from_iterable(
-                    getattr(c, "__slots__")
-                    for c in reversed(cls.__mro__)
-                    if c is not object
-                )
-            )
-
-        def add(self, forecast: "EnergyEstimator.Forecast", /):
+        def add(self, forecast: "Self", /):
             self.energy += forecast.energy
             self.energy_min += forecast.energy_min
             self.energy_max += forecast.energy_max
 
-        def addmul(self, forecast: "EnergyEstimator.Forecast", ratio: float, /):
+        def addmul(self, forecast: "Self", ratio: float, /):
             self.energy += forecast.energy * ratio
             self.energy_min += forecast.energy_min * ratio
             self.energy_max += forecast.energy_max * ratio
 
-        def as_dict(self):
-            return {slot: getattr(self, slot) for slot in self.__class__._slots}
-
         def as_formatted_dict(self, tz: "tzinfo", /):
-            _format_slot_attr = self._format_slot_attr
-            cls = self.__class__
-            result = {
+            result = super().as_formatted_dict() | {
                 "time_begin": datetime_from_epoch(self.time_begin_ts, tz).isoformat(),
                 "time_end": datetime_from_epoch(self.time_end_ts, tz).isoformat(),
-            } | {
-                slot: _format_slot_attr(slot)
-                for slot in cls._slots
-                if slot not in cls._slots_excluded
             }
             return result
-
-        def _format_slot_attr(self, slot: str, /):
-            value = getattr(self, slot)
-            _type = type(value)
-            if _type == float:
-                return round(value, 2)
-            return value
 
     if typing.TYPE_CHECKING:
 
@@ -164,15 +119,15 @@ class EnergyEstimator(Estimator):
         self._forecasts_recycle = []
 
     @typing.override
-    def as_dict(self):
-        return super().as_dict() | {
+    def as_diagnostic_dict(self):
+        return super().as_diagnostic_dict() | {
             "sampling_interval_minutes": self.sampling_interval_ts / 60,
             "tz_info": str(self.tz),
         }
 
     @typing.override
-    def get_state_dict(self):
-        return super().get_state_dict() | {
+    def as_state_dict(self):
+        return super().as_state_dict() | {
             "today": datetime_from_epoch(self.today_ts).isoformat(),
             "observations_per_sample_avg": self.observations_per_sample_avg,
             "today_measured": self.today_energy,
@@ -340,7 +295,7 @@ class SignalEnergyEstimator(EnergyEstimator, SignalEnergyProcessor):
     Base class for all (energy) estimators.
     """
 
-    @dataclasses.dataclass(slots=True)
+    @dataclass(slots=True, eq=False)
     class Sample:
         time: "Final[datetime]"
         """The sample time start"""
@@ -438,8 +393,8 @@ class SignalEnergyEstimator(EnergyEstimator, SignalEnergyProcessor):
         return super().shutdown()
 
     @typing.override
-    def as_dict(self):
-        return super().as_dict() | {
+    def as_diagnostic_dict(self):
+        return super().as_diagnostic_dict() | {
             "observation_duration_minutes": self.observation_duration_ts / 60,
             "history_duration_days": self.history_duration_ts / 86400,
         }
@@ -631,7 +586,7 @@ class SignalEnergyEstimator(EnergyEstimator, SignalEnergyProcessor):
                 Manager.hass,
                 f"model_{self.source_entity_id}_{self.__class__.__name__.lower()}.json",
             )
-            save_json(filepath, self.as_dict())
+            save_json(filepath, self.as_diagnostic_dict())
 
 
 class EnergyBalanceEstimator(EnergyEstimator):
@@ -645,32 +600,14 @@ class EnergyBalanceEstimator(EnergyEstimator):
 
     class Forecast(EnergyEstimator.Forecast):
 
-        production: float
-        production_min: float
-        production_max: float
-        consumption: float
-        consumption_min: float
-        consumption_max: float
+        production: DataAttr[float] = 0
+        production_min: DataAttr[float] = 0
+        production_max: DataAttr[float] = 0
+        consumption: DataAttr[float] = 0
+        consumption_min: DataAttr[float] = 0
+        consumption_max: DataAttr[float] = 0
 
-        __slots__ = (
-            "production",
-            "production_min",
-            "production_max",
-            "consumption",
-            "consumption_min",
-            "consumption_max",
-        )
-
-        def __init__(self, time_begin_ts: int, time_end_ts: int, /):
-            EnergyEstimator.Forecast.__init__(self, time_begin_ts, time_end_ts)
-            self.production = 0
-            self.production_min = 0
-            self.production_max = 0
-            self.consumption = 0
-            self.consumption_min = 0
-            self.consumption_max = 0
-
-        def add(self, forecast: "EnergyBalanceEstimator.Forecast", /):
+        def add(self, forecast: "Self", /):
             EnergyEstimator.Forecast.add(self, forecast)
             self.production += forecast.production
             self.production_min += forecast.production_min
@@ -679,7 +616,7 @@ class EnergyBalanceEstimator(EnergyEstimator):
             self.consumption_min += forecast.consumption_min
             self.consumption_max += forecast.consumption_max
 
-        def addmul(self, forecast: "EnergyBalanceEstimator.Forecast", ratio: float, /):
+        def addmul(self, forecast: "Self", ratio: float, /):
             EnergyEstimator.Forecast.addmul(self, forecast, ratio)
             self.production += forecast.production * ratio
             self.production_min += forecast.production_min * ratio
@@ -721,7 +658,7 @@ class EnergyBalanceEstimator(EnergyEstimator):
             production_estimator: NotRequired[EnergyEstimator]
             consumption_estimator: NotRequired[EnergyEstimator]
 
-        _FAKE_ESTIMATOR: ClassVar[_FakeEstimator]
+        _FAKE_ESTIMATOR: ClassVar
 
         config: Config  # (override base typehint)
         forecasts: Final[list[Forecast]]  # type: ignore (override base typehint)

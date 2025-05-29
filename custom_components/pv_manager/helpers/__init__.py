@@ -207,7 +207,7 @@ LOGGER = getLogger(__name__[:-8])  # get base custom_component name for logging
 """Root logger"""
 
 
-class Loggable(abc.ABC):
+class Loggable:
     """
     Helper base class for logging instance name/id related info.
     Derived classes can customize this in different flavours:

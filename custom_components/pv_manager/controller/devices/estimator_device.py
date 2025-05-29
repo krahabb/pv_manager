@@ -90,7 +90,7 @@ class TodayEnergyEstimatorSensor(EnergyEstimatorSensor):
 
     @typing.override
     def on_estimator_update(self, estimator: EnergyEstimator):
-        self.extra_state_attributes = estimator.get_state_dict()
+        self.extra_state_attributes = estimator.as_state_dict()
         self.native_value = round(
             estimator.today_energy
             + estimator.get_estimated_energy(

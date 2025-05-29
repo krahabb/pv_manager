@@ -6,10 +6,11 @@ from homeassistant import const as hac
 
 from ... import const as pmc
 from ...helpers import validation as hv
+from ...helpers.dataattr import DataAttr, DataAttrParam
 from ...manager import Manager
 from ...processors import (
+    BaseProcessor,
     EnergyBroadcast,
-    SignalEnergyProcessor,
 )
 from ...processors.battery import BatteryProcessor
 from ...sensor import BatteryChargeSensor, Sensor
@@ -19,32 +20,12 @@ if typing.TYPE_CHECKING:
     from typing import Any, Final, NotRequired, TypedDict, Unpack
 
     from . import Controller as OffGridManager
-    from ...processors.estimator_energy import SignalEnergyEstimator
 
 
 SourceType = SignalEnergyProcessorDevice.SourceType
 
 
-class BaseMeter(EnergyBroadcast):
-
-    if typing.TYPE_CHECKING:
-
-        class StoreType(TypedDict):
-            pass
-
-        class Args(EnergyBroadcast.Args):
-            pass
-
-        id: Final[SourceType]  # type: ignore
-
-    def restore(self, data: "StoreType"):
-        pass
-
-    def store(self) -> "StoreType":
-        return {}
-
-
-class MeterDevice(SignalEnergyProcessorDevice, BaseMeter):
+class MeterDevice(SignalEnergyProcessorDevice):
     if typing.TYPE_CHECKING:
 
         class Config(SignalEnergyProcessorDevice.Config):
@@ -82,9 +63,6 @@ class BatteryMeter(MeterDevice, BatteryProcessor):
     if typing.TYPE_CHECKING:
 
         class Config(MeterDevice.Config, BatteryProcessor.Config):
-            pass
-
-        class StoreType(BatteryProcessor.StoreType):
             pass
 
         battery_charge_sensor: BatteryChargeSensor | None
@@ -198,27 +176,20 @@ class LoadMeter(EnergyEstimatorMeterDevice):
         super().__init__(SourceType.LOAD, controller, config)
 
 
-class LossesMeter(BaseMeter):
+class LossesMeter(BaseProcessor, EnergyBroadcast):
 
     if typing.TYPE_CHECKING:
-
-        class StoreType(BaseMeter.StoreType):
-            battery_energy: float
-            battery_in_energy: float
-            battery_out_energy: float
-            load_energy: float
-            pv_energy: float
-            losses_energy: float  # redundant tho
-
         controller: Final[OffGridManager]
         battery_meter: Final[BatteryMeter]
         load_meter: Final[LoadMeter]
         pv_meter: Final[PvMeter]
-        battery_meter_old: float
-        battery_meter_in_old: float
-        battery_meter_out_old: float
-        load_meter_old: float
-        pv_meter_old: float
+
+    battery_energy: DataAttr[float, DataAttrParam.stored] = 0
+    battery_in_energy: DataAttr[float, DataAttrParam.stored] = 0
+    battery_out_energy: DataAttr[float, DataAttrParam.stored] = 0
+    load_energy: DataAttr[float, DataAttrParam.stored] = 0
+    pv_energy: DataAttr[float, DataAttrParam.stored] = 0
+    losses_energy: DataAttr[float, DataAttrParam.stored] = 0
 
     __slots__ = (
         # config
@@ -227,21 +198,12 @@ class LossesMeter(BaseMeter):
         "load_meter",
         "pv_meter",
         "update_period_ts",
-        # counters
-        "battery_energy",
-        "battery_in_energy",
-        "battery_out_energy",
-        "load_energy",
-        "pv_energy",
-        "losses_energy",
-        # cached previous samples from meters
-        "battery_meter_old",
-        "battery_meter_in_old",
-        "battery_meter_out_old",
-        "load_meter_old",
-        "pv_meter_old",
-        # state
+        # internal state
+        "_load_energy_old",
         "_timer_unsub",
+        "_battery_callback_unsub",
+        "_load_callback_unsub",
+        "_pv_callback_unsub",
     )
 
     def __init__(self, controller: "OffGridManager", update_period_seconds: float):
@@ -251,26 +213,18 @@ class LossesMeter(BaseMeter):
         self.pv_meter = controller.pv_meter
         self.update_period_ts = update_period_seconds
 
-        # set in case load is not called when new
-        self.battery_energy = 0
-        self.battery_in_energy = 0
-        self.battery_out_energy = 0
-        self.load_energy = 0
-        self.pv_energy = 0
-        self.losses_energy = 0
-
         self._timer_unsub = None
-        super().__init__(SourceType.LOSSES, logger=controller)
+        super().__init__(SourceType.LOSSES, logger=controller, config={})
         controller.energy_meters[SourceType.LOSSES] = (self, controller)
 
     def start(self):
         self._losses_compute()
         self.time_ts = time()
-        self.battery_meter_old = self.battery_meter.output
-        self.battery_meter_in_old = self.battery_meter.energy_in
-        self.battery_meter_out_old = self.battery_meter.energy_out
-        self.load_meter_old = self.load_meter.output
-        self.pv_meter_old = self.pv_meter.output
+        self._battery_callback_unsub = self.battery_meter.listen_energy(
+            self._battery_callback
+        )
+        self._load_callback_unsub = self.load_meter.listen_energy(self._load_callback)
+        self._pv_callback_unsub = self.pv_meter.listen_energy(self._pv_callback)
         self._timer_unsub = Manager.schedule(
             self.update_period_ts, self._timer_callback
         )
@@ -279,6 +233,10 @@ class LossesMeter(BaseMeter):
         if self._timer_unsub:
             self._timer_unsub.cancel()
             self._timer_unsub = None
+        self._battery_callback_unsub()
+        self._load_callback_unsub()
+        self._pv_callback_unsub()
+
         del self.controller.energy_meters[self.id]
         setattr(self.controller, f"{self.id}_meter", None)
         super().shutdown()
@@ -287,26 +245,18 @@ class LossesMeter(BaseMeter):
         self.load_meter = None  # type: ignore
         self.pv_meter = None  # type: ignore
 
-    @typing.override
-    def restore(self, data: "StoreType"):
-        with self.exception_warning("loading meter data"):
-            self.battery_energy = data["battery_energy"]
-            self.battery_in_energy = data["battery_in_energy"]
-            self.battery_out_energy = data["battery_out_energy"]
-            self.load_energy = data["load_energy"]
-            self.pv_energy = data["pv_energy"]
-            self.losses_energy = data["losses_energy"]
+    def _battery_callback(self, energy: float, time_ts: float):
+        self.battery_energy += energy
+        if energy > 0:
+            self.battery_out_energy += energy
+        else:
+            self.battery_in_energy -= energy
 
-    @typing.override
-    def store(self) -> "StoreType":
-        return {
-            "battery_energy": self.battery_energy,
-            "battery_in_energy": self.battery_in_energy,
-            "battery_out_energy": self.battery_out_energy,
-            "load_energy": self.load_energy,
-            "pv_energy": self.pv_energy,
-            "losses_energy": self.losses_energy,
-        }
+    def _load_callback(self, energy: float, time_ts: float):
+        self.load_energy += energy
+
+    def _pv_callback(self, energy: float, time_ts: float):
+        self.pv_energy += energy
 
     def _timer_callback(self):
         self._timer_unsub = Manager.schedule(
@@ -314,20 +264,11 @@ class LossesMeter(BaseMeter):
         )
         time_ts = time()
         # get the 'new' total
-        battery_meter = self.battery_meter
-        battery_meter.update(time_ts)
-        self.battery_energy += battery_meter.output - self.battery_meter_old
-        self.battery_meter_old = battery_meter.output
-        load_meter = self.load_meter
-        load_meter.update(time_ts)
-        d_load = load_meter.output - self.load_meter_old
-        self.load_energy += d_load
-        self.load_meter_old = load_meter.output
-        pv_meter = self.pv_meter
-        pv_meter.update(time_ts)
-        self.pv_energy += pv_meter.output - self.pv_meter_old
-        self.pv_meter_old = pv_meter.output
+        self.battery_meter.update(time_ts)
+        self.load_meter.update(time_ts)
+        self.pv_meter.update(time_ts)
 
+        d_load = self.load_energy - self._load_energy_old
         losses_old = self.losses_energy
         self._losses_compute()
         # compute delta to get the average power in the sampling period
@@ -358,9 +299,7 @@ class LossesMeter(BaseMeter):
     def _losses_compute(self):
 
         battery = self.battery_energy
-        battery_in = self.battery_in_energy
-        battery_out = self.battery_out_energy
-        load = self.load_energy
+        self._load_energy_old = load = self.load_energy
         pv = self.pv_energy
         self.losses_energy = losses = pv + battery - load
 
@@ -370,12 +309,6 @@ class LossesMeter(BaseMeter):
         # battery_stored_energy is hard to compute since it depends on the discharge current/voltage
         # we'll use a conservative approach with the following formula. It's contribution to
         # battery_yield will nevertheless decay as far as battery_in, battery_out will increase
-        battery_meter = self.battery_meter
-        battery_stored = (
-            battery_meter.charge_processor.output
-            * (battery_meter.battery_voltage or 0)
-            * -0.9
-        )
 
         controller = self.controller
         if controller.conversion_yield_sensor:
@@ -385,6 +318,7 @@ class LossesMeter(BaseMeter):
             except:
                 controller.conversion_yield_sensor.update(None)
 
+        """
         if controller.battery_yield_sensor:
             try:
                 # battery_yield = battery_out_energy / (battery_in_energy - battery_stored_energy)
@@ -408,3 +342,4 @@ class LossesMeter(BaseMeter):
                     controller.system_yield_sensor.update(None)
             except:
                 controller.system_yield_sensor.update(None)
+        """

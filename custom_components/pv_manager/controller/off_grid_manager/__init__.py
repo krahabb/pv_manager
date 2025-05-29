@@ -26,25 +26,23 @@ from .energy_meters import (
 )
 
 if typing.TYPE_CHECKING:
-    from typing import Any, Final, Iterable, NotRequired, TypedDict, Unpack
+    from typing import Any, Final, Iterable, Mapping, NotRequired, TypedDict, Unpack
 
     from homeassistant.config_entries import ConfigEntry
-    from homeassistant.core import Event, EventStateChangedData
 
     from ...controller import EntryData
     from ...controller.devices import Device
-    from ...processors import EnergyBroadcast
+    from ...processors import BaseProcessor, EnergyBroadcast
     from ...processors.estimator_energy import SignalEnergyEstimator
-    from .energy_meters import BaseMeter
 
     class ControllerStoreType(TypedDict):
         time: str
         time_ts: float
 
-        battery: NotRequired[BatteryMeter.StoreType]
-        load: NotRequired[LoadMeter.StoreType]
-        losses: NotRequired[LossesMeter.StoreType]
-        pv: NotRequired[PvMeter.StoreType]
+        battery: NotRequired[Mapping[str, Any]]
+        load: NotRequired[Mapping[str, Any]]
+        losses: NotRequired[Mapping[str, Any]]
+        pv: NotRequired[Mapping[str, Any]]
 
 
 class ControllerStore(storage.Store["ControllerStoreType"]):
@@ -375,7 +373,7 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
 
         if store_data := await self._store.async_load():
 
-            meters: "list[BaseMeter]" = [self.battery_meter]
+            meters: "list[BaseProcessor]" = [self.battery_meter]
             if self.losses_meter:
                 meters.append(self.losses_meter)
             for meter in meters:
@@ -584,18 +582,20 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
     def _create_subentry_energy_sensors(
         self,
         device: "Device",
-        energy_meter: "EnergyBroadcast",
+        energy_broadcast: "EnergyBroadcast",
         name: str,
         subentry_id: str,
         cycle_modes: "Iterable[EnergySensor.CycleMode]",
     ):
-        sensor_id = f"{pmc.ConfigSubentryType.MANAGER_ENERGY_SENSOR}_{energy_meter.id}"
+        sensor_id = (
+            f"{pmc.ConfigSubentryType.MANAGER_ENERGY_SENSOR}_{energy_broadcast.id}"
+        )
         for cycle_mode in cycle_modes:
             EnergySensor(
                 device,
                 sensor_id,
                 cycle_mode,
-                energy_meter,
+                energy_broadcast,
                 name=name,
                 config_subentry_id=subentry_id,
             )

@@ -284,16 +284,19 @@ class Controller(controller.Controller["EntryConfig"]):
         if self.battery_voltage:
             # assume a voltage drop of 5% of the battery voltage at 1C
             battery_capacity = self.battery_capacity
-            battery_resistance = self.battery_voltage / (
-                20 * (battery_capacity or 100)
-            )
+            battery_resistance = self.battery_voltage / (20 * (battery_capacity or 100))
             battery_power = total_consumption_power - pv_power
             battery_current = battery_power / self.battery_voltage
             battery_voltage = (
                 self.battery_voltage - battery_resistance * battery_current
             )
             # adjust battery voltage by 5% at maximum/minimum charge
-            battery_voltage += battery_voltage * 0.05 * (self.battery_charge - battery_capacity / 2) / (battery_capacity / 2)
+            battery_voltage += (
+                battery_voltage
+                * 0.05
+                * (self.battery_charge - battery_capacity / 2)
+                / (battery_capacity / 2)
+            )
             battery_current = battery_power / battery_voltage
             if self.battery_charge_sensor:
                 self.battery_charge = battery_charge = (
