@@ -102,7 +102,6 @@ class BatteryProcessor(SignalEnergyProcessor):
         self.energy_broadcast_out = EnergyBroadcast(
             BatteryProcessor.SourceType.BATTERY_OUT, logger=self
         )
-
         self.battery_voltage = None
         self.battery_current = None
 
@@ -359,10 +358,12 @@ class BatteryEstimator(EnergyBalanceEstimator, SignalEnergyEstimator, BatteryPro
         # BEWARE: ensure the battery estimator is started after the production/consumption
         production_estimator = self.production_estimator
         consumption_estimator = self.consumption_estimator
+        """REMOVE
         self.today_energy = consumption_estimator.today_energy
         if self.conversion_yield_avg:
             self.today_energy /= self.conversion_yield_avg
         self.today_energy -= production_estimator.today_energy
+        """
         self._production_callback_unsub = production_estimator.listen_energy(
             self._production_callback
         )
@@ -378,11 +379,6 @@ class BatteryEstimator(EnergyBalanceEstimator, SignalEnergyEstimator, BatteryPro
             self._consumption_callback_unsub()
             self._consumption_callback_unsub = None
         super().shutdown()
-
-    def as_state_dict(self):
-        """Returns a synthetic state string for the estimator.
-        Used for debugging purposes."""
-        return super().as_state_dict() | super().as_formatted_dict()
 
     @typing.override
     def process(self, input: float | None, time_ts: float) -> float | None:

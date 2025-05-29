@@ -19,7 +19,7 @@ from homeassistant.util import dt as dt_util
 from . import Estimator, SignalEnergyProcessor
 from .. import const as pmc
 from ..helpers import datetime_from_epoch
-from ..helpers.dataattr import DataAttr, DataAttrClass, timestamp_i
+from ..helpers.dataattr import DataAttr, DataAttrClass, DataAttrParam, timestamp_i
 from ..manager import Manager
 
 if typing.TYPE_CHECKING:
@@ -78,9 +78,6 @@ class EnergyEstimator(Estimator):
         config: Config
         sampling_interval_ts: Final[int]
         tz: Final[tzinfo]
-        today_ts: int
-        tomorrow_ts: int
-        today_energy: float
         forecasts: Final[list[Forecast]]
         _forecasts_recycle: Final[list[Forecast]]
 
@@ -88,13 +85,17 @@ class EnergyEstimator(Estimator):
     OPS_DECAY = 0.9
     """Decay factor for the average number of observations per sample."""
 
+    today_ts: DataAttr[timestamp_i, DataAttrParam.stored] = 0
+    """UTC time of local midnight (start of today)."""
+    tomorrow_ts: DataAttr[timestamp_i, DataAttrParam.stored] = 0
+    """UTC time of local midnight tomorrow (start of tomorrow)."""
+    today_energy: DataAttr[float, DataAttrParam.stored] = 0
+    """effective energy measured today"""
+    observations_per_sample_avg: DataAttr[float] = 0
+
     _SLOTS_ = (
         "sampling_interval_ts",
         "tzinfo",
-        "observations_per_sample_avg",
-        "today_ts",  # UTC time of local midnight (start of today)
-        "tomorrow_ts",  # UTC time of local midnight tomorrow (start of tomorrow)
-        "today_energy",  # effective energy measured today
         "forecasts",
         "_forecasts_recycle",
     )
@@ -111,10 +112,6 @@ class EnergyEstimator(Estimator):
             or EnergyEstimator.SAMPLING_INTERVAL_MODULO
         )
         self.tz = dt_util.get_default_time_zone()
-        self.observations_per_sample_avg = 0
-        self.today_ts = 0
-        self.tomorrow_ts = 0
-        self.today_energy = 0
         self.forecasts = []
         self._forecasts_recycle = []
 
@@ -127,14 +124,11 @@ class EnergyEstimator(Estimator):
 
     @typing.override
     def as_state_dict(self):
-        return super().as_state_dict() | {
-            "today": datetime_from_epoch(self.today_ts).isoformat(),
-            "observations_per_sample_avg": self.observations_per_sample_avg,
-            "today_measured": self.today_energy,
+        return {
             "forecast": self.get_forecast(
                 self.estimation_time_ts, self.tomorrow_ts
             ).as_formatted_dict(self.tz),
-        }
+        } | super().as_state_dict()
 
     @typing.override
     def update_estimate(self):

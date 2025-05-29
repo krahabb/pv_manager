@@ -18,7 +18,7 @@ from homeassistant.util import unit_conversion
 
 from ..helpers import Loggable, datetime_from_epoch, validation as hv
 from ..helpers.callback import CallbackTracker
-from ..helpers.dataattr import DataAttrClass
+from ..helpers.dataattr import DataAttr, DataAttrClass
 from ..manager import Manager
 from ..sensor import Sensor
 
@@ -193,9 +193,6 @@ class BaseProcessor(CallbackTracker, Loggable, DataAttrClass):
         class Args(Loggable.Args):
             config: "BaseProcessor.Config"
 
-        class StoreType(TypedDict):
-            pass
-
         DEFAULT_NAME: ClassVar[str]
 
         config: Config
@@ -239,7 +236,7 @@ class BaseProcessor(CallbackTracker, Loggable, DataAttrClass):
     def as_state_dict(self):
         """Returns a synthetic state dict.
         Used for debugging purposes."""
-        return {}
+        return {"state": self.as_formatted_dict()}
 
 
 class UnitOfElectricCharge(enum.StrEnum):
@@ -699,10 +696,10 @@ class Estimator(BaseProcessor):
         class Args(BaseProcessor.Args):
             pass
 
-        estimation_time_ts: int
-
         UPDATE_LISTENER_TYPE = Callable[["Estimator"], None]
         _update_listeners: Final[set[UPDATE_LISTENER_TYPE]]
+
+    estimation_time_ts: DataAttr[int] = 0
 
     _SLOTS_ = (
         "estimation_time_ts",
@@ -718,12 +715,6 @@ class Estimator(BaseProcessor):
     def shutdown(self):
         self._update_listeners.clear()
         super().shutdown()
-
-    @typing.override
-    def as_state_dict(self):
-        return super().as_state_dict() | {
-            "estimation_time": datetime_from_epoch(self.estimation_time_ts).isoformat(),
-        }
 
     # interface: self
     def listen_update(self, callback_func: "UPDATE_LISTENER_TYPE", /):

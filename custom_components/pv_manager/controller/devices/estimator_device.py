@@ -45,11 +45,8 @@ class EnergyEstimatorSensor(EstimatorEntity, Sensor):
 
     _unrecorded_attributes = frozenset(
         (
-            "estimation_time",
-            "today",
-            "observations_per_sample_avg",
-            "today_measured",
             "forecast",
+            "state",
         )
     )
     _attr_device_class = Sensor.DeviceClass.ENERGY
