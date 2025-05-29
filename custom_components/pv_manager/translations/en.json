@@ -12,7 +12,7 @@
                     "energy_calculator": "Energy calculator",
                     "consumption_estimator": "Consumption estimator",
                     "pv_energy_estimator": "PV energy estimator",
-                    "battery_estimator": "Battery estimator",
+                    "off_grid_manager": "Off Grid Manager",
                     "pv_plant_simulator": "PV plant simulator"
                 }
             },
@@ -52,6 +52,39 @@
                     "history_duration_days": "History length",
                     "update_period": "Refresh interval",
                     "maximum_latency": "Maximum latency"
+                }
+            },
+            "off_grid_manager": {
+                "title": "Off Grid Manager",
+                "description": "Off-grid system battery and losses estimation",
+                "data": {
+                    "name": "Off Grid Manager"
+                },
+                "sections": {
+                    "battery":{
+                        "name": "Battery",
+                        "data": {
+
+                        }
+                    },
+                    "pv":{
+                        "name": "PV",
+                        "data": {
+
+                        }
+                    },
+                    "load":{
+                        "name": "Load",
+                        "data": {
+
+                        }
+                    },
+                    "estimation":{
+                        "name": "Estimation",
+                        "data": {
+
+                        }
+                    }
                 }
             },
             "pv_plant_simulator": {
