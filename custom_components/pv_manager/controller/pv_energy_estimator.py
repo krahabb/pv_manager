@@ -110,7 +110,7 @@ DIAGNOSTIC_DESCR = {
 }
 
 
-class Controller(EnergyEstimatorController["Controller.Config"], HeuristicPVEnergyEstimator):  # type: ignore
+class Controller(EnergyEstimatorController["Controller.Config"], HeuristicPVEnergyEstimator, SignalEnergyEstimatorDevice):  # type: ignore
     """Base controller class for managing ConfigEntry behavior."""
 
     if typing.TYPE_CHECKING:
@@ -125,13 +125,14 @@ class Controller(EnergyEstimatorController["Controller.Config"], HeuristicPVEner
     TYPE = pmc.ConfigEntryType.PV_ENERGY_ESTIMATOR
 
     # interface: EnergyEstimatorController
-    @staticmethod
-    def get_config_entry_schema(config: "Config | None") -> pmc.ConfigSchema:
+    @classmethod
+    @typing.override
+    def get_config_schema(cls, config: "Config | None") -> pmc.ConfigSchema:
         _config = config or {
             "weather_model": "simple",
         }
         # TODO: fix the class hierarchy for config building
-        return SignalEnergyEstimatorDevice.get_config_schema(config) | {
+        return super().get_config_schema(config) | {
             hv.opt_config("weather_entity_id", _config): hv.weather_entity_selector(),
             hv.opt_config(
                 "weather_model", _config

@@ -201,8 +201,9 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
         "_final_write_unsub",
     )
 
-    @staticmethod
-    def get_config_entry_schema(config: "Config | None") -> pmc.ConfigSchema:
+    @classmethod
+    @typing.override
+    def get_config_schema(cls, config: "Config | None") -> pmc.ConfigSchema:
         if not config:
             config = Controller.DEFAULT_CONFIG
 

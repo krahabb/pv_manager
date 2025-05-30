@@ -106,13 +106,6 @@ class Controller[_ConfigT: pmc.EntryConfig](Device):
         )
         return controller_module.Controller
 
-    @classmethod
-    def get_config_entry_schema(
-        cls, config: pmc.ConfigMapping | None
-    ) -> pmc.ConfigSchema:
-        # to be overriden
-        return cls.get_config_schema(config)
-
     @staticmethod
     def get_config_subentry_schema(
         config_entry: "ConfigEntry",

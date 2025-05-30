@@ -81,8 +81,9 @@ class Controller(controller.Controller["EntryConfig"]):
         "_weather_visibility",
     )
 
-    @staticmethod
-    def get_config_entry_schema(config: "Config | None") -> pmc.ConfigSchema:
+    @classmethod
+    @typing.override
+    def get_config_schema(cls, config: "Config | None") -> pmc.ConfigSchema:
         if not config:
             config = {
                 "name": "PV simulator",

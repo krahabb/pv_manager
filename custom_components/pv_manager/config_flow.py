@@ -218,7 +218,7 @@ class ConfigFlow(CommonFlow, config_entries.ConfigFlow, domain=pmc.DOMAIN):  # t
         self.controller_class = await Controller.get_controller_class(
             self.hass, controller_type
         )
-        self.current_schema = self.controller_class.get_config_entry_schema(
+        self.current_schema = self.controller_class.get_config_schema(
             self.current_config
         )
         return self.async_show_form(

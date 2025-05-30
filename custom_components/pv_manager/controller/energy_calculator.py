@@ -32,8 +32,9 @@ class Controller(controller.Controller["EntryConfig"], SignalEnergyProcessorDevi
 
     PLATFORMS = {EnergySensor.PLATFORM}
 
-    @staticmethod
-    def get_config_entry_schema(config: "Config | None") -> pmc.ConfigSchema:
+    @classmethod
+    @typing.override
+    def get_config_schema(cls, config: "Config | None") -> pmc.ConfigSchema:
         if not config:
             config = {
                 "name": Controller.DEFAULT_NAME,
