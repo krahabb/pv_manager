@@ -219,6 +219,7 @@ class EstimatorEntity(Entity if typing.TYPE_CHECKING else object):
         device: "Device",
         id: str,
         estimator: "Estimator",
+        /,
         *args,
         estimator_update_func: typing.Callable[
             ["Estimator"], typing.Any

@@ -336,10 +336,10 @@ class EnergyEstimatorController[_ConfigT: "EnergyEstimatorController.Config"](  
                         "name", pmc.ConfigSubentryType.ENERGY_ESTIMATOR_SENSOR
                     ),
                     config_subentry_id=subentry_id,
-                    forecast_duration_ts=entry_data.config.get(
+                    forecast_duration_ts=int(entry_data.config.get(
                         "forecast_duration_hours", 1
                     )
-                    * 3600,
+                    * 3600),
                 )
 
     @typing.override
@@ -351,7 +351,7 @@ class EnergyEstimatorController[_ConfigT: "EnergyEstimatorController.Config"](  
                     entity.name = entry_data.config.get(
                         "name", pmc.ConfigSubentryType.ENERGY_ESTIMATOR_SENSOR
                     )
-                    entity.forecast_duration_ts = (
+                    entity.forecast_duration_ts = int(
                         entry_data.config.get("forecast_duration_hours", 1) * 3600
                     )
                     entity.on_estimator_update(self)

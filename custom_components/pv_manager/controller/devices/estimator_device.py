@@ -14,7 +14,7 @@ from ...processors.estimator_energy import (
 from ...sensor import Sensor
 
 if typing.TYPE_CHECKING:
-    from typing import Any, Callable, ClassVar, Coroutine, Final, Unpack
+    from typing import Any, Callable, ClassVar, Coroutine, Final,NotRequired, Unpack
 
     from ...helpers.entity import Entity
 
@@ -38,7 +38,8 @@ class EnergyEstimatorSensor(EstimatorEntity, Sensor):
             forecast_duration_hours: int
 
         class Args(Entity.Args):
-            pass
+            forecast_duration_ts: NotRequired[int]
+            estimator: NotRequired[EnergyEstimator]
 
         device: "EnergyEstimatorDevice"
         forecast_duration_ts: int
@@ -58,17 +59,16 @@ class EnergyEstimatorSensor(EstimatorEntity, Sensor):
         self,
         device: "EnergyEstimatorDevice",
         id,
-        *,
-        forecast_duration_ts: float = 0,
+        /,
         **kwargs: "Unpack[Args]",
     ):
-        self.forecast_duration_ts = int(forecast_duration_ts)
+        self.forecast_duration_ts = kwargs.pop("forecast_duration_ts", 0)
         super().__init__(
             device,
             id,
-            device,
+            kwargs.pop("estimator", device),
             state_class=None,
-            **kwargs,
+            **kwargs, # type: ignore
         )
 
     @typing.override
