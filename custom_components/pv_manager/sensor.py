@@ -39,6 +39,11 @@ class Sensor(he.Entity, sensor.SensorEntity):
             state_class: NotRequired[sensor.SensorStateClass | None]
             native_value: NotRequired[SensorStateType]
             native_unit_of_measurement: NotRequired[str]
+            suggested_display_precision: NotRequired[int]
+
+        _attr_device_class: ClassVar[sensor.SensorDeviceClass | None]
+        _attr_native_unit_of_measurement: ClassVar[str | None]
+        _attr_suggested_display_precision: ClassVar[int | None]
 
     PLATFORM = sensor.DOMAIN
 
@@ -56,15 +61,17 @@ class Sensor(he.Entity, sensor.SensorEntity):
         DeviceClass.VOLTAGE: StateClass.MEASUREMENT,
     }
 
-    _attr_device_class: "ClassVar[sensor.SensorDeviceClass | None]" = None
+    _attr_device_class = None
     _attr_native_value = None
-    _attr_native_unit_of_measurement: "ClassVar[str | None]" = None
+    _attr_native_unit_of_measurement = None
+    _attr_suggested_display_precision = None
 
     __slots__ = (
         "device_class",
         "state_class",
         "native_value",
         "native_unit_of_measurement",
+        "suggested_display_precision",
     )
 
     def __init__(self, device: "Device", id: str, /, **kwargs: "Unpack[Args]"):
@@ -72,6 +79,9 @@ class Sensor(he.Entity, sensor.SensorEntity):
         self.native_value = kwargs.pop("native_value", self._attr_native_value)
         self.native_unit_of_measurement = kwargs.pop(
             "native_unit_of_measurement", self._attr_native_unit_of_measurement
+        )
+        self.suggested_display_precision = kwargs.pop(
+            "suggested_display_precision", self._attr_suggested_display_precision
         )
         if "state_class" in kwargs:
             self.state_class = kwargs.pop("state_class")
@@ -106,6 +116,7 @@ class PowerSensor(Sensor):
 
     _attr_device_class = Sensor.DeviceClass.POWER
     _attr_native_unit_of_measurement = Sensor.hac.UnitOfPower.WATT
+    _attr_suggested_display_precision = 0
 
 
 class EnergySensor(MeteringCycle.Sink, Sensor, he.RestoreEntity):

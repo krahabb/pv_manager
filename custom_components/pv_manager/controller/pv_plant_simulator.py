@@ -140,6 +140,7 @@ class Controller(controller.Controller["EntryConfig"]):
             device_class=Sensor.DeviceClass.POWER,
             name=config["name"],
             native_unit_of_measurement=config["native_unit_of_measurement"],
+            suggested_display_precision=0,
         )
 
         self.battery_voltage = config.get("battery_voltage", 0)
@@ -154,8 +155,9 @@ class Controller(controller.Controller["EntryConfig"]):
                 "battery_voltage",
                 device_class=Sensor.DeviceClass.VOLTAGE,
                 name="Battery voltage",
-                native_unit_of_measurement=hac.UnitOfElectricPotential.VOLT,
                 native_value=self.battery_voltage,
+                native_unit_of_measurement=hac.UnitOfElectricPotential.VOLT,
+                suggested_display_precision=2,
                 parent_attr=Sensor.ParentAttr.DYNAMIC,
             )
             Sensor(
@@ -164,6 +166,7 @@ class Controller(controller.Controller["EntryConfig"]):
                 device_class=Sensor.DeviceClass.CURRENT,
                 name="Battery current",
                 native_unit_of_measurement=hac.UnitOfElectricCurrent.AMPERE,
+                suggested_display_precision=2,
                 parent_attr=Sensor.ParentAttr.DYNAMIC,
             )
             if self.battery_capacity:
@@ -315,14 +318,14 @@ class Controller(controller.Controller["EntryConfig"]):
             else:
                 self._inverter_on = True
             if self.battery_voltage_sensor:
-                self.battery_voltage_sensor.update(round(battery_voltage, 2))
+                self.battery_voltage_sensor.update(battery_voltage)
             if self.battery_current_sensor:
-                self.battery_current_sensor.update(round(battery_current, 2))
+                self.battery_current_sensor.update(battery_current)
 
-        self.pv_power_simulator_sensor.update_safe(round(pv_power, 2))
-        self.consumption_sensor.update_safe(round(consumption_power, 2))
+        self.pv_power_simulator_sensor.update_safe(pv_power)
+        self.consumption_sensor.update_safe(consumption_power)
         self.inverter_losses_sensor.update_safe(
-            round(total_consumption_power - consumption_power, 2)
+            total_consumption_power - consumption_power
         )
 
     @callback
