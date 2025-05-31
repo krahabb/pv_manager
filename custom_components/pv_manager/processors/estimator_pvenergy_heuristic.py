@@ -8,6 +8,7 @@ import typing
 from astral import sun
 
 from ..helpers import datetime_from_epoch
+from ..helpers.dataattr import DataAttr
 from .estimator_pvenergy import PVEnergyEstimator, WeatherModel
 
 if typing.TYPE_CHECKING:
@@ -118,11 +119,12 @@ class HeuristicPVEnergyEstimator(PVEnergyEstimator):
         history_samples: Final[deque[Sample]]
         energy_model: Final[dict[int, TimeSpanEnergyModel]]
 
+    observed_ratio: DataAttr[float] = 1
+    model_energy_max: DataAttr[float] = 0
+
     _SLOTS_ = (
         "history_samples",
         "energy_model",
-        "observed_ratio",
-        "_model_energy_max",
     )
 
     def __init__(
@@ -132,8 +134,6 @@ class HeuristicPVEnergyEstimator(PVEnergyEstimator):
     ):
         self.history_samples = deque()
         self.energy_model = {}
-        self.observed_ratio: float = 1
-        self._model_energy_max: float = 0
         """
         _model_energy_max contains the maximum energy produced in a sampling_interval_ts during the day
         so it represents the 'peak' of the discrete function represented by 'model' and, depending
@@ -145,15 +145,6 @@ class HeuristicPVEnergyEstimator(PVEnergyEstimator):
     def as_diagnostic_dict(self):
         return super().as_diagnostic_dict() | {
             "energy_model": self.energy_model,
-        }
-
-    def as_state_dict(self):
-        """Returns a synthetic state string for the estimator.
-        Used for debugging purposes."""
-        return super().as_state_dict() | {
-            "history_samples": len(self.history_samples),
-            "model_energy_max": self._model_energy_max,
-            "observed_ratio": self.observed_ratio,
         }
 
     @typing.override
@@ -184,7 +175,7 @@ class HeuristicPVEnergyEstimator(PVEnergyEstimator):
         sum_energy_max = 0
         sum_observed_weighted = 0
         model = self.energy_model
-        _model_energy_max = self._model_energy_max
+        _model_energy_max = self.model_energy_max
         try:
             for observed_energy in self.observed_samples:
                 _model = model[observed_energy.time_begin_ts % 86400]
@@ -289,8 +280,8 @@ class HeuristicPVEnergyEstimator(PVEnergyEstimator):
                 self.energy_model[sample.time_begin_ts % 86400] = model = (
                     TimeSpanEnergyModel(self.weather_model, sample)
                 )
-            if self._model_energy_max < model.energy_max:
-                self._model_energy_max = model.energy_max
+            if self.model_energy_max < model.energy_max:
+                self.model_energy_max = model.energy_max
 
         # flush history
         recalc_energy_max = False
@@ -300,7 +291,7 @@ class HeuristicPVEnergyEstimator(PVEnergyEstimator):
                 discarded_sample = self.history_samples.popleft()
                 sample_time_of_day_ts = discarded_sample.time_begin_ts % 86400
                 model = self.energy_model[sample_time_of_day_ts]
-                if model.energy_max == self._model_energy_max:
+                if model.energy_max == self.model_energy_max:
                     recalc_energy_max = True
                 if model.pop_sample(discarded_sample):
                     del self.energy_model[sample_time_of_day_ts]
@@ -309,7 +300,7 @@ class HeuristicPVEnergyEstimator(PVEnergyEstimator):
             pass
 
         if recalc_energy_max:
-            self._model_energy_max = 0
+            self.model_energy_max = 0
             for model in self.energy_model.values():
-                if self._model_energy_max < model.energy_max:
-                    self._model_energy_max = model.energy_max
+                if self.model_energy_max < model.energy_max:
+                    self.model_energy_max = model.energy_max

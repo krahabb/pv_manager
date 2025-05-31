@@ -1,6 +1,7 @@
 from collections import deque
 import typing
 
+from ..helpers.dataattr import DataAttr
 from .estimator_energy import SignalEnergyEstimator
 
 if typing.TYPE_CHECKING:
@@ -75,10 +76,11 @@ class HeuristicConsumptionEstimator(SignalEnergyEstimator):
 
     DEFAULT_NAME = "Consumption estimator"
 
+    observed_ratio: DataAttr[float] = 1
+
     _SLOTS_ = (
         "history_samples",
         "model",
-        "observed_ratio",
     )
 
     def __init__(
@@ -88,19 +90,11 @@ class HeuristicConsumptionEstimator(SignalEnergyEstimator):
     ):
         self.history_samples = deque()
         self.model = {}
-        self.observed_ratio: float = 1
         super().__init__(id, **kwargs)
 
     # interface: Estimator
     def as_diagnostic_dict(self):
         return super().as_diagnostic_dict() | {"model": self.model}
-
-    def as_state_dict(self):
-        """Returns a synthetic state string for the estimator.
-        Used for debugging purposes."""
-        return super().as_state_dict() | {
-            "observed_ratio": self.observed_ratio,
-        }
 
     @typing.override
     def update_estimate(self):
