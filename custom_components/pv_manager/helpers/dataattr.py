@@ -35,7 +35,7 @@ import typing
 from . import datetime_from_epoch
 
 if typing.TYPE_CHECKING:
-    from typing import Any, ClassVar, Mapping
+    from typing import Any, ClassVar, Final, Mapping
 
 
 class _DataAttrParam(type):
@@ -73,8 +73,11 @@ class DataAttrClass(typing.Generic[typing.TypeVar("DataAttr", default=object)]):
     DataAttrParam = DataAttrParam
 
     if typing.TYPE_CHECKING:
-        type _DataAttrsT = dict[str, _DataAttrDef]
-        _DATA_ATTRS: ClassVar[_DataAttrsT]
+        type _DataAttrsT = Mapping[str, _DataAttrDef]
+        __data_attrs: Final[_DataAttrsT]
+        """DataAttr attributes defined (locally) in the class."""
+        _DATA_ATTRS: Final[_DataAttrsT]
+        """DataAttr attributes defined in the class and ancestors (i.e. all DataAttrs)"""
 
     _DATA_ATTRS = {}
 
@@ -120,7 +123,14 @@ class DataAttrClass(typing.Generic[typing.TypeVar("DataAttr", default=object)]):
                 for name, typehint in dataattr_ann.items()
             }
             # Now 'enrich' the current class _DATA_ATTRS
-            cls._DATA_ATTRS = cls._DATA_ATTRS | data_attrs
+            cls.__data_attrs = data_attrs # type: ignore
+
+            cls._DATA_ATTRS = {} # type: ignore
+            for base in reversed(cls.mro()):
+                try:
+                    cls._DATA_ATTRS |= base.__data_attrs # type: ignore
+                except AttributeError:
+                    pass
             # eventually add slots
             slots = tuple(
                 name for name, dataattr_def in data_attrs.items() if dataattr_def.slot
