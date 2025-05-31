@@ -410,6 +410,11 @@ class SignalEnergyEstimator(EnergyEstimator, SignalEnergyProcessor):
             sample_curr.samples += 1
         return energy
 
+    @typing.override
+    def disconnect(self, time_ts):
+        super().disconnect(time_ts)
+        self._check_sample_curr(time_ts)
+
     def get_observed_energy(self) -> tuple[float, float, float]:
         """compute the energy stored in the 'observations'.
         Returns: (energy, observation_begin_ts, observation_end_ts)"""
@@ -530,49 +535,23 @@ class SignalEnergyEstimator(EnergyEstimator, SignalEnergyProcessor):
             return
 
         restore_start_ts = time()
-        restore_states_failed = 0
+
+        # build once and reuse
+        event = SignalEnergyEstimator.Event(None, 0)
         for state in source_entity_states[self.source_entity_id]:
             if self._restore_history_exit:
                 return
-            try:
-                self.process(
-                    float(state.state)
-                    * self.input_convert[state.attributes["unit_of_measurement"]],
-                    state.last_updated_timestamp,
-                )  # type: ignore
-                continue
-            except AttributeError as e:
-                if e.name == "input_convert":
-                    exception = self.configure_source(
-                        state, state.last_updated_timestamp
-                    )
-                    if not exception:
-                        continue
-                else:
-                    exception = e
-            except Exception as e:
-                exception = e
-
-            restore_states_failed += 1
-            # this is expected and silently managed when state == None or 'unknown'
-            self.process(None, state.last_updated_timestamp)
-            if state.state not in (hac.STATE_UNKNOWN, hac.STATE_UNAVAILABLE):
-                self.log_exception(
-                    self.WARNING,
-                    exception,
-                    "_restore_history (state:%s)",
-                    state,
-                    timeout=300,  # short timeout since history loading should not last that long
-                )
+            event.time_fired_timestamp = state.last_updated_timestamp
+            event.data["new_state"] = state
+            self.source_entity_update(event)
 
         if self.isEnabledFor(self.DEBUG):
             self.log(
                 self.DEBUG,
-                "Restored history for entity '%s' in %s sec (states = %d failed = %d)",
+                "Restored history for entity '%s' in %s sec (states = %d)",
                 self.source_entity_id,
                 round(time() - restore_start_ts, 2),
                 len(source_entity_states[self.source_entity_id]),
-                restore_states_failed,
             )
 
         if pmc.DEBUG:

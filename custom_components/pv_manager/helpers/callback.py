@@ -12,7 +12,7 @@ from ..manager import Manager
 if typing.TYPE_CHECKING:
     from asyncio.events import TimerHandle
     from datetime import datetime
-    from typing import Any, Callable, Coroutine, Final, Iterable
+    from typing import Any, Callable, Coroutine, Final, Iterable, TypedDict
 
     from homeassistant.core import (
         CALLBACK_TYPE,
@@ -88,15 +88,15 @@ class CallbackTracker(Loggable):
     @typing.final
     class Event:
         """Mocks an Event-like object for usage in initial updates of our track_state api.
-        This is based on the fact that we're not using all of the event attributes but
+        This is designed considering that we're not using all of the event attributes but
         just those set here."""
 
         if typing.TYPE_CHECKING:
 
-            class DataType(typing.TypedDict):
-                new_state: State
+            class DataType(TypedDict):
+                new_state: State | None
 
-            data: "DataType"
+            data: DataType
             time_fired_timestamp: float
 
         __slots__ = (
@@ -104,8 +104,8 @@ class CallbackTracker(Loggable):
             "time_fired_timestamp",
         )
 
-        def __init__(self, state: "State"):
-            self.time_fired_timestamp = time()
+        def __init__(self, state: "State | None", time_fired_timestamp: float):
+            self.time_fired_timestamp = time_fired_timestamp
             self.data = {"new_state": state}
 
     def track_state(
@@ -115,19 +115,24 @@ class CallbackTracker(Loggable):
         job_type: HassJobType = HassJobType.Callback,
         update: bool = True,
     ):
-        """Track a state change for the given entity_id."""
+        """Track a state change for the given entity_id.
+        Typically used to 'pump' data into a SignalProcessor."""
         self.track_callback(
             entity_id,
             async_track_state_change_event(Manager.hass, entity_id, action, job_type),
         )
 
         if update:
-            state = Manager.hass.states.get(entity_id)
-            if state and state.state not in (hac.STATE_UNKNOWN, hac.STATE_UNAVAILABLE):
-                if job_type is HassJobType.Callback:
-                    action(CallbackTracker.Event(state))
-                elif job_type is HassJobType.Coroutinefunction:
-                    self.async_create_task(
-                        action(CallbackTracker.Event(state)),
-                        f"track_state({entity_id})",
-                    )
+            if job_type is HassJobType.Callback:
+                action(
+                    CallbackTracker.Event(Manager.hass.states.get(entity_id), time())
+                )
+            elif job_type is HassJobType.Coroutinefunction:
+                self.async_create_task(
+                    action(
+                        CallbackTracker.Event(
+                            Manager.hass.states.get(entity_id), time()
+                        )
+                    ),
+                    f"track_state({entity_id})",
+                )

@@ -342,14 +342,14 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
             load_meter_config = config["load"] | estimator_config
             LoadMeterClass = type(
                 "LoadMeterClass",
-                (LoadMeter, SignalEnergyEstimatorDevice, HeuristicConsumptionEstimator),
+                (LoadMeter, HeuristicConsumptionEstimator, SignalEnergyEstimatorDevice),
                 {},
             )
             self.load_meter = LoadMeterClass(self, load_meter_config)
             pv_meter_config = config["pv"] | estimator_config
             PvMeterClass = type(
                 "PvMeterClass",
-                (PvMeter, SignalEnergyEstimatorDevice, HeuristicPVEnergyEstimator),
+                (PvMeter, HeuristicPVEnergyEstimator, SignalEnergyEstimatorDevice),
                 {},
             )
             self.pv_meter = PvMeterClass(self, pv_meter_config)
@@ -358,7 +358,7 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
             )
             BatteryMeterClass = type(
                 "BatteryMeterClass",
-                (BatteryMeter, EnergyEstimatorDevice, BatteryEstimator),
+                (BatteryMeter, BatteryEstimator, EnergyEstimatorDevice),
                 {},
             )
             self.battery_meter = BatteryMeterClass(self, battery_meter_config)  # type: ignore

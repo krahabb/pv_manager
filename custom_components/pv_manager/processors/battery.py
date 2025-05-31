@@ -163,7 +163,7 @@ class BatteryProcessor(SignalEnergyProcessor):
         except Exception as e:
             # do some checks: the idea is to foward a 'signal disconnect'
             # wherever is needed
-            self.process(None, time_ts)
+            self.disconnect(time_ts)
             if (
                 battery_current is None
             ):  # error thrown in conversion like state unavailable or so
@@ -197,7 +197,7 @@ class BatteryProcessor(SignalEnergyProcessor):
                 battery_voltage * self.battery_current, event.time_fired_timestamp  # type: ignore
             )
         except Exception as e:
-            self.process(None, event.time_fired_timestamp)
+            self.disconnect(event.time_fired_timestamp)
             if (
                 state
                 and (self.battery_current is not None)

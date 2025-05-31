@@ -361,7 +361,7 @@ class SignalProcessor[_input_t](BaseProcessor):
     @typing.override
     async def async_start(self):
         if self.source_entity_id:
-            self.track_state(self.source_entity_id, self._source_entity_update)
+            self.track_state(self.source_entity_id, self.source_entity_update)
         if self.update_period_ts:
             self.track_timer(self.update_period_ts, self._update_callback)
 
@@ -378,7 +378,6 @@ class SignalProcessor[_input_t](BaseProcessor):
         self.unit = unit  # type: ignore
         self.input_unit = unit.default  # type: ignore
         self.input_convert = unit.convert_to_default  # type: ignore
-        self._source_convert = unit.convert
 
     def process(self, input: _input_t | None, time_ts: float, /) -> typing.Any:
         self.time_ts = time_ts
@@ -387,10 +386,15 @@ class SignalProcessor[_input_t](BaseProcessor):
     def update(self, time_ts: float, /):
         self.time_ts = time_ts
 
+    def disconnect(self, time_ts: float, /):
+        self.input = None
+        self.time_ts = time_ts
+
     @callback
-    def _source_entity_update(
+    def source_entity_update(
         self, event: "Event[EventStateChangedData] | CallbackTracker.Event", /
     ):
+        # BEWARE: this is badly implemented since we assume _input_t is a kind of float
         try:
             state = event.data["new_state"]
             self.process(
@@ -400,59 +404,31 @@ class SignalProcessor[_input_t](BaseProcessor):
             return
         except AttributeError as e:
             if e.name == "input_convert":
-                exception = self.configure_source(state, event.time_fired_timestamp)
-                if not exception:
-                    return
+                assert state
+                from_unit = state.attributes["unit_of_measurement"]
+                for unit in SignalProcessor.Unit:
+                    if from_unit in unit.units:
+                        self.configure(unit)
+                        self.process(
+                            float(state.state) * self.input_convert[from_unit],  # type: ignore
+                            event.time_fired_timestamp,
+                        )  # type: ignore
+                        return
+                exception = ValueError(f"Unit '{from_unit}' not supported")
             else:
                 exception = e
         except Exception as e:
             exception = e
 
         # this is expected and silently managed when state == None or 'unknown'
-        self.process(None, event.time_fired_timestamp)
+        self.disconnect(event.time_fired_timestamp)
         if state and state.state not in (hac.STATE_UNKNOWN, hac.STATE_UNAVAILABLE):
             self.log_exception(
                 self.WARNING,
                 exception,
-                "_source_entity_update (state:%s)",
+                "source_entity_update (state:%s)",
                 state,
             )
-
-    def configure_source(self, state: "State | None", time_ts: float):
-        """Called in an AttributerError handler when (at start) we need to configure unit conversion."""
-        from_unit = state.attributes["unit_of_measurement"]  # type: ignore
-        for unit in SignalProcessor.Unit:
-            if from_unit in unit.units:
-                self.configure(unit)
-                try:
-                    self.process(
-                        float(state.state) * self.input_convert[from_unit],  # type: ignore
-                        time_ts,
-                    )
-                    return None
-                except KeyError:
-                    return ValueError(
-                        f"No conversion available from '{from_unit}' to '{self.input_unit}'"
-                    )
-        else:
-            return ValueError(f"Unit '{from_unit}' not supported")
-
-    def _source_convert(
-        self, value: float, from_unit: str | None, to_unit: str | None, /
-    ) -> float:
-        """Installed as _source_convert at init time this will detect the type of source entity
-        by inspecting the unit and install the proper converter.
-        This is an helping method used in conjunction with tracking an HA entity"""
-        for unit in SignalProcessor.Unit:
-            if from_unit in unit.units:
-                self.configure(unit)
-                # TODO: setup a local dict of coefficients to map conversion without
-                # having to invoke the HA lib convert function every time.
-                # This would allow us to invert signals by inverting the map in place
-                # and not going through an additional multiplication
-                return self._source_convert(value, from_unit, self.input_unit)
-
-        raise ValueError(f"Unsupported unit of measurement '{from_unit}'")
 
     @callback
     def _update_callback(self, time_ts: float, /):
@@ -665,7 +641,9 @@ class SignalEnergyProcessor(SignalProcessor[float], EnergyBroadcast):
             return None
         except AttributeError as error:
             if error.name == "_differential_mode":
-                raise Exception("configure() need to be called before process()")
+                raise Exception(
+                    f"{self.__class__.__name__}.configure() (id:{self.id}) need to be called before process()"
+                )
             raise error
 
     @typing.override
@@ -675,6 +653,15 @@ class SignalEnergyProcessor(SignalProcessor[float], EnergyBroadcast):
             pass
         else:
             self.process(self.input, time_ts)
+
+    @typing.override
+    def disconnect(self, time_ts: float, /):
+        # Disconnection could also be handled by self.process but this acts like a fast
+        # path. TODO: should we process a valid self.input (power signal) up until now?
+        self.input = None
+        self.time_ts = time_ts
+        if not self.warning_no_signal_on:
+            self.warning_no_signal_activate()
 
     # interface: self
     def reset(self, /):
@@ -702,13 +689,11 @@ class Estimator(BaseProcessor):
     estimation_time_ts: DataAttr[int] = 0
 
     _SLOTS_ = (
-        "estimation_time_ts",
         "_update_listeners",
     )
 
     def __init__(self, id, **kwargs: "Unpack[Args]"):
         super().__init__(id, **kwargs)
-        self.estimation_time_ts = 0
         self._update_listeners = set()
 
     @typing.override
