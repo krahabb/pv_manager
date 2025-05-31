@@ -527,9 +527,6 @@ class PVEnergyEstimator(SignalEnergyEstimator):
 
     def get_solar_forecast(self) -> "SolarForecastType":
         """Returns the forecasts array for HA energy integration"""
-
-        now = dt_util.now().replace(minute=0, second=0, microsecond=0)
-
         try:
             wh_hours = self._solar_forecast["wh_hours"]
             # wh_hours is cached for the day since we want to 'preserve' past forecasts
@@ -540,8 +537,9 @@ class PVEnergyEstimator(SignalEnergyEstimator):
             # on demand
             wh_hours = {}
             self._solar_forecast = {"wh_hours": wh_hours}
-            now = now.replace(hour=0)
 
+        # with current implementation we can only estimate forward time
+        now = dt_util.now().replace(minute=0, second=0, microsecond=0) + dt.timedelta(hours=1)
         time_ts = int(now.astimezone(dt_util.UTC).timestamp())
         for i in range(48):
             time_next_ts = time_ts + 3600
