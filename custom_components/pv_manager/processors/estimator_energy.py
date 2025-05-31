@@ -640,10 +640,12 @@ class EnergyBalanceEstimator(EnergyEstimator):
         production_estimator: EnergyEstimator
         consumption_estimator: EnergyEstimator
 
+        def get_forecast(self, time_begin_ts: int, time_end_ts: int, /) -> Forecast: # type: ignore
+            pass
+
     _FAKE_ESTIMATOR = _FakeEstimator("", config={})
 
     _SLOTS_ = (
-        "forecast_duration_ts",
         "production_estimator",
         "consumption_estimator",
         "_production_estimator_unsub",
@@ -660,14 +662,6 @@ class EnergyBalanceEstimator(EnergyEstimator):
         self._production_estimator_unsub = None
         self._consumption_estimator_unsub = None
         super().__init__(id, **kwargs)
-        config = self.config
-        self.forecast_duration_ts = (
-            int(
-                ((config.get("forecast_duration_hours") or 1) * 3600)
-                // self.sampling_interval_ts
-            )
-            * self.sampling_interval_ts
-        )
 
     def shutdown(self):
         if self._production_estimator_unsub:

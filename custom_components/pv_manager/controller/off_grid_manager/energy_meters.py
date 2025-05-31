@@ -4,6 +4,8 @@ import typing
 
 from homeassistant import const as hac
 
+from custom_components.pv_manager.controller.devices.estimator_device import EnergyEstimatorDevice
+
 from ... import const as pmc
 from ...helpers import validation as hv
 from ...helpers.dataattr import DataAttr, DataAttrParam
@@ -12,12 +14,13 @@ from ...processors import (
     BaseProcessor,
     EnergyBroadcast,
 )
-from ...processors.battery import BatteryProcessor
+from ...processors.battery import BatteryEstimator, BatteryProcessor
 from ...sensor import BatteryChargeSensor, Sensor
 from ..devices import SignalEnergyProcessorDevice
+from ..devices.estimator_device import EnergyEstimatorDevice
 
 if typing.TYPE_CHECKING:
-    from typing import Any, Final, NotRequired, TypedDict, Unpack
+    from typing import Any, Final, NotRequired, Self, TypedDict, Unpack
 
     from . import Controller as OffGridManager
 
@@ -125,6 +128,36 @@ class BatteryMeter(MeterDevice, BatteryProcessor):
         del meters[SourceType.BATTERY_IN]
         super().shutdown()
 
+
+class BatteryEstimatorMeter(BatteryMeter, BatteryEstimator, EnergyEstimatorDevice):
+
+    def __init__(self, controller, config):
+        super().__init__(controller, config)
+        self.listen_update(self.on_update_estimate)
+
+        self.today_charge_estimate_sensor = Sensor(
+            self,
+            "today_charge_estimate",
+            name="Charge estimate (today)",
+            native_unit_of_measurement="Ah",
+            suggested_display_precision=0,
+            parent_attr=Sensor.ParentAttr.REMOVE
+        )
+        self.tomorrow_charge_estimate_sensor = Sensor(
+            self,
+            "tomorrow_charge_estimate",
+            name="Charge estimate (tomorrow)",
+            native_unit_of_measurement="Ah",
+            suggested_display_precision=0,
+            parent_attr=Sensor.ParentAttr.REMOVE
+        )
+
+    def on_update_estimate(self, estimator: "BatteryEstimator"):
+        f = estimator.get_forecast(estimator.estimation_time_ts, estimator.tomorrow_ts)
+        today_charge_estimate = estimator.charge + f.charge
+        self.today_charge_estimate_sensor.update_safe(today_charge_estimate)
+        f = estimator.get_forecast(estimator.tomorrow_ts, estimator.tomorrow_ts + 86400)
+        self.tomorrow_charge_estimate_sensor.update_safe(today_charge_estimate + f.charge)
 
 class EnergyEstimatorMeterDevice(MeterDevice):
     """Partial common base class for meters (pv and load) that could be built as estimators.

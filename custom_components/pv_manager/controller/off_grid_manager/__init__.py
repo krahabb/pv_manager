@@ -18,6 +18,7 @@ from ..devices.estimator_device import (
     SignalEnergyEstimatorDevice,
 )
 from .energy_meters import (
+    BatteryEstimatorMeter,
     BatteryMeter,
     LoadMeter,
     LossesMeter,
@@ -353,15 +354,8 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
                 {},
             )
             self.pv_meter = PvMeterClass(self, pv_meter_config)
-            battery_meter_config = config["battery"] | (
-                estimator_config | {"forecast_duration_hours": 24}
-            )
-            BatteryMeterClass = type(
-                "BatteryMeterClass",
-                (BatteryMeter, BatteryEstimator, EnergyEstimatorDevice),
-                {},
-            )
-            self.battery_meter = BatteryMeterClass(self, battery_meter_config)  # type: ignore
+            battery_meter_config = config["battery"] | estimator_config # type: ignore
+            self.battery_meter = BatteryEstimatorMeter(self, battery_meter_config)
             self.battery_meter.connect_consumption(self.load_meter)
             self.battery_meter.connect_production(self.pv_meter)
         else:

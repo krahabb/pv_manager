@@ -31,6 +31,7 @@ if typing.TYPE_CHECKING:
         Iterable,
         Mapping,
         NotRequired,
+        Self,
         TypedDict,
         Unpack,
     )
@@ -683,7 +684,7 @@ class Estimator(BaseProcessor):
         class Args(BaseProcessor.Args):
             pass
 
-        UPDATE_LISTENER_TYPE = Callable[["Estimator"], None]
+        UPDATE_LISTENER_TYPE = Callable[[Self], None]
         _update_listeners: Final[set[UPDATE_LISTENER_TYPE]]
 
     estimation_time_ts: DataAttr[int] = 0

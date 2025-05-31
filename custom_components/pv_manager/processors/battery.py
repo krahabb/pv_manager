@@ -287,8 +287,13 @@ class BatteryEstimator(EnergyBalanceEstimator, SignalEnergyEstimator, BatteryPro
         consumption_estimator: SignalEnergyEstimator
         _sample_curr: Sample
 
-        def _check_sample_curr(self, time_ts: float, /) -> Sample:
-            return super()._check_sample_curr(time_ts)  # type: ignore
+        @typing.override
+        def get_forecast(self, time_begin_ts: int, time_end_ts: int, /) -> Forecast: # type: ignore
+            pass
+
+        @typing.override
+        def _check_sample_curr(self, time_ts: float, /) -> Sample: # type: ignore
+            pass
 
     DEFAULT_NAME = "Battery estimator"
 
