@@ -513,7 +513,7 @@ class SignalEnergyProcessor(SignalProcessor[float], EnergyBroadcast):
         if config is None:
             config = {}
         return {
-            hv.opt_config("source_entity_id", config): hv.sensor_selector(
+            hv.req_config("source_entity_id", config): hv.sensor_selector(
                 device_class=[Sensor.DeviceClass.POWER, Sensor.DeviceClass.ENERGY]
             ),
             hv.opt_config("update_period", config): hv.time_period_selector(

@@ -20,6 +20,7 @@ if typing.TYPE_CHECKING:
     from homeassistant.components.energy.types import SolarForecastType
     from homeassistant.core import Event, EventStateChangedData, State
 
+    from .. import const as pmc
 
 _WEATHER_CONDITION_TO_CLOUD: typing.Final[dict[str | None, float | None]] = {
     None: None,
@@ -286,6 +287,15 @@ class PVEnergyEstimator(SignalEnergyEstimator):
         "_sunset_ts",
     )
 
+    @classmethod
+    @typing.override
+    def get_config_schema(cls, config: "Config | None", /) -> "pmc.ConfigSchema":
+        _config = config or {"weather_model": "simple"}
+        return super().get_config_schema(config) | {
+            hv.opt_config("weather_entity_id", _config): hv.weather_entity_selector(),
+            hv.opt_config("weather_model", _config): cls.weather_model_selector(),
+        }
+
     @staticmethod
     def weather_model_selector():
         return hv.select_selector(
@@ -539,7 +549,9 @@ class PVEnergyEstimator(SignalEnergyEstimator):
             self._solar_forecast = {"wh_hours": wh_hours}
 
         # with current implementation we can only estimate forward time
-        now = dt_util.now().replace(minute=0, second=0, microsecond=0) + dt.timedelta(hours=1)
+        now = dt_util.now().replace(minute=0, second=0, microsecond=0) + dt.timedelta(
+            hours=1
+        )
         time_ts = int(now.astimezone(dt_util.UTC).timestamp())
         for i in range(48):
             time_next_ts = time_ts + 3600

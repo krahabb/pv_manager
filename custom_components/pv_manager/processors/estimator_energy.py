@@ -18,7 +18,7 @@ from homeassistant.util import dt as dt_util
 
 from . import Estimator, SignalEnergyProcessor
 from .. import const as pmc
-from ..helpers import datetime_from_epoch
+from ..helpers import datetime_from_epoch, validation as hv
 from ..helpers.dataattr import DataAttr, DataAttrClass, DataAttrParam, timestamp_i
 from ..manager import Manager
 
@@ -99,6 +99,16 @@ class EnergyEstimator(Estimator):
         "forecasts",
         "_forecasts_recycle",
     )
+
+    @classmethod
+    @typing.override
+    def get_config_schema(cls, config: "Config | None") -> pmc.ConfigSchema:
+        return super().get_config_schema(config) | {
+            hv.req_config(
+                "sampling_interval_minutes",
+                config or {"sampling_interval_minutes": 10},
+            ): hv.time_period_selector(unit_of_measurement=hac.UnitOfTime.MINUTES),
+        }
 
     def __init__(self, id, **kwargs):
         super().__init__(id, **kwargs)
@@ -344,6 +354,22 @@ class SignalEnergyEstimator(EnergyEstimator, SignalEnergyProcessor):
         "_sampling_interval_unsub",
     )
 
+    @classmethod
+    @typing.override
+    def get_config_schema(cls, config: "Config | None") -> pmc.ConfigSchema:
+        _config = config or {
+                "observation_duration_minutes": 20,
+                "history_duration_days": 7,
+        }
+        return super().get_config_schema(config) | {
+            hv.req_config(
+                "observation_duration_minutes", _config
+            ): hv.time_period_selector(unit_of_measurement=hac.UnitOfTime.MINUTES),
+            hv.req_config("history_duration_days", _config): hv.time_period_selector(
+                unit_of_measurement=hac.UnitOfTime.DAYS, max=30
+            ),
+        }
+
     def __init__(
         self,
         id,
@@ -537,7 +563,7 @@ class SignalEnergyEstimator(EnergyEstimator, SignalEnergyProcessor):
         restore_start_ts = time()
 
         # build once and reuse
-        event = SignalEnergyEstimator.Event(None, 0)
+        event = EnergyEstimator.Event(None, 0)
         for state in source_entity_states[self.source_entity_id]:
             if self._restore_history_exit:
                 return
@@ -640,7 +666,7 @@ class EnergyBalanceEstimator(EnergyEstimator):
         production_estimator: EnergyEstimator
         consumption_estimator: EnergyEstimator
 
-        def get_forecast(self, time_begin_ts: int, time_end_ts: int, /) -> Forecast: # type: ignore
+        def get_forecast(self, time_begin_ts: int, time_end_ts: int, /) -> Forecast:  # type: ignore
             pass
 
     _FAKE_ESTIMATOR = _FakeEstimator("", config={})

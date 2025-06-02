@@ -14,12 +14,12 @@ from ...processors.estimator_energy import (
 from ...sensor import Sensor
 
 if typing.TYPE_CHECKING:
-    from typing import Any, Callable, ClassVar, Coroutine, Final,NotRequired, Unpack
+    from typing import Any, Callable, ClassVar, Coroutine, Final, NotRequired, Unpack
 
     from ...helpers.entity import Entity
 
 
-class EstimatorDevice(Estimator, ProcessorDevice):
+class EstimatorDevice(ProcessorDevice, Estimator):
     if typing.TYPE_CHECKING:
 
         class Config(Estimator.Config, ProcessorDevice.Config):
@@ -68,7 +68,7 @@ class EnergyEstimatorSensor(EstimatorEntity, Sensor):
             id,
             kwargs.pop("estimator", device),
             state_class=None,
-            **kwargs, # type: ignore
+            **kwargs,  # type: ignore
         )
 
     @typing.override
@@ -111,7 +111,7 @@ class TomorrowEnergyEstimatorSensor(EnergyEstimatorSensor):
             self._async_write_ha_state()
 
 
-class EnergyEstimatorDevice(EnergyEstimator, EstimatorDevice):
+class EnergyEstimatorDevice(EstimatorDevice, EnergyEstimator):
 
     if typing.TYPE_CHECKING:
 
@@ -124,6 +124,11 @@ class EnergyEstimatorDevice(EnergyEstimator, EstimatorDevice):
 
         class Args(EnergyEstimator.Args, EstimatorDevice.Args):
             config: "EnergyEstimatorDevice.Config"
+
+    @classmethod
+    def get_config_schema(cls, config: "Config | None") -> pmc.ConfigSchema:
+        _config = config or {"name": cls.DEFAULT_NAME}
+        return hv.entity_schema(_config) | super().get_config_schema(config)
 
     def __init__(self, id, **kwargs: "Unpack[Args]"):
 
@@ -141,60 +146,23 @@ class EnergyEstimatorDevice(EnergyEstimator, EstimatorDevice):
         )
 
 
-class SignalEnergyEstimatorDevice(
-    SignalEnergyEstimator, EnergyEstimatorDevice, SignalEnergyProcessorDevice
-):
+class SignalEnergyEstimatorDevice(EnergyEstimatorDevice, SignalEnergyEstimator):
 
     if typing.TYPE_CHECKING:
 
         class Config(
             SignalEnergyEstimator.Config,
-            EstimatorDevice.Config,
-            SignalEnergyProcessorDevice.Config,
-            pmc.EntityConfig,
+            EnergyEstimatorDevice.Config,
         ):
             pass
 
         class Args(
             SignalEnergyEstimator.Args,
-            EstimatorDevice.Args,
-            SignalEnergyProcessorDevice.Args,
+            EnergyEstimatorDevice.Args,
         ):
             config: "SignalEnergyEstimatorDevice.Config"
 
     @classmethod
-    def get_config_schema(cls, config: "Config | None") -> "pmc.ConfigSchema":
-        if not config:
-            config = {
-                "name": cls.DEFAULT_NAME,
-                "source_entity_id": "",
-                "sampling_interval_minutes": 10,
-                "observation_duration_minutes": 20,
-                "history_duration_days": 7,
-                "maximum_latency": 60,
-            }
-        return {
-            hv.req_config("name", config): str,
-            hv.req_config("source_entity_id", config): hv.sensor_selector(
-                device_class=[Sensor.DeviceClass.POWER, Sensor.DeviceClass.ENERGY]
-            ),
-            hv.req_config(
-                "sampling_interval_minutes",
-                config,
-            ): hv.time_period_selector(unit_of_measurement=hac.UnitOfTime.MINUTES),
-            hv.req_config(
-                "observation_duration_minutes", config
-            ): hv.time_period_selector(unit_of_measurement=hac.UnitOfTime.MINUTES),
-            hv.req_config("history_duration_days", config): hv.time_period_selector(
-                unit_of_measurement=hac.UnitOfTime.DAYS, max=30
-            ),
-            hv.opt_config("update_period", config): hv.time_period_selector(
-                unit_of_measurement=hac.UnitOfTime.SECONDS
-            ),
-            hv.opt_config("maximum_latency", config): hv.time_period_selector(
-                unit_of_measurement=hac.UnitOfTime.SECONDS
-            ),
-            hv.opt_config("input_max", config): hv.positive_number_selector(
-                unit_of_measurement=hac.UnitOfPower.WATT
-            ),
-        }
+    def get_config_schema(cls, config: "Config | None") -> pmc.ConfigSchema:
+        _config = config or {"name": cls.DEFAULT_NAME}
+        return hv.entity_schema(_config) | super().get_config_schema(config)

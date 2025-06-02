@@ -1,6 +1,7 @@
 import enum
 import typing
 
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.helpers import entity, restore_state
 
 from . import Loggable
@@ -34,7 +35,7 @@ class Entity(Loggable, entity.Entity if typing.TYPE_CHECKING else object):
     if typing.TYPE_CHECKING:
 
         class Args(typing.TypedDict):
-            config_subentry_id: NotRequired[str]
+            config_subentry_id: NotRequired[str | None]
             name: NotRequired[str | None]
             entity_category: NotRequired[entity.EntityCategory]
             icon: NotRequired[str]
@@ -92,7 +93,7 @@ class Entity(Loggable, entity.Entity if typing.TYPE_CHECKING else object):
     ):
         controller = device.controller
         self.device = device
-        self.config_subentry_id = kwargs.pop("config_subentry_id", None)
+        self.config_subentry_id = kwargs.pop("config_subentry_id", device.config_subentry_id)
         self.assumed_state = False
         self.available = True
         self.device_info = device.device_info
@@ -122,6 +123,8 @@ class Entity(Loggable, entity.Entity if typing.TYPE_CHECKING else object):
         try:
             if add_entities := controller.platforms[self.PLATFORM]:
                 add_entities((self,), config_subentry_id=self.config_subentry_id)
+            else:
+                assert controller.config_entry.state != ConfigEntryState.LOADED
         except KeyError:
             controller.platforms[self.PLATFORM] = None
 

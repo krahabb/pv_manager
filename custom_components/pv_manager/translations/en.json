@@ -119,14 +119,52 @@
                 "reconfigure_successful": "Reconfigure successful"
             }
         },
-        "manager_energy_sensor": {
+        "manager_battery_meter": {
             "initiate_flow": {
-                "user": "Energy calculator"
+                "user": "Battery meter"
             },
             "step": {
                 "user": {
-                    "title": "Energy calculator",
-                    "description": "Configure metering energy sensors",
+                    "title": "Battery meter",
+                    "description": "Configure a battery",
+                    "data": {
+                        "name": "Sensor name(s)"
+                    }
+                }
+            },
+            "error": {},
+            "abort": {
+                "already_configured": "Subentry type already configured",
+                "reconfigure_successful": "Reconfigure successful"
+            }
+        },
+        "manager_load_meter": {
+            "initiate_flow": {
+                "user": "Load meter"
+            },
+            "step": {
+                "user": {
+                    "title": "Load meter",
+                    "description": "Configure a load",
+                    "data": {
+                        "name": "Sensor name(s)"
+                    }
+                }
+            },
+            "error": {},
+            "abort": {
+                "already_configured": "Subentry type already configured",
+                "reconfigure_successful": "Reconfigure successful"
+            }
+        },
+        "manager_pv_meter": {
+            "initiate_flow": {
+                "user": "PV meter"
+            },
+            "step": {
+                "user": {
+                    "title": "PV meter",
+                    "description": "Configure a pv source",
                     "data": {
                         "name": "Sensor name(s)"
                     }

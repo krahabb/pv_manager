@@ -7,14 +7,17 @@ from homeassistant import const as hac
 from homeassistant.core import callback
 
 from . import EnergyBroadcast, SignalEnergyProcessor
-from ..helpers import datetime_from_epoch
+from ..helpers import datetime_from_epoch, validation as hv
 from ..helpers.dataattr import DataAttr, DataAttrParam
+from ..sensor import Sensor
 from .estimator_energy import EnergyBalanceEstimator, SignalEnergyEstimator
 
 if typing.TYPE_CHECKING:
     from typing import Callable, Final, NotRequired, Self, Unpack
 
     from homeassistant.core import Event, EventStateChangedData
+
+    from .. import const as pmc
 
 
 class BatteryProcessor(SignalEnergyProcessor):
@@ -72,6 +75,24 @@ class BatteryProcessor(SignalEnergyProcessor):
         "_voltage_convert",
         "_voltage_unit",
     )
+
+    @classmethod
+    @typing.override
+    def get_config_schema(cls, config: "Config | None", /) -> "pmc.ConfigSchema":
+        _config = config or {}
+        schema = {
+            hv.req_config("battery_voltage_entity_id", _config): hv.sensor_selector(
+                device_class=Sensor.DeviceClass.VOLTAGE
+            ),
+            hv.req_config("battery_current_entity_id", _config): hv.sensor_selector(
+                device_class=Sensor.DeviceClass.CURRENT
+            ),
+            hv.req_config("battery_capacity", _config): hv.positive_number_selector(
+                unit_of_measurement="Ah"
+            ),
+        } | super().get_config_schema(config)
+        del schema["source_entity_id"] # type: ignore
+        return schema
 
     def __init__(self, id, **kwargs: "Unpack[Args]"):
         super().__init__(id, **kwargs)

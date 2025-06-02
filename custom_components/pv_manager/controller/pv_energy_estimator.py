@@ -118,26 +118,11 @@ class Controller(EnergyEstimatorController["Controller.Config"], HeuristicPVEner
         class Config(
             HeuristicPVEnergyEstimator.Config,
             EnergyEstimatorController.Config,
-            pmc.EntityConfig,
+            SignalEnergyEstimatorDevice.Config,
         ):
             pass
 
     TYPE = pmc.ConfigEntryType.PV_ENERGY_ESTIMATOR
-
-    # interface: EnergyEstimatorController
-    @classmethod
-    @typing.override
-    def get_config_schema(cls, config: "Config | None") -> pmc.ConfigSchema:
-        _config = config or {
-            "weather_model": "simple",
-        }
-        # TODO: fix the class hierarchy for config building
-        return super().get_config_schema(config) | {
-            hv.opt_config("weather_entity_id", _config): hv.weather_entity_selector(),
-            hv.opt_config(
-                "weather_model", _config
-            ): HeuristicPVEnergyEstimator.weather_model_selector(),
-        }
 
     @typing.override
     def _create_diagnostic_entities(self):
