@@ -29,7 +29,7 @@ class EntryData[_ConfigT: pmc.EntryConfig | pmc.SubentryConfig]:
 
     subentry_id: "Final[str | None]"
     subentry_type: "Final[str | None]"
-    config: _ConfigT | pmc.ConfigMapping
+    config: _ConfigT
     entities: "Final[dict[str, Entity]]"
 
     __slots__ = (
@@ -229,11 +229,19 @@ class Controller[_ConfigT: pmc.EntryConfig](Device):
                 removed_entries.add(subentry_id)
         for subentry_id in removed_entries:
             entry_data = entries[subentry_id]
-            await self._async_subentry_remove(subentry_id, entry_data)
+            try:
+                await self._async_subentry_remove(subentry_id, entry_data)
+            except Exception as e:
+                self.log_exception(self.WARNING, e, "_async_subentry_remove")
             # removed leftover entities (eventually)
             for entity in tuple(entry_data.entities.values()):
-                await entity.async_shutdown(True)
+                try:
+                    await entity.async_shutdown(True)
+                except Exception as e:
+                    self.log_exception(self.WARNING, e, "entity.async_shutdown")
+
             assert not entry_data.entities
+            # remove only after shutting down entities
             del entries[subentry_id]
 
         for subentry_id, subentry in config_entry.subentries.items():
