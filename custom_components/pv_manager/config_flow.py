@@ -195,7 +195,7 @@ class ConfigFlow(CommonFlow, config_entries.ConfigFlow, domain=pmc.DOMAIN):  # t
     async def _async_step_controller(
         self, controller_type: pmc.ConfigEntryType, user_input: pmc.ConfigDict | None
     ):
-        if user_input:
+        if user_input is not None:
             if self.config_entry:
                 return self.async_update_reload_and_abort(
                     self.config_entry,
