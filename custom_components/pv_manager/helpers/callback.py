@@ -48,7 +48,7 @@ class CallbackTracker(Loggable):
         name: str,
         eager_start: bool = True,
     ):
-        return Manager.hass.async_create_task(target, f"PVManager({name})", eager_start)
+        return Manager.hass.async_create_task(target, f"{self.logtag}:{name}", eager_start)
 
     def track_callback(self, key: str, callback: "CALLBACK_TYPE"):
         try:
