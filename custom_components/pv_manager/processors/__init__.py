@@ -6,10 +6,7 @@ diamond pattern hierarchies. This is especially true for
 estimators which should always include a signal processor to be feeded
 """
 
-import abc
-from dataclasses import asdict, dataclass
 import enum
-import inspect
 import typing
 
 from homeassistant import const as hac
@@ -310,6 +307,13 @@ class SignalProcessor[_input_t](BaseProcessor):
         ENERGY = (hac.UnitOfEnergy.WATT_HOUR, unit_conversion.EnergyConverter)
         CHARGE = (UnitOfElectricCharge.AMPERE_HOUR, ElectricChargeConverter)
 
+        @staticmethod
+        def from_um(unit_of_measurement: str | None):
+            for unit in SignalProcessor.Unit:
+                if unit_of_measurement in unit.units:
+                    return unit
+            return None
+
     if typing.TYPE_CHECKING:
 
         class Config(BaseProcessor.Config):
@@ -401,20 +405,20 @@ class SignalProcessor[_input_t](BaseProcessor):
             self.process(
                 float(state.state) * self.input_convert[state.attributes["unit_of_measurement"]],  # type: ignore
                 event.time_fired_timestamp,
-            )  # type: ignore
+            )
             return
         except AttributeError as e:
             if e.name == "input_convert":
-                assert state
-                from_unit = state.attributes["unit_of_measurement"]
-                for unit in SignalProcessor.Unit:
-                    if from_unit in unit.units:
-                        self.configure(unit)
-                        self.process(
-                            float(state.state) * self.input_convert[from_unit],  # type: ignore
-                            event.time_fired_timestamp,
-                        )  # type: ignore
-                        return
+                # assert state
+                from_unit = state.attributes["unit_of_measurement"]  # type: ignore
+                unit = SignalProcessor.Unit.from_um(from_unit)
+                if unit:
+                    self.configure(unit)
+                    self.process(
+                        float(state.state) * self.input_convert[from_unit],  # type: ignore
+                        event.time_fired_timestamp,
+                    )
+                    return
                 exception = ValueError(f"Unit '{from_unit}' not supported")
             else:
                 exception = e
@@ -579,7 +583,7 @@ class SignalEnergyProcessor(SignalProcessor[float], EnergyBroadcast):
         self._differential_mode = unit in SignalEnergyProcessor.ENERGY_UNITS
 
     @typing.override
-    def process(self, input: float | None, time_ts: float, /) -> float | None:
+    def process(self, input: float | None, time_ts: float, /):
 
         try:
             d_ts = time_ts - self.time_ts
@@ -597,7 +601,6 @@ class SignalEnergyProcessor(SignalProcessor[float], EnergyBroadcast):
                             energy_listener(energy, time_ts)
                     else:
                         # assume an energy reset or out of range
-                        energy = None
                         if not self.warning_out_of_range_on:
                             self.warning_out_of_range_activate()
                 else:
@@ -615,13 +618,12 @@ class SignalEnergyProcessor(SignalProcessor[float], EnergyBroadcast):
                             self.warning_out_of_range_activate()
 
             else:
-                energy = None
                 if not self.warning_maximum_latency_on:
                     self.warning_maximum_latency_activate()
 
             self.input = input
             self.time_ts = time_ts
-            return energy
+            return
 
         except TypeError as error:
             # This code path 'must' be executed whenever input or self.input are 'None'
@@ -639,7 +641,7 @@ class SignalEnergyProcessor(SignalProcessor[float], EnergyBroadcast):
                     self.warning_no_signal_deactivate()
             self.input = input
             self.time_ts = time_ts
-            return None
+            return
         except AttributeError as error:
             if error.name == "_differential_mode":
                 raise Exception(
@@ -689,9 +691,7 @@ class Estimator(BaseProcessor):
 
     estimation_time_ts: DataAttr[int] = 0
 
-    _SLOTS_ = (
-        "_update_listeners",
-    )
+    _SLOTS_ = ("_update_listeners",)
 
     def __init__(self, id, **kwargs: "Unpack[Args]"):
         super().__init__(id, **kwargs)

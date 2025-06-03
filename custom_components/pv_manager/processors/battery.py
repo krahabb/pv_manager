@@ -1,4 +1,3 @@
-from dataclasses import dataclass
 from datetime import datetime
 from time import time
 import typing
@@ -10,13 +9,14 @@ from . import EnergyBroadcast, SignalEnergyProcessor
 from ..helpers import datetime_from_epoch, validation as hv
 from ..helpers.dataattr import DataAttr, DataAttrParam
 from ..sensor import Sensor
-from .estimator_energy import EnergyBalanceEstimator, SignalEnergyEstimator
+from .estimator_energy import EnergyBalanceEstimator, EnergyEstimator
 
 if typing.TYPE_CHECKING:
     from typing import Callable, Final, NotRequired, Self, Unpack
 
     from homeassistant.core import Event, EventStateChangedData
 
+    from .estimator_energy import SignalEnergyEstimator
     from .. import const as pmc
 
 
@@ -91,7 +91,7 @@ class BatteryProcessor(SignalEnergyProcessor):
                 unit_of_measurement="Ah"
             ),
         } | super().get_config_schema(config)
-        del schema["source_entity_id"] # type: ignore
+        del schema["source_entity_id"]  # type: ignore
         return schema
 
     def __init__(self, id, **kwargs: "Unpack[Args]"):
@@ -109,6 +109,7 @@ class BatteryProcessor(SignalEnergyProcessor):
         # energy and power but we might want a flexible design where we monitor
         # power and current or power and charge. This will need to be investigated (TODO).
         self.configure(SignalEnergyProcessor.Unit.POWER)
+        self.listen_energy(self._process_energy)
         self.charge_processor = SignalEnergyProcessor(
             "charge_processor",
             logger=self,
@@ -116,7 +117,7 @@ class BatteryProcessor(SignalEnergyProcessor):
                 "maximum_latency": self.maximum_latency_ts,
             },
         )
-        self.charge_processor.listen_energy(self._charge_callback)
+        self.charge_processor.listen_energy(self._process_charge)
         self.energy_broadcast_in = EnergyBroadcast(
             BatteryProcessor.SourceType.BATTERY_IN, logger=self
         )
@@ -150,20 +151,28 @@ class BatteryProcessor(SignalEnergyProcessor):
         self.charge_processor.update(time_ts)
         return super().update(time_ts)
 
-    @typing.override
-    def process(self, input: float | None, time_ts: float) -> float | None:
-        energy = SignalEnergyProcessor.process(self, input, time_ts)
-        if energy:
-            if energy > 0:
-                self.energy_out += energy
-                for listener in self.energy_broadcast_out.energy_listeners:
-                    listener(energy, time_ts)
-            else:
-                energy = -energy
-                self.energy_in += energy
-                for listener in self.energy_broadcast_in.energy_listeners:
-                    listener(energy, time_ts)
-        return energy
+    def _process_energy(self, energy: float, time_ts: float):
+        """Energy listener called by SignalEnergyProcessor(self).process when a sample of energy
+        has been calculated."""
+        if energy > 0:
+            self.energy_out += energy
+            for listener in self.energy_broadcast_out.energy_listeners:
+                listener(energy, time_ts)
+        else:
+            energy = -energy
+            self.energy_in += energy
+            for listener in self.energy_broadcast_in.energy_listeners:
+                listener(energy, time_ts)
+
+    def _process_charge(self, charge: float, time_ts: float, /):
+        """Energy listener called by charge_processor.process when a sample of energy
+        has been calculated (the energy reported is actually the charge leaving the battery).
+        """
+        self.charge -= charge
+        if charge > 0:
+            self.charge_out += charge
+        else:
+            self.charge_in -= charge
 
     @callback
     def _current_callback(
@@ -229,30 +238,16 @@ class BatteryProcessor(SignalEnergyProcessor):
                 )
         self.battery_voltage = battery_voltage
 
-    def _charge_callback(self, charge: float, time_ts: float, /):
-        self.charge -= charge
-        if charge > 0:
-            self.charge_out += charge
-        else:
-            self.charge_in -= charge
 
+class BatteryEstimator(EnergyBalanceEstimator, BatteryProcessor):  # type: ignore
 
-class BatteryEstimator(EnergyBalanceEstimator, SignalEnergyEstimator, BatteryProcessor):  # type: ignore
-
-    @dataclass(slots=True, eq=False)
-    class Sample(SignalEnergyEstimator.Sample):
-        energy_in: float
-        energy_out: float
-        charge_in: float
-        charge_out: float
-        production: float
-        consumption: float
-
-        def __init__(self, time_ts: float, estimator: "BatteryEstimator", /):
-            SignalEnergyEstimator.Sample.__init__(self, time_ts, estimator)
-            self.energy_in = self.energy_out = 0
-            self.charge_in = self.charge_out = 0
-            self.production = self.consumption = 0
+    class Sample(EnergyBalanceEstimator.Sample):
+        energy_in: DataAttr[float] = 0
+        energy_out: DataAttr[float] = 0
+        charge_in: DataAttr[float] = 0
+        charge_out: DataAttr[float] = 0
+        production: DataAttr[float] = 0
+        consumption: DataAttr[float] = 0
 
     class Forecast(EnergyBalanceEstimator.Forecast):
 
@@ -281,17 +276,6 @@ class BatteryEstimator(EnergyBalanceEstimator, SignalEnergyEstimator, BatteryPro
             self.losses_min += forecast.losses_min * ratio
             self.losses_max += forecast.losses_max * ratio
 
-    class _FakeEstimator(EnergyBalanceEstimator._FakeEstimator, SignalEnergyEstimator):
-        def _check_sample_curr(self, time_ts: float, /):
-            self._sample_curr.__init__(time_ts, self)
-            return self._sample_curr
-
-        def _process_sample_curr(
-            self, sample_curr: SignalEnergyEstimator.Sample, time_ts: float, /
-        ):
-            sample_curr.__init__(time_ts, self)
-            return sample_curr
-
     if typing.TYPE_CHECKING:
 
         class Config(EnergyBalanceEstimator.Config, BatteryProcessor.Config):
@@ -309,23 +293,14 @@ class BatteryEstimator(EnergyBalanceEstimator, SignalEnergyEstimator, BatteryPro
         _sample_curr: Sample
 
         @typing.override
-        def get_forecast(self, time_begin_ts: int, time_end_ts: int, /) -> Forecast: # type: ignore
+        def get_forecast(self, time_begin_ts: int, time_end_ts: int, /) -> Forecast:  # type: ignore
             pass
 
         @typing.override
-        def _check_sample_curr(self, time_ts: float, /) -> Sample: # type: ignore
+        def _check_sample_curr(self, time_ts: float, /) -> Sample:  # type: ignore
             pass
 
     DEFAULT_NAME = "Battery estimator"
-
-    _FAKE_ESTIMATOR = _FakeEstimator(
-        "",
-        config={
-            "history_duration_days": 0,
-            "observation_duration_minutes": 0,
-            "sampling_interval_minutes": SignalEnergyEstimator.SAMPLING_INTERVAL_MODULO,
-        },
-    )
 
     # losses are computed as: production + battery - consumption
     # where:
@@ -355,15 +330,14 @@ class BatteryEstimator(EnergyBalanceEstimator, SignalEnergyEstimator, BatteryPro
     charging_efficiency_total: DataAttr[float, DataAttrParam.stored] = 1
 
     _SLOTS_ = (
-        "_production_callback_unsub",
-        "_consumption_callback_unsub",
+        "_production_broadcast_unsub",
+        "_consumption_broadcast_unsub",
     )
 
     def __init__(self, id, **kwargs: "Unpack[Args]"):
         super().__init__(id, **kwargs)
-        # TODO : slots (not now since they're used for state serialization)
-        self._production_callback_unsub = None
-        self._consumption_callback_unsub = None
+        self._production_broadcast_unsub = None
+        self._consumption_broadcast_unsub = None
 
     # interface: EnergyBalanceEstimator
     @typing.override
@@ -382,47 +356,24 @@ class BatteryEstimator(EnergyBalanceEstimator, SignalEnergyEstimator, BatteryPro
         # since most of its state is initialized in async_init and that's actually called
         # after restoring (we have to think about this. TODO)
         # BEWARE: ensure the battery estimator is started after the production/consumption
-        production_estimator = self.production_estimator
-        consumption_estimator = self.consumption_estimator
-        """REMOVE
-        self.today_energy = consumption_estimator.today_energy
-        if self.conversion_yield_avg:
-            self.today_energy /= self.conversion_yield_avg
-        self.today_energy -= production_estimator.today_energy
-        """
-        self._production_callback_unsub = production_estimator.listen_energy(
-            self._production_callback
+        self._production_broadcast_unsub = self.production_estimator.listen_energy(
+            self._process_production
         )
-        self._consumption_callback_unsub = consumption_estimator.listen_energy(
-            self._consumption_callback
+        self._consumption_broadcast_unsub = self.consumption_estimator.listen_energy(
+            self._process_consumption
         )
 
     def shutdown(self):
-        if self._production_callback_unsub:
-            self._production_callback_unsub()
-            self._production_callback_unsub = None
-        if self._consumption_callback_unsub:
-            self._consumption_callback_unsub()
-            self._consumption_callback_unsub = None
+        if self._production_broadcast_unsub:
+            self._production_broadcast_unsub()
+            self._production_broadcast_unsub = None
+        if self._consumption_broadcast_unsub:
+            self._consumption_broadcast_unsub()
+            self._consumption_broadcast_unsub = None
         super().shutdown()
 
-    @typing.override
-    def process(self, input: float | None, time_ts: float) -> float | None:
-        sample_curr = self._check_sample_curr(time_ts)
-        energy = SignalEnergyProcessor.process(self, input, time_ts)
-        if energy is not None:
-            # don't accumulate energy in sample_curr..it'll be computed then
-            sample_curr.samples += 1
-            if energy > 0:
-                sample_curr.energy_out += energy
-                for listener in self.energy_broadcast_out.energy_listeners:
-                    listener(energy, time_ts)
-            else:
-                energy = -energy
-                sample_curr.energy_in += energy
-                for listener in self.energy_broadcast_in.energy_listeners:
-                    listener(energy, time_ts)
-        return energy
+    # interface: EnergyEstimator
+    update_estimate = EnergyEstimator.update_estimate
 
     @typing.override
     def _process_sample_curr(self, sample_curr: Sample, time_ts: float, /):
@@ -505,7 +456,7 @@ class BatteryEstimator(EnergyBalanceEstimator, SignalEnergyEstimator, BatteryPro
             # trigger a reset since previous sample did not collect any data
             time_end_curr_ts = 0
 
-        # since we're discarding the old sample we try this hack
+        # since we're not storing the old sample we'll try this hack to recycle
         sample_curr.__init__(time_ts, self)
         if time_end_curr_ts != sample_curr.time_begin_ts:
             # when samples are not consecutive
@@ -517,11 +468,6 @@ class BatteryEstimator(EnergyBalanceEstimator, SignalEnergyEstimator, BatteryPro
         self.update_estimate()
 
         return sample_curr
-
-    @typing.override
-    def update_estimate(self):
-        # bypass EnergyBalanceEstimator raw estimate
-        SignalEnergyEstimator.update_estimate(self)
 
     @typing.override
     def _ensure_forecasts(self, count: int, /):
@@ -582,19 +528,33 @@ class BatteryEstimator(EnergyBalanceEstimator, SignalEnergyEstimator, BatteryPro
 
     # interface: BatteryProcessor
     @typing.override
-    def _charge_callback(self, charge: float, time_ts: float, /):
-        # No need to call self._check_sample_curr
-        # since process has been surely called in the same context
-        if charge > 0:
-            self._sample_curr.charge_out += charge
+    def _process_energy(self, energy: float, time_ts: float):
+        sample_curr = self._check_sample_curr(time_ts)
+        # don't accumulate energy in sample_curr..it'll be computed then
+        sample_curr.samples += 1
+        if energy > 0:
+            sample_curr.energy_out += energy
+            for listener in self.energy_broadcast_out.energy_listeners:
+                listener(energy, time_ts)
         else:
-            self._sample_curr.charge_in -= charge
+            energy = -energy
+            sample_curr.energy_in += energy
+            for listener in self.energy_broadcast_in.energy_listeners:
+                listener(energy, time_ts)
+
+    @typing.override
+    def _process_charge(self, charge: float, time_ts: float, /):
+        sample_curr = self._check_sample_curr(time_ts)
+        if charge > 0:
+            sample_curr.charge_out += charge
+        else:
+            sample_curr.charge_in -= charge
 
     # interface: self
-    def _production_callback(self, energy: float, time_ts: float):
+    def _process_production(self, energy: float, time_ts: float):
         sample_curr = self._check_sample_curr(time_ts)
         sample_curr.production += energy
 
-    def _consumption_callback(self, energy: float, time_ts: float):
+    def _process_consumption(self, energy: float, time_ts: float):
         sample_curr = self._check_sample_curr(time_ts)
         sample_curr.consumption += energy

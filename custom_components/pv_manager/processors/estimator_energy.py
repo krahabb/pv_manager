@@ -4,9 +4,7 @@ Base estimator model common to all types of estimators
 
 import abc
 from collections import deque
-from dataclasses import dataclass
 from datetime import datetime
-from itertools import chain
 from time import time
 import typing
 
@@ -26,8 +24,36 @@ if typing.TYPE_CHECKING:
     from datetime import tzinfo
     from typing import ClassVar, Final, Iterable, NotRequired, Self, Unpack
 
+    from homeassistant.core import State
+
 
 class EnergyEstimator(Estimator):
+    """
+    Base class for all (energy) estimators.
+    """
+
+    class Sample(DataAttrClass):
+        time: DataAttr["datetime"]
+        """The sample time start"""
+        time_begin_ts: DataAttr[int]
+        time_end_ts: DataAttr[int]
+        energy: DataAttr[float] = 0
+        """The effective accumulated energy considering interpolation at the (time) limits"""
+        samples: DataAttr[int] = 0
+        """Number of samples in the time window (could be seen as a quality indicator of sampling)"""
+
+        def __init__(self, time_ts: float, estimator: "EnergyEstimator", /):
+            DataAttrClass.__init__(self)
+            time_ts = int(time_ts)
+            time_ts -= time_ts % estimator.sampling_interval_ts
+            estimator.estimation_time_ts = time_ts
+            # expecting time_ts going forward or backward
+            if not (estimator.today_ts <= time_ts < estimator.tomorrow_ts):
+                # new day
+                estimator._observed_energy_daystart(time_ts)
+            self.time = datetime_from_epoch(time_ts)
+            self.time_begin_ts = time_ts
+            self.time_end_ts = time_ts + estimator.sampling_interval_ts
 
     class Forecast(DataAttrClass):
         """Cached forecast sample calculated once per 'update_estimate'.
@@ -80,7 +106,9 @@ class EnergyEstimator(Estimator):
         tz: Final[tzinfo]
         forecasts: Final[list[Forecast]]
         _forecasts_recycle: Final[list[Forecast]]
+        _sample_curr: Sample
 
+    DEFAULT_NAME = "Energy estimator"
     SAMPLING_INTERVAL_MODULO = 300  # 5 minutes
     OPS_DECAY = 0.9
     """Decay factor for the average number of observations per sample."""
@@ -98,6 +126,8 @@ class EnergyEstimator(Estimator):
         "tzinfo",
         "forecasts",
         "_forecasts_recycle",
+        "_sample_curr",
+        "_sampling_interval_unsub",
     )
 
     @classmethod
@@ -124,6 +154,20 @@ class EnergyEstimator(Estimator):
         self.tz = dt_util.get_default_time_zone()
         self.forecasts = []
         self._forecasts_recycle = []
+        self._sample_curr = self.__class__.Sample(time(), self)
+        self._sampling_interval_unsub = None
+
+    async def async_start(self):
+        await super().async_start()
+        # triggers the sampling callback
+        self._sampling_interval_callback()
+
+    @typing.override
+    def shutdown(self):
+        if self._sampling_interval_unsub:
+            self._sampling_interval_unsub.cancel()
+            self._sampling_interval_unsub = None
+        super().shutdown()
 
     @typing.override
     def as_diagnostic_dict(self):
@@ -140,17 +184,17 @@ class EnergyEstimator(Estimator):
             ).as_formatted_dict(self.tz),
         } | super().as_state_dict()
 
+    def _process_energy(self, energy: float, time_ts: float):
+        sample_curr = self._check_sample_curr(time_ts)
+        sample_curr.energy += energy
+        sample_curr.samples += 1
+
     @typing.override
     def update_estimate(self):
         self._forecasts_recycle.extend(self.forecasts)
         self.forecasts.clear()
         for listener in self._update_listeners:
             listener(self)
-
-    @abc.abstractmethod
-    def _ensure_forecasts(self, count: int, /):
-        """Build the forecasts cache up to count elements. This must be overriden with
-        the proper implementation depending on the model."""
 
     def get_forecast(self, time_begin_ts: int, time_end_ts: int, /) -> Forecast:
         s_i_ts = self.sampling_interval_ts
@@ -218,73 +262,22 @@ class EnergyEstimator(Estimator):
 
         return energy
 
-    def get_estimated_energy_max(self, time_begin_ts: int, time_end_ts: int, /):
-        """
-        Returns the estimated maximum energy (the 'capacity' of the plant) in the (forward) time
-        interval at current estimator state.
-        """
-        s_i_ts = self.sampling_interval_ts
-        e_t_ts = self.estimation_time_ts
-        forecasts = self.forecasts
-
-        index = (time_begin_ts - e_t_ts) // s_i_ts
-        index_end = (time_end_ts - e_t_ts) // s_i_ts
-        assert 0 <= index <= index_end
-
-        # ensure the forecasts are up to time_end_ts
-        try:
-            f_end = forecasts[index_end]
-        except IndexError:
-            # on demand build
-            self._ensure_forecasts(index_end + 1)
-            f_end = forecasts[index_end]
-
-        if index == index_end:
-            return f_end.energy_max * (time_end_ts - time_begin_ts) / s_i_ts
-
-        f_i = forecasts[index]
-        energy = f_i.energy_max * (f_i.time_end_ts - time_begin_ts) / s_i_ts
-
-        for index in range(index + 1, index_end):
-            energy += forecasts[index].energy_max
-
-        energy += f_end.energy_max * (time_end_ts - f_end.time_begin_ts) / s_i_ts
-
-        return energy
-
-    def get_estimated_energy_min(self, time_begin_ts: int, time_end_ts: int, /):
-        """
-        Returns the estimated minimum energy in the (forward) time
-        interval at current estimator state.
-        """
-        s_i_ts = self.sampling_interval_ts
-        e_t_ts = self.estimation_time_ts
-        forecasts = self.forecasts
-
-        index = (time_begin_ts - e_t_ts) // s_i_ts
-        index_end = (time_end_ts - e_t_ts) // s_i_ts
-        assert 0 <= index <= index_end
-
-        # ensure the forecasts are up to time_end_ts
-        try:
-            f_end = forecasts[index_end]
-        except IndexError:
-            # on demand build
-            self._ensure_forecasts(index_end + 1)
-            f_end = forecasts[index_end]
-
-        if index == index_end:
-            return f_end.energy_min * (time_end_ts - time_begin_ts) / s_i_ts
-
-        f_i = forecasts[index]
-        energy = f_i.energy_min * (f_i.time_end_ts - time_begin_ts) / s_i_ts
-
-        for index in range(index + 1, index_end):
-            energy += forecasts[index].energy_min
-
-        energy += f_end.energy_min * (time_end_ts - f_end.time_begin_ts) / s_i_ts
-
-        return energy
+    @callback
+    def _sampling_interval_callback(self):
+        """Use this callback to flush/store samples or so and update estimates."""
+        time_ts = time()
+        time_curr = self._sample_curr.time_end_ts
+        time_next = self._check_sample_curr(time_ts).time_end_ts
+        self._sampling_interval_unsub = Manager.schedule(
+            time_next - time_ts, self._sampling_interval_callback
+        )
+        if self.isEnabledFor(self.DEBUG):
+            self.log(
+                self.DEBUG,
+                "sampling: curr= '%s' next= '%s'",
+                datetime_from_epoch(time_curr),
+                datetime_from_epoch(time_next),
+            )
 
     def _observed_energy_daystart(self, time_ts: int, /):
         """Called when starting a new day in observations."""
@@ -293,42 +286,46 @@ class EnergyEstimator(Estimator):
         self.tomorrow_ts = ds.tomorrow_ts
         self.today_energy = 0
 
+    def _check_sample_curr(self, time_ts: float, /) -> Sample:
+        """This is called either by _sampling_interval_callback or by the signal processing pipe before
+        updating current sample statistics. Checks if sample_curr is finished and eventually
+        calls _process_sample_curr processing (send to history/update model)."""
+        sample_curr = self._sample_curr
+        if sample_curr.time_begin_ts <= time_ts < sample_curr.time_end_ts:
+            return sample_curr
+        else:
+            # TODO: this could be the right point to call for interpolation till
+            # the end of the current sample by calling self.update(sample_curr.time_end_ts - 0.001)
+            # we must be careful about re-entrance though since this is likely to be called
+            # in the self.process pipe
+            return self._process_sample_curr(sample_curr, time_ts)
+
+    def _process_sample_curr(self, sample_curr: Sample, time_ts: float, /) -> Sample:
+        """Called when data collection (in Sample) over sampling_period ends. After 'consuming'
+        the data this should return a fresh sample for the new time window."""
+        sample_curr.__init__(
+            time_ts, self
+        )  # stub implementation: recycle current Sample
+        return sample_curr
+
+    @abc.abstractmethod
+    def _ensure_forecasts(self, count: int, /):
+        """Build the forecasts cache up to count elements. This must be overriden with
+        the proper implementation depending on the model."""
+
 
 class SignalEnergyEstimator(EnergyEstimator, SignalEnergyProcessor):
     """
-    Base class for all (energy) estimators.
+    SampledEnergyEstimator joined to a SignalEnergyProcessor as the source of sampled energy.
     """
-
-    @dataclass(slots=True, eq=False)
-    class Sample:
-        time: "Final[datetime]"
-        """The sample time start"""
-
-        time_begin_ts: "Final[int]"
-        time_end_ts: "Final[int]"
-
-        energy: float
-        """The effective accumulated energy considering interpolation at the (time) limits"""
-        samples: int
-        """Number of samples in the time window (could be seen as a quality indicator of sampling)"""
-
-        def __init__(self, time_ts: float, estimator: "SignalEnergyEstimator", /):
-            time_ts = int(time_ts)
-            time_ts -= time_ts % estimator.sampling_interval_ts
-            estimator.estimation_time_ts = time_ts
-            if time_ts >= estimator.tomorrow_ts:
-                # new day
-                estimator._observed_energy_daystart(time_ts)
-            self.time = datetime_from_epoch(time_ts)
-            self.time_begin_ts = time_ts
-            self.time_end_ts = time_ts + estimator.sampling_interval_ts
-            self.energy = 0
-            self.samples = 0
 
     if typing.TYPE_CHECKING:
 
+        class Sample(EnergyEstimator.Sample):
+            pass
+
         class Config(EnergyEstimator.Config, SignalEnergyProcessor.Config):
-            observation_duration_minutes: int  # minutes
+            observation_duration_minutes: int
             """The time window for calculating current energy production from incoming energy observation."""
             history_duration_days: int
             """Number of (backward) days of data to keep in the model (used to build the estimates for the time forward)."""
@@ -339,9 +336,6 @@ class SignalEnergyEstimator(EnergyEstimator, SignalEnergyProcessor):
         config: Config
         source_entity_id: str
         observed_samples: Final[deque[Sample]]
-        _sample_curr: Sample
-
-    DEFAULT_NAME = "Energy estimator"
 
     _SLOTS_ = (
         # configuration
@@ -349,17 +343,15 @@ class SignalEnergyEstimator(EnergyEstimator, SignalEnergyProcessor):
         "observation_duration_ts",
         # state
         "observed_samples",
-        "_sample_curr",
         "_restore_history_exit",
-        "_sampling_interval_unsub",
     )
 
     @classmethod
     @typing.override
     def get_config_schema(cls, config: "Config | None") -> pmc.ConfigSchema:
         _config = config or {
-                "observation_duration_minutes": 20,
-                "history_duration_days": 7,
+            "observation_duration_minutes": 20,
+            "history_duration_days": 7,
         }
         return super().get_config_schema(config) | {
             hv.req_config(
@@ -384,33 +376,25 @@ class SignalEnergyEstimator(EnergyEstimator, SignalEnergyProcessor):
             config.get("observation_duration_minutes", 20) * 60
         )
         self.observed_samples = deque()
-        self._sampling_interval_unsub = None
 
     @typing.override
     async def async_start(self):
         if self.history_duration_ts and self.source_entity_id:
             self._restore_history_exit = False
             history_begin_ts = time() - self.history_duration_ts
-            self._sample_curr = self.__class__.Sample(history_begin_ts, self)
+            self._sample_curr.__init__(history_begin_ts, self)
             await recorder_instance(Manager.hass).async_add_executor_job(
                 self._restore_history,
                 datetime_from_epoch(history_begin_ts),
             )
-        else:
-            self._sample_curr = self.__class__.Sample(time(), self)
-
+        self.listen_energy(self._process_energy)
         self.update_estimate()
         await super().async_start()
-        # triggers the sampling callback
-        self._sampling_interval_callback()
 
     @typing.override
     def shutdown(self):
         self._restore_history_exit = True
-        if self._sampling_interval_unsub:
-            self._sampling_interval_unsub.cancel()
-            self._sampling_interval_unsub = None
-        return super().shutdown()
+        super().shutdown()
 
     @typing.override
     def as_diagnostic_dict(self):
@@ -418,23 +402,6 @@ class SignalEnergyEstimator(EnergyEstimator, SignalEnergyProcessor):
             "observation_duration_minutes": self.observation_duration_ts / 60,
             "history_duration_days": self.history_duration_ts / 86400,
         }
-
-    @typing.override
-    def process(self, input: float | None, time_ts: float) -> float | None:
-        """
-        Add a new Observation to the model. Observations are collected to build an Observation window
-        to get an average of recent observations used for 'recent time' auto-regressive estimation.
-        When an ObservedSample exits the observation window it is added to the history to update the model.
-        For simplicity and performance reasons observations are required to be either [J] for energy or
-        [W] for power.
-        This method returns the 'energy' accumulation of the last observed sample
-        """
-        sample_curr = self._check_sample_curr(time_ts)
-        energy = SignalEnergyProcessor.process(self, input, time_ts)
-        if energy is not None:
-            sample_curr.energy += energy
-            sample_curr.samples += 1
-        return energy
 
     @typing.override
     def disconnect(self, time_ts):
@@ -458,28 +425,15 @@ class SignalEnergyEstimator(EnergyEstimator, SignalEnergyProcessor):
             # no observations though
             return (0, 0, 0)
 
-    def _observed_energy_history_add(self, sample: Sample):
+    def _observed_energy_history_add(self, sample: "Sample"):
         """Called when a sample exits the observation window and enters history.
         This should be overriden when an inherited energy estimator wants to store energy data (history)
         for it's model."""
         pass
 
-    def _check_sample_curr(self, time_ts: float, /) -> Sample:
-        """This is called either by _sampling_interval_callback or by the signal processing pipe before
-        updating current sample statistics.
-        Checks if sample_curr is finished and eventually calls for
-        processing (send to history/update model)."""
-        sample_curr = self._sample_curr
-        if sample_curr.time_begin_ts <= time_ts < sample_curr.time_end_ts:
-            return sample_curr
-        else:
-            # TODO: this could be the right point to call for interpolation till
-            # the end of the current sample by calling self.update(sample_curr.time_end_ts - 0.001)
-            # we must be careful about re-entrance though since this is likely to be called
-            # in the self.process pipe
-            return self._process_sample_curr(sample_curr, time_ts)
-
-    def _process_sample_curr(self, sample_curr: Sample, time_ts: float, /) -> Sample:
+    def _process_sample_curr(
+        self, sample_curr: "Sample", time_ts: float, /
+    ) -> "Sample":
         """Use this callback to flush/store samples or so and update estimates.
         This will also return the newly created sample_curr in sync with time_ts."""
         self.observed_samples.append(sample_curr)
@@ -496,7 +450,7 @@ class SignalEnergyEstimator(EnergyEstimator, SignalEnergyProcessor):
             time_end_curr_ts = 0
 
         self._sample_curr = sample_next = self.__class__.Sample(time_ts, self)
-        if time_end_curr_ts != sample_curr.time_begin_ts:
+        if time_end_curr_ts != sample_next.time_begin_ts:
             # when samples are not consecutive
             self.reset()
 
@@ -522,63 +476,68 @@ class SignalEnergyEstimator(EnergyEstimator, SignalEnergyProcessor):
 
         return sample_next
 
-    @callback
-    def _sampling_interval_callback(self):
-        """Use this callback to flush/store samples or so and update estimates."""
-        time_ts = time()
-        time_curr = self._sample_curr.time_end_ts
-        time_next = self._check_sample_curr(time_ts).time_end_ts
-        self._sampling_interval_unsub = Manager.schedule(
-            time_next - time_ts, self._sampling_interval_callback
-        )
-        if self.isEnabledFor(self.DEBUG):
-            self.log(
-                self.DEBUG,
-                "sampling: curr= '%s' next= '%s'",
-                datetime_from_epoch(time_curr),
-                datetime_from_epoch(time_next),
-            )
-
     def _restore_history(self, history_start_time: datetime):
-        """This runs in an executor."""
+        """This code runs in an executor before we start the processor listening for entity updates.
+        We're avoiding using the process api because it takes care of dispatching energy and
+        warning callbacks and, even though no listeners should be registered before start this is
+        very fragile and we also want to optimize the code a bit without unneded (and potentially
+        dangerous) code paths."""
+
         if self._restore_history_exit:
-            return
-
-        source_entity_states = history.state_changes_during_period(
-            Manager.hass,
-            history_start_time,
-            None,
-            self.source_entity_id,
-            no_attributes=False,
-        )
-
-        if not source_entity_states:
-            self.log(
-                self.WARNING,
-                "Loading history for entity '%s' did not return any data. Is the entity correct?",
-                self.source_entity_id,
-            )
             return
 
         restore_start_ts = time()
 
-        # build once and reuse
-        event = EnergyEstimator.Event(None, 0)
-        for state in source_entity_states[self.source_entity_id]:
-            if self._restore_history_exit:
-                return
-            event.time_fired_timestamp = state.last_updated_timestamp
-            event.data["new_state"] = state
-            self.source_entity_update(event)
-
-        if self.isEnabledFor(self.DEBUG):
-            self.log(
-                self.DEBUG,
-                "Restored history for entity '%s' in %s sec (states = %d)",
+        try:
+            source_entity_states = history.state_changes_during_period(
+                Manager.hass,
+                history_start_time,
+                None,
                 self.source_entity_id,
-                round(time() - restore_start_ts, 2),
-                len(source_entity_states[self.source_entity_id]),
+                no_attributes=False,
             )
+            source_entity_states = source_entity_states[self.source_entity_id]
+            um = source_entity_states[0].attributes["unit_of_measurement"]
+            unit = SignalEnergyProcessor.Unit.from_um(um)
+            if unit:
+                self.configure(unit)
+            else:
+                raise ValueError(f"Unit '{um}' not supported")
+
+            for state in source_entity_states:
+                if self._restore_history_exit:
+                    return
+                self._source_history_process(state)
+
+            if self.isEnabledFor(self.DEBUG):
+                self.log(
+                    self.DEBUG,
+                    "Restored history for entity '%s' in %s sec (states = %d)",
+                    self.source_entity_id,
+                    round(time() - restore_start_ts, 2),
+                    len(source_entity_states),
+                )
+        except KeyError as e:
+            if str(e) == self.source_entity_id:
+                self.log(
+                    self.WARNING,
+                    "Loading history for entity '%s' did not return any data. Is the entity correct?",
+                    self.source_entity_id,
+                )
+                return
+            self.log_exception(self.WARNING, e, "_restore_history")
+        except IndexError:
+            self.log(
+                self.WARNING,
+                "Entity '%s' has no history data.",
+                self.source_entity_id,
+            )
+            return
+        except Exception as e:
+            self.log_exception(self.WARNING, e, "_restore_history")
+
+        # take care of this else self.process would fail to detect the transition
+        self.warning_no_signal_on = True if self.input is None else False
 
         if pmc.DEBUG:
             filepath = pmc.DEBUG.get_debug_output_filename(
@@ -586,6 +545,52 @@ class SignalEnergyEstimator(EnergyEstimator, SignalEnergyProcessor):
                 f"model_{self.source_entity_id}_{self.__class__.__name__.lower()}.json",
             )
             save_json(filepath, self.as_diagnostic_dict())
+
+    def _source_history_process(self, state: "State", /):
+        """Fast path for processing source entity history. This is a partial replication of code in
+        SignalEnergyProcessor.process without some checks and the callbacks."""
+        time_ts = state.last_updated_timestamp
+        try:
+            input = (
+                float(state.state)
+                * self.input_convert[state.attributes["unit_of_measurement"]]
+            )
+            d_ts = time_ts - self.time_ts
+            if 0 <= d_ts < self.maximum_latency_ts:
+                if self._differential_mode:
+                    energy = input - self.input  # type: ignore
+                    if self.energy_min <= energy / d_ts <= self.energy_max:
+                        self._process_energy(energy, time_ts)
+                else:
+                    if not (self.input_min <= input <= self.input_max):
+                        # discard the out of range observation
+                        input = None
+                    # power left rect integration
+                    self._process_energy(self.input * d_ts / 3600, time_ts)  # type: ignore
+
+            self.input = input
+            self.time_ts = time_ts
+            return
+        except TypeError as error:
+            # This code path 'must' be executed whenever input or self.input are 'None'
+            # See SignalEnergyProcessor.process. In this context we're skipping warnings
+            self.input = input
+            self.time_ts = time_ts
+            return
+        except Exception as e:
+            # Non-float states will raise ValueError but we catch everything here assuming the conversion
+            # could not be done. This is expected and silently managed when state 'unknown' or 'unavailable'
+            self.input = None
+            self.time_ts = time_ts
+            if state.state not in (hac.STATE_UNKNOWN, hac.STATE_UNAVAILABLE):
+                self.log_exception(
+                    self.WARNING,
+                    e,
+                    "source_entity_update (state:%s)",
+                    state,
+                    timeout=300,
+                )
+            return
 
 
 class EnergyBalanceEstimator(EnergyEstimator):
@@ -631,9 +636,6 @@ class EnergyBalanceEstimator(EnergyEstimator):
 
         _empty_forecast = EnergyEstimator.Forecast(0, 0)
 
-        def _ensure_forecasts(self, count: int, /):
-            pass
-
         def get_forecast(self, time_begin_ts: int, time_end_ts: int, /):
             self._empty_forecast.__init__(time_begin_ts, time_end_ts)
             return self._empty_forecast
@@ -641,11 +643,12 @@ class EnergyBalanceEstimator(EnergyEstimator):
         def get_estimated_energy(self, time_begin_ts: int, time_end_ts: int, /):
             return 0
 
-        def get_estimated_energy_max(self, time_begin_ts: int, time_end_ts: int, /):
-            return 0
+        def _check_sample_curr(self, time_ts: float, /):
+            self._sample_curr.__init__(time_ts, self)
+            return self._sample_curr
 
-        def get_estimated_energy_min(self, time_begin_ts: int, time_end_ts: int, /):
-            return 0
+        def _ensure_forecasts(self, count: int, /):
+            pass
 
     if typing.TYPE_CHECKING:
 

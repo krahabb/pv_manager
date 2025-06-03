@@ -53,7 +53,6 @@ class WeatherSample:
     @staticmethod
     def from_state(weather_state: "State"):
         attributes = weather_state.attributes
-
         condition = weather_state.state
         if "cloud_coverage" in attributes:
             cloud_coverage = attributes["cloud_coverage"] / 100
@@ -70,8 +69,6 @@ class WeatherSample:
     @staticmethod
     def from_forecast(forecast: dict):
         time = dt_util.as_utc(dt_util.parse_datetime(forecast["datetime"]))  # type: ignore
-        time_ts = time.timestamp()
-
         condition = forecast.get("condition")
         if "cloud_coverage" in forecast:
             cloud_coverage = forecast["cloud_coverage"] / 100
@@ -80,7 +77,7 @@ class WeatherSample:
 
         return WeatherSample(
             time=time,
-            time_ts=time_ts,
+            time_ts=time.timestamp(),
             condition=condition,
             cloud_coverage=cloud_coverage,
         )
@@ -222,26 +219,23 @@ class PVEnergyEstimator(SignalEnergyEstimator):
     At the time, lacking any real specialization, the generalization of this class is pretty basic and likely unstable.
     """
 
-    @dataclass(slots=True, eq=False)
     class Sample(SignalEnergyEstimator.Sample):
         """PV energy/power history data extraction. This sample is used to build energy production
         in a time window (1 hour by design) by querying either a PV power sensor or a PV energy sensor.
         Building from PV power should be preferrable due to the 'failable' nature of energy accumulation.
         """
 
-        weather: WeatherSample | None
-
-        sun_azimuth: float
-        """Position of the sun (at mid sample interval)"""
-        sun_zenith: float
-        """Position of the sun (at mid sample interval)"""
-
         SUN_NOT_SET = -360
+
+        weather: DataAttr[WeatherSample | None]
+        sun_azimuth: DataAttr[float] = SUN_NOT_SET
+        """Position of the sun (at mid sample interval)"""
+        sun_zenith: DataAttr[float] = SUN_NOT_SET
+        """Position of the sun (at mid sample interval)"""
 
         def __init__(self, time_ts: float, estimator: "PVEnergyEstimator", /):
             SignalEnergyEstimator.Sample.__init__(self, time_ts, estimator)
             self.weather = estimator.get_weather_at(time_ts)
-            self.sun_azimuth = self.sun_zenith = self.SUN_NOT_SET
 
     class Forecast(SignalEnergyEstimator.Forecast):
 
