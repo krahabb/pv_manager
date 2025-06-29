@@ -314,27 +314,22 @@ class EnergyEstimator(Estimator):
         the proper implementation depending on the model."""
 
 
-class SignalEnergyEstimator(EnergyEstimator, SignalEnergyProcessor):
-    """
-    SampledEnergyEstimator joined to a SignalEnergyProcessor as the source of sampled energy.
-    """
+class EnergyObserverEstimator(EnergyEstimator):
 
     if typing.TYPE_CHECKING:
-
         class Sample(EnergyEstimator.Sample):
             pass
 
-        class Config(EnergyEstimator.Config, SignalEnergyProcessor.Config):
+        class Config(EnergyEstimator.Config):
             observation_duration_minutes: int
             """The time window for calculating current energy production from incoming energy observation."""
             history_duration_days: int
             """Number of (backward) days of data to keep in the model (used to build the estimates for the time forward)."""
 
-        class Args(EnergyEstimator.Args, SignalEnergyProcessor.Args):
-            config: "SignalEnergyEstimator.Config"
+        class Args(EnergyEstimator.Args):
+            config: "EnergyObserverEstimator.Config"
 
         config: Config
-        source_entity_id: str
         observed_samples: Final[deque[Sample]]
 
     _SLOTS_ = (
@@ -343,7 +338,6 @@ class SignalEnergyEstimator(EnergyEstimator, SignalEnergyProcessor):
         "observation_duration_ts",
         # state
         "observed_samples",
-        "_restore_history_exit",
     )
 
     @classmethod
@@ -378,59 +372,13 @@ class SignalEnergyEstimator(EnergyEstimator, SignalEnergyProcessor):
         self.observed_samples = deque()
 
     @typing.override
-    async def async_start(self):
-        if self.history_duration_ts and self.source_entity_id:
-            self._restore_history_exit = False
-            history_begin_ts = time() - self.history_duration_ts
-            self._sample_curr.__init__(history_begin_ts, self)
-            await recorder_instance(Manager.hass).async_add_executor_job(
-                self._restore_history,
-                datetime_from_epoch(history_begin_ts),
-            )
-        self.listen_energy(self._process_energy)
-        self.update_estimate()
-        await super().async_start()
-
-    @typing.override
-    def shutdown(self):
-        self._restore_history_exit = True
-        super().shutdown()
-
-    @typing.override
     def as_diagnostic_dict(self):
         return super().as_diagnostic_dict() | {
             "observation_duration_minutes": self.observation_duration_ts / 60,
             "history_duration_days": self.history_duration_ts / 86400,
         }
 
-    @typing.override
-    def disconnect(self, time_ts):
-        super().disconnect(time_ts)
-        self._check_sample_curr(time_ts)
-
-    def get_observed_energy(self) -> tuple[float, float, float]:
-        """compute the energy stored in the 'observations'.
-        Returns: (energy, observation_begin_ts, observation_end_ts)"""
-        try:
-            observed_energy = 0
-            for sample in self.observed_samples:
-                observed_energy += sample.energy
-
-            return (
-                observed_energy,
-                self.observed_samples[0].time_begin_ts,
-                self.observed_samples[-1].time_end_ts,
-            )
-        except IndexError:
-            # no observations though
-            return (0, 0, 0)
-
-    def _observed_energy_history_add(self, sample: "Sample"):
-        """Called when a sample exits the observation window and enters history.
-        This should be overriden when an inherited energy estimator wants to store energy data (history)
-        for it's model."""
-        pass
-
+    # interface: EnergyEstimator
     def _process_sample_curr(
         self, sample_curr: "Sample", time_ts: float, /
     ) -> "Sample":
@@ -452,7 +400,7 @@ class SignalEnergyEstimator(EnergyEstimator, SignalEnergyProcessor):
         self._sample_curr = sample_next = self.__class__.Sample(time_ts, self)
         if time_end_curr_ts != sample_next.time_begin_ts:
             # when samples are not consecutive
-            self.reset()
+            self._reset_energy_accumulation()
 
         try:
             observation_min_ts = self.estimation_time_ts - self.observation_duration_ts
@@ -476,6 +424,94 @@ class SignalEnergyEstimator(EnergyEstimator, SignalEnergyProcessor):
 
         return sample_next
 
+    # interface: self
+    def get_observed_energy(self) -> tuple[float, float, float]:
+        """compute the energy stored in the 'observations'.
+        Returns: (energy, observation_begin_ts, observation_end_ts)"""
+        try:
+            observed_energy = 0
+            for sample in self.observed_samples:
+                observed_energy += sample.energy
+
+            return (
+                observed_energy,
+                self.observed_samples[0].time_begin_ts,
+                self.observed_samples[-1].time_end_ts,
+            )
+        except IndexError:
+            # no observations though
+            return (0, 0, 0)
+
+    def _observed_energy_history_add(self, sample: "Sample"):
+        """Called when a sample exits the observation window and enters history.
+        This should be overriden when an inherited energy estimator wants to store energy data (history)
+        for it's model."""
+        pass
+
+    def _reset_energy_accumulation(self):
+        """Called when a new Sample entering the pipe is not time-consecutive with the previous.
+        This is a signal we have to eventually reset energy accumulation in the source processing
+        machinery. (See SignalEnergyEstimator for an example)"""
+        pass
+
+    def _restore_history(self, history_start_time: datetime):
+        pass
+
+class SignalEnergyEstimator(EnergyObserverEstimator, SignalEnergyProcessor):
+    """
+    EnergyObserverEstimator joined to a SignalEnergyProcessor as the source of sampled energy.
+    """
+
+    if typing.TYPE_CHECKING:
+
+        class Sample(EnergyObserverEstimator.Sample):
+            pass
+
+        class Config(EnergyObserverEstimator.Config, SignalEnergyProcessor.Config):
+            pass
+
+        class Args(EnergyObserverEstimator.Args, SignalEnergyProcessor.Args):
+            config: "SignalEnergyEstimator.Config"
+
+        config: Config
+        source_entity_id: str
+
+    _SLOTS_ = (
+        "_restore_history_exit", # TODO: use task cancellation to terminate history processing
+    )
+
+    @typing.override
+    async def async_start(self):
+        if self.history_duration_ts and self.source_entity_id:
+            self._restore_history_exit = False
+            history_begin_ts = time() - self.history_duration_ts
+            self._sample_curr.__init__(history_begin_ts, self)
+            await recorder_instance(Manager.hass).async_add_executor_job(
+                self._restore_history,
+                datetime_from_epoch(history_begin_ts),
+            )
+        self.listen_energy(self._process_energy)
+        self.update_estimate()
+        await super().async_start()
+
+    @typing.override
+    def shutdown(self):
+        self._restore_history_exit = True
+        super().shutdown()
+
+    @typing.override
+    def disconnect(self, time_ts):
+        super().disconnect(time_ts)
+        self._check_sample_curr(time_ts)
+
+    # interface: EnergyObserverEstimator
+    def _reset_energy_accumulation(self):
+        """Called when a new Sample entering the pipe is not time-consecutive with the previous.
+        This is a signal we have to eventually reset energy accumulation in the source processing
+        machinery. (See SignalEnergyEstimator for an example)"""
+        self.reset()
+
+    # interface: self
     def _restore_history(self, history_start_time: datetime):
         """This code runs in an executor before we start the processor listening for entity updates.
         We're avoiding using the process api because it takes care of dispatching energy and

@@ -2,7 +2,7 @@ from collections import deque
 import typing
 
 from ..helpers.dataattr import DataAttr
-from .estimator_energy import SignalEnergyEstimator
+from .estimator_energy import EnergyObserverEstimator
 
 if typing.TYPE_CHECKING:
     from typing import Final, Unpack
@@ -57,7 +57,7 @@ class EnergyModel:
         }
 
 
-class HeuristicConsumptionEstimator(SignalEnergyEstimator):
+class HeuristicConsumptionEstimator(EnergyObserverEstimator):
     """
     Proof-of-concept of an estimator model based on some heuristics:
 
@@ -65,10 +65,10 @@ class HeuristicConsumptionEstimator(SignalEnergyEstimator):
 
     if typing.TYPE_CHECKING:
 
-        class Sample(SignalEnergyEstimator.Sample):
+        class Sample(EnergyObserverEstimator.Sample):
             pass
 
-        class Args(SignalEnergyEstimator.Args):
+        class Args(EnergyObserverEstimator.Args):
             pass
 
         history_samples: Final[deque[Sample]]

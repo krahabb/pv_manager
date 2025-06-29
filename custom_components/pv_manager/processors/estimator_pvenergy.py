@@ -12,7 +12,7 @@ from homeassistant.util import dt as dt_util
 from ..helpers import datetime_from_epoch, validation as hv
 from ..helpers.dataattr import DataAttr, DataAttrClass, DataAttrParam
 from ..manager import Manager
-from .estimator_energy import SignalEnergyEstimator
+from .estimator_energy import EnergyObserverEstimator
 
 if typing.TYPE_CHECKING:
     from typing import Final, NotRequired, Unpack
@@ -212,14 +212,14 @@ class CubicWeatherModel(WeatherModel):
                     self.Wc1 = wc_max
 
 
-class PVEnergyEstimator(SignalEnergyEstimator):
+class PVEnergyEstimator(EnergyObserverEstimator):
     """
     Base class for estimator implementations based off different approaches.
     Beside the current HeuristicEstimator we should think about using neural networks for implementation.
     At the time, lacking any real specialization, the generalization of this class is pretty basic and likely unstable.
     """
 
-    class Sample(SignalEnergyEstimator.Sample):
+    class Sample(EnergyObserverEstimator.Sample):
         """PV energy/power history data extraction. This sample is used to build energy production
         in a time window (1 hour by design) by querying either a PV power sensor or a PV energy sensor.
         Building from PV power should be preferrable due to the 'failable' nature of energy accumulation.
@@ -234,20 +234,20 @@ class PVEnergyEstimator(SignalEnergyEstimator):
         """Position of the sun (at mid sample interval)"""
 
         def __init__(self, time_ts: float, estimator: "PVEnergyEstimator", /):
-            SignalEnergyEstimator.Sample.__init__(self, time_ts, estimator)
+            EnergyObserverEstimator.Sample.__init__(self, time_ts, estimator)
             self.weather = estimator.get_weather_at(time_ts)
 
-    class Forecast(SignalEnergyEstimator.Forecast):
+    class Forecast(EnergyObserverEstimator.Forecast):
 
         weather: DataAttr[WeatherSample | None, DataAttrParam.hide] = None
 
     if typing.TYPE_CHECKING:
 
-        class Config(SignalEnergyEstimator.Config):
+        class Config(EnergyObserverEstimator.Config):
             weather_entity_id: NotRequired[str]
             weather_model: NotRequired[str]
 
-        class Args(SignalEnergyEstimator.Args):
+        class Args(EnergyObserverEstimator.Args):
             config: "PVEnergyEstimator.Config"
 
         config: Config  # (override base typehint)
@@ -363,8 +363,6 @@ class PVEnergyEstimator(SignalEnergyEstimator):
 
     @typing.override
     def _restore_history(self, history_start_time: dt.datetime):
-        if self._restore_history_exit:
-            return
 
         if self.weather_entity_id:
             weather_states = state_changes_during_period(
@@ -377,8 +375,6 @@ class PVEnergyEstimator(SignalEnergyEstimator):
 
             if weather_states:
                 for weather_state in weather_states[self.weather_entity_id]:
-                    if self._restore_history_exit:
-                        return
                     try:
                         self.add_weather(WeatherSample.from_state(weather_state))
                     except:

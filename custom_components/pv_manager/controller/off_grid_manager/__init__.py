@@ -10,7 +10,7 @@ from ...binary_sensor import BinarySensor
 from ...helpers import validation as hv
 from ...manager import Manager
 from ...sensor import EnergySensor, Sensor
-from .energy_meters import (
+from .devices import (
     BatteryMeter,
     LoadMeter,
     PvMeter,
@@ -24,7 +24,7 @@ if typing.TYPE_CHECKING:
 
     from ...controller import EntryData
     from ...controller.devices import Device
-    from .energy_meters import MeterDevice
+    from .devices import MeterDevice
 
     class ControllerStoreType(TypedDict):
         time: str

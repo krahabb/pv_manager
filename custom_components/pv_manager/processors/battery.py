@@ -240,7 +240,13 @@ class BatteryProcessor(SignalEnergyProcessor):
 
 
 class BatteryEstimator(EnergyBalanceEstimator, BatteryProcessor):  # type: ignore
-
+    """A 'Battery estimator':
+    This works by collecting production(pv) and consumption data (and estimates)
+    together with battery energy and charge balance to  build an estimate of
+    energy balnce and charge balance for the battery itself.
+    This is also able to estimate system losses (i.e. energy not measured by the 3 systems)
+    and battery charging efficiency."""
+    
     class Sample(EnergyBalanceEstimator.Sample):
         energy_in: DataAttr[float] = 0
         energy_out: DataAttr[float] = 0

@@ -11,7 +11,7 @@ if typing.TYPE_CHECKING:
     from typing import Any, ClassVar, Final, NotRequired, Self, TypedDict, Unpack
 
     from . import Controller as OffGridManager
-    from ...controller import EntryData
+    from .. import EntryData
 
 SourceType = SignalEnergyProcessorDevice.SourceType
 
