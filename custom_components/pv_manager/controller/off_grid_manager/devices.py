@@ -4,8 +4,11 @@ from homeassistant.config_entries import ConfigEntryState
 
 from ...helpers import validation as hv
 from ...helpers.dataattr import DataAttr, DataAttrParam
-from ..devices import SignalEnergyProcessorDevice
+from ...processors.estimator_consumption_heuristic import HeuristicConsumptionEstimator
+from ...processors.estimator_pvenergy_heuristic import HeuristicPVEnergyEstimator
+from ..devices import ProcessorDevice, SignalEnergyProcessorDevice
 from ..devices.battery_device import BatteryProcessorDevice
+from ..devices.estimator_device import EnergyEstimatorDevice
 
 if typing.TYPE_CHECKING:
     from typing import Any, ClassVar, Final, NotRequired, Self, TypedDict, Unpack
@@ -16,10 +19,10 @@ if typing.TYPE_CHECKING:
 SourceType = SignalEnergyProcessorDevice.SourceType
 
 
-class MeterDevice(SignalEnergyProcessorDevice):
+class OffGridManagerDevice(ProcessorDevice):
     if typing.TYPE_CHECKING:
 
-        class Config(SignalEnergyProcessorDevice.Config):
+        class Config(ProcessorDevice.Config):
             pass
 
         # override base types
@@ -29,15 +32,9 @@ class MeterDevice(SignalEnergyProcessorDevice):
         # metering_source: Final[SourceType]
         SOURCE_TYPE: ClassVar[SourceType]
 
-    def __init__(
-        self,
-        controller: "OffGridManager",
-        entry_data: "EntryData",
-        /,
-    ):
-        # self.metering_source = metering_source
+    def __init__(self, controller: "OffGridManager", entry_data: "EntryData", /):
         source_type = self.__class__.SOURCE_TYPE
-        config: "MeterDevice.Config" = entry_data.config  # type: ignore
+        config: "OffGridManagerDevice.Config" = entry_data.config  # type: ignore
         super().__init__(
             entry_data.subentry_id,
             controller=controller,
@@ -46,16 +43,31 @@ class MeterDevice(SignalEnergyProcessorDevice):
             name=f"{config.get("name") or self.__class__.DEFAULT_NAME} {source_type}",
             config=config,
         )
-        meter_devices = controller.meter_devices
-        if source_type in meter_devices:
-            meter_devices[source_type][self.config_subentry_id] = self
-        else:
-            meter_devices[source_type] = {self.config_subentry_id: self}
+
+
+class MeterDevice(OffGridManagerDevice, SignalEnergyProcessorDevice):
+    if typing.TYPE_CHECKING:
+
+        class Config(SignalEnergyProcessorDevice.Config):
+            pass
+
+    def __init__(self, controller: "OffGridManager", entry_data: "EntryData", /):
+        super().__init__(controller, entry_data)
+        try:
+            controller.meter_devices[self.__class__.SOURCE_TYPE][
+                self.config_subentry_id
+            ] = self
+        except KeyError:
+            controller.meter_devices[self.__class__.SOURCE_TYPE] = {
+                self.config_subentry_id: self
+            }
         if controller.config_entry.state == ConfigEntryState.LOADED:
             self.async_create_task(self.async_start(), "async_start")
 
     def shutdown(self):
-        del self.controller.meter_devices[self.SOURCE_TYPE][self.config_subentry_id]
+        del self.controller.meter_devices[self.__class__.SOURCE_TYPE][
+            self.config_subentry_id
+        ]
         super().shutdown()
 
 
@@ -96,7 +108,7 @@ class BatteryMeter(MeterDevice, BatteryProcessorDevice):
 
     if typing.TYPE_CHECKING:
 
-        class Config(MeterDevice.Config):
+        class Config(BatteryProcessorDevice.Config):
             pass
 
     SOURCE_TYPE = SourceType.BATTERY
@@ -104,21 +116,35 @@ class BatteryMeter(MeterDevice, BatteryProcessorDevice):
 
 class LoadMeter(MeterDevice):
 
-    if typing.TYPE_CHECKING:
-
-        class Config(MeterDevice.Config):
-            pass
-
     SOURCE_TYPE = SourceType.LOAD
 
 
 class PvMeter(MeterDevice):
 
+    SOURCE_TYPE = SourceType.PV
+
+
+class EstimatorDevice(OffGridManagerDevice, EnergyEstimatorDevice):
+
     if typing.TYPE_CHECKING:
 
-        class Config(MeterDevice.Config):
+        class Config(EnergyEstimatorDevice.Config):
             pass
 
+    def __init__(self, controller: "OffGridManager", entry_data: "EntryData", /):
+        super().__init__(controller, entry_data)
+        controller.estimator_devices[self.__class__.SOURCE_TYPE] = self
+
+    def shutdown(self):
+        del self.controller.estimator_devices[self.__class__.SOURCE_TYPE]
+        super().shutdown()
+
+
+class LoadEstimator(EstimatorDevice, HeuristicConsumptionEstimator):
+    SOURCE_TYPE = SourceType.LOAD
+
+
+class PvEstimator(EstimatorDevice, HeuristicPVEnergyEstimator):
     SOURCE_TYPE = SourceType.PV
 
 

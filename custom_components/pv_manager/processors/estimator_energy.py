@@ -9,20 +9,31 @@ from time import time
 import typing
 
 from homeassistant import const as hac
-from homeassistant.components.recorder import get_instance as recorder_instance, history
+from homeassistant.components.recorder import history
 from homeassistant.core import callback
 from homeassistant.helpers.json import save_json
 from homeassistant.util import dt as dt_util
 
 from . import Estimator, SignalEnergyProcessor
 from .. import const as pmc
-from ..helpers import datetime_from_epoch, validation as hv
+from ..helpers import datetime_from_epoch, history as hh, validation as hv
 from ..helpers.dataattr import DataAttr, DataAttrClass, DataAttrParam, timestamp_i
 from ..manager import Manager
 
 if typing.TYPE_CHECKING:
     from datetime import tzinfo
-    from typing import ClassVar, Final, Iterable, NotRequired, Self, Unpack
+    from typing import (
+        Any,
+        Callable,
+        ClassVar,
+        Final,
+        Iterable,
+        Mapping,
+        NotRequired,
+        Self,
+        TypedDict,
+        Unpack,
+    )
 
     from homeassistant.core import State
 
@@ -317,8 +328,12 @@ class EnergyEstimator(Estimator):
 class EnergyObserverEstimator(EnergyEstimator):
 
     if typing.TYPE_CHECKING:
+
         class Sample(EnergyEstimator.Sample):
             pass
+
+        type HistoryEntityProcess = Callable[[hh.CompressedState], None]
+        type HistoryEntitiesDesc = dict[str, HistoryEntityProcess]
 
         class Config(EnergyEstimator.Config):
             observation_duration_minutes: int
@@ -330,7 +345,12 @@ class EnergyObserverEstimator(EnergyEstimator):
             config: "EnergyObserverEstimator.Config"
 
         config: Config
+        history_duration_ts: Final[int]
+        observation_duration_ts: Final[int]
         observed_samples: Final[deque[Sample]]
+
+        _restore_history_task_ts: float
+        """Current timestamp of restore hystory Task start."""
 
     _SLOTS_ = (
         # configuration
@@ -338,6 +358,7 @@ class EnergyObserverEstimator(EnergyEstimator):
         "observation_duration_ts",
         # state
         "observed_samples",
+        "_restore_history_task_ts",  # TODO: use task cancellation to terminate history processing
     )
 
     @classmethod
@@ -363,13 +384,29 @@ class EnergyObserverEstimator(EnergyEstimator):
     ):
         super().__init__(id, **kwargs)
         config = self.config
-        self.history_duration_ts: typing.Final = int(
-            config.get("history_duration_days", 0) * 86400
-        )
-        self.observation_duration_ts: typing.Final = int(
+        self.history_duration_ts = int(config.get("history_duration_days", 0) * 86400)
+        self.observation_duration_ts = int(
             config.get("observation_duration_minutes", 20) * 60
         )
         self.observed_samples = deque()
+
+    @typing.override
+    async def async_start(self):
+        if self.history_duration_ts:
+            self._restore_history_task_ts = time()
+            self._sample_curr.__init__(
+                self._restore_history_task_ts - self.history_duration_ts, self
+            )
+            await history.get_instance(Manager.hass).async_add_executor_job(
+                self._restore_history
+            )
+        self.update_estimate()
+        await super().async_start()
+
+    @typing.override
+    def shutdown(self):
+        self._restore_history_task_ts = 0  # force history task termination
+        super().shutdown()
 
     @typing.override
     def as_diagnostic_dict(self):
@@ -454,8 +491,99 @@ class EnergyObserverEstimator(EnergyEstimator):
         machinery. (See SignalEnergyEstimator for an example)"""
         pass
 
-    def _restore_history(self, history_start_time: datetime):
-        pass
+    def _history_entities(self, /) -> "HistoryEntitiesDesc":
+        return {}
+
+    class _HistoryEntityIterator:
+
+        def __init__(
+            self,
+            entity_id: str,
+            process: "EnergyObserverEstimator.HistoryEntityProcess",
+            states: "list[hh.CompressedState]",
+        ):
+            self.entity_id = entity_id
+            self._process = process
+            self._states = states
+            self._iter = iter(states)
+            try:
+                self.state = next(self._iter)
+                self.time_ts = self.state["lu"]
+            except StopIteration:
+                self.time_ts = pmc.TIMESTAMP_MAX
+
+        def process(self, /):
+            self._process(self.state)
+            try:
+                self.state = next(self._iter)
+                self.time_ts = self.state["lu"]
+                return False
+            except StopIteration:
+                self.time_ts = pmc.TIMESTAMP_MAX
+                return True
+
+    def _restore_history(self):
+
+        try:
+            history_entities = self._history_entities()
+            entity_ids = list(history_entities.keys())
+
+            source_entity_states: "dict[str, list[hh.CompressedState]]" = hh.get_significant_states(  # type: ignore
+                Manager.hass,
+                entity_ids=entity_ids,
+                start_time_ts=self._sample_curr.time_begin_ts,
+                significant_changes_only=False,
+                minimal_response=False,
+                no_attributes=False,
+                compressed_state_format=True,
+            )
+
+            # Scan the entities states lists to find the next state update event in time ordering
+            entity_iterator_class = EnergyObserverEstimator._HistoryEntityIterator
+            state_iterators = [
+                entity_iterator_class(entity_id, history_entities[entity_id], states)
+                for entity_id, states in source_entity_states.items()
+            ]
+            fake_iterator = entity_iterator_class("", lambda s: None, [])
+            while True:
+                if not self._restore_history_task_ts:
+                    # Shutting down
+                    return
+
+                _next_iterator = fake_iterator
+                for _iterator in state_iterators:
+                    if _iterator.time_ts < _next_iterator.time_ts:
+                        _next_iterator = _iterator
+
+                if _next_iterator is fake_iterator:
+                    break
+
+                if _next_iterator.process():
+                    # This iterator came to end: remove it to trim the loop
+                    state_iterators.remove(_next_iterator)
+
+            if self.isEnabledFor(self.DEBUG):
+                self.log(
+                    self.DEBUG,
+                    "Restored history for '%s' in %s sec (states = %d)",
+                    entity_ids,
+                    round(time() - self._restore_history_task_ts, 2),
+                    len(source_entity_states),
+                )
+
+        except Exception as e:
+            self.log_exception(self.WARNING, e, "_restore_history")
+
+        self._restore_history_task_ts = 0
+
+        if pmc.DEBUG:
+            filepath = pmc.DEBUG.get_debug_output_filename(
+                Manager.hass,
+                # TODO: create a meaningful file name
+                f"model_{self.id}_{self.__class__.__name__.lower()}.json",
+            )
+            save_json(filepath, self.as_diagnostic_dict())
+
 
 class SignalEnergyEstimator(EnergyObserverEstimator, SignalEnergyProcessor):
     """
@@ -476,28 +604,10 @@ class SignalEnergyEstimator(EnergyObserverEstimator, SignalEnergyProcessor):
         config: Config
         source_entity_id: str
 
-    _SLOTS_ = (
-        "_restore_history_exit", # TODO: use task cancellation to terminate history processing
-    )
-
     @typing.override
     async def async_start(self):
-        if self.history_duration_ts and self.source_entity_id:
-            self._restore_history_exit = False
-            history_begin_ts = time() - self.history_duration_ts
-            self._sample_curr.__init__(history_begin_ts, self)
-            await recorder_instance(Manager.hass).async_add_executor_job(
-                self._restore_history,
-                datetime_from_epoch(history_begin_ts),
-            )
         self.listen_energy(self._process_energy)
-        self.update_estimate()
         await super().async_start()
-
-    @typing.override
-    def shutdown(self):
-        self._restore_history_exit = True
-        super().shutdown()
 
     @typing.override
     def disconnect(self, time_ts):
@@ -511,85 +621,18 @@ class SignalEnergyEstimator(EnergyObserverEstimator, SignalEnergyProcessor):
         machinery. (See SignalEnergyEstimator for an example)"""
         self.reset()
 
-    # interface: self
-    def _restore_history(self, history_start_time: datetime):
-        """This code runs in an executor before we start the processor listening for entity updates.
-        We're avoiding using the process api because it takes care of dispatching energy and
-        warning callbacks and, even though no listeners should be registered before start this is
-        very fragile and we also want to optimize the code a bit without unneded (and potentially
-        dangerous) code paths."""
+    @typing.override
+    def _history_entities(self) -> "EnergyObserverEstimator.HistoryEntitiesDesc":
+        return {self.source_entity_id: self._history_process_source_entity_id}
 
-        if self._restore_history_exit:
-            return
-
-        restore_start_ts = time()
-
-        try:
-            source_entity_states = history.state_changes_during_period(
-                Manager.hass,
-                history_start_time,
-                None,
-                self.source_entity_id,
-                no_attributes=False,
-            )
-            source_entity_states = source_entity_states[self.source_entity_id]
-            um = source_entity_states[0].attributes["unit_of_measurement"]
-            unit = SignalEnergyProcessor.Unit.from_um(um)
-            if unit:
-                self.configure(unit)
-            else:
-                raise ValueError(f"Unit '{um}' not supported")
-
-            for state in source_entity_states:
-                if self._restore_history_exit:
-                    return
-                self._source_history_process(state)
-
-            if self.isEnabledFor(self.DEBUG):
-                self.log(
-                    self.DEBUG,
-                    "Restored history for entity '%s' in %s sec (states = %d)",
-                    self.source_entity_id,
-                    round(time() - restore_start_ts, 2),
-                    len(source_entity_states),
-                )
-        except KeyError as e:
-            if str(e) == self.source_entity_id:
-                self.log(
-                    self.WARNING,
-                    "Loading history for entity '%s' did not return any data. Is the entity correct?",
-                    self.source_entity_id,
-                )
-                return
-            self.log_exception(self.WARNING, e, "_restore_history")
-        except IndexError:
-            self.log(
-                self.WARNING,
-                "Entity '%s' has no history data.",
-                self.source_entity_id,
-            )
-            return
-        except Exception as e:
-            self.log_exception(self.WARNING, e, "_restore_history")
-
-        # take care of this else self.process would fail to detect the transition
-        self.warning_no_signal_on = True if self.input is None else False
-
-        if pmc.DEBUG:
-            filepath = pmc.DEBUG.get_debug_output_filename(
-                Manager.hass,
-                f"model_{self.source_entity_id}_{self.__class__.__name__.lower()}.json",
-            )
-            save_json(filepath, self.as_diagnostic_dict())
-
-    def _source_history_process(self, state: "State", /):
+    def _history_process_source_entity_id(self, state: "hh.CompressedState", /):
         """Fast path for processing source entity history. This is a partial replication of code in
         SignalEnergyProcessor.process without some checks and the callbacks."""
-        time_ts = state.last_updated_timestamp
+        time_ts = state["lu"]
         try:
             input = (
-                float(state.state)
-                * self.input_convert[state.attributes["unit_of_measurement"]]
+                float(state["s"])
+                * self.input_convert[state["a"]["unit_of_measurement"]]
             )
             d_ts = time_ts - self.time_ts
             if 0 <= d_ts < self.maximum_latency_ts:
@@ -607,6 +650,36 @@ class SignalEnergyEstimator(EnergyObserverEstimator, SignalEnergyProcessor):
             self.input = input
             self.time_ts = time_ts
             return
+
+        except AttributeError as error:
+            if error.name != "input_convert":
+                raise error
+            # This path is executed on first history numeric state processing, when
+            # the energy processor is not yet configured
+            assert self.input is None
+            um = state["a"]["unit_of_measurement"]
+            unit = SignalEnergyProcessor.Unit.from_um(um)
+            if not unit:
+                raise ValueError(f"Unit '{um}' not supported")
+            self.configure(unit)
+            try:
+                self.input = float(state["s"]) * self.input_convert[um]
+                if not self._differential_mode:
+                    if not (self.input_min <= self.input <= self.input_max):
+                        # discard the out of range power observation
+                        self.input = None
+            except Exception as e:
+                # same as external handler
+                if state["s"] not in (hac.STATE_UNKNOWN, hac.STATE_UNAVAILABLE):
+                    self.log_exception(
+                        self.WARNING,
+                        e,
+                        "_history_process_source_entity_id (state:%s)",
+                        str(state),
+                        timeout=300,
+                    )
+            self.time_ts = time_ts
+            return
         except TypeError as error:
             # This code path 'must' be executed whenever input or self.input are 'None'
             # See SignalEnergyProcessor.process. In this context we're skipping warnings
@@ -618,15 +691,21 @@ class SignalEnergyEstimator(EnergyObserverEstimator, SignalEnergyProcessor):
             # could not be done. This is expected and silently managed when state 'unknown' or 'unavailable'
             self.input = None
             self.time_ts = time_ts
-            if state.state not in (hac.STATE_UNKNOWN, hac.STATE_UNAVAILABLE):
+            if state["s"] not in (hac.STATE_UNKNOWN, hac.STATE_UNAVAILABLE):
                 self.log_exception(
                     self.WARNING,
                     e,
-                    "source_entity_update (state:%s)",
-                    state,
+                    "_history_process_source_entity_id (state:%s)",
+                    str(state),
                     timeout=300,
                 )
             return
+
+    @typing.override
+    def _restore_history(self):
+        super()._restore_history()
+        # take care of this else self.process would fail to detect the transition
+        self.warning_no_signal_on = True if self.input is None else False
 
 
 class EnergyBalanceEstimator(EnergyEstimator):

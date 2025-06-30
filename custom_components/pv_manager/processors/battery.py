@@ -16,8 +16,8 @@ if typing.TYPE_CHECKING:
 
     from homeassistant.core import Event, EventStateChangedData
 
-    from .estimator_energy import SignalEnergyEstimator
     from .. import const as pmc
+    from .estimator_energy import SignalEnergyEstimator
 
 
 class BatteryProcessor(SignalEnergyProcessor):

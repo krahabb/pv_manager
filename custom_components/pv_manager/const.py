@@ -12,6 +12,8 @@ if typing.TYPE_CHECKING:
 
 DOMAIN: typing.Final = "pv_manager"
 
+TIMESTAMP_MAX: typing.Final = 2147483647
+
 try:
     import json
     import os
@@ -62,12 +64,22 @@ class ConfigEntryType(enum.StrEnum):
         return ConfigEntryType((config_entry.unique_id).split(".")[0])  # type: ignore
 
 
-class ConfigSubentryType(enum.StrEnum):
-    ENERGY_ESTIMATOR_SENSOR = enum.auto()
-    MANAGER_LOSSES = enum.auto()
-    MANAGER_BATTERY_METER = enum.auto()
-    MANAGER_LOAD_METER = enum.auto()
-    MANAGER_PV_METER = enum.auto()
+class _ConfigSubentryType(str):
+    __slots__ = ("unique",)
+
+    def __new__(cls, value: str, unique: bool):
+        _str = str.__new__(cls, value)
+        _str.unique = unique
+        return _str
+
+
+class ConfigSubentryType(_ConfigSubentryType, enum.ReprEnum):
+    ENERGY_ESTIMATOR_SENSOR = ("energy_estimator_sensor", False)
+    MANAGER_LOSSES = ("manager_losses", True)
+    MANAGER_BATTERY_METER = ("manager_battery_meter", False)
+    MANAGER_LOAD_METER = ("manager_load_meter", False)
+    MANAGER_PV_METER = ("manager_pv_meter", False)
+    MANAGER_ESTIMATOR = ("manager_estimator", True)
 
 
 CONFIGENTRY_SUBENTRY_MAP: dict[ConfigEntryType, tuple[ConfigSubentryType, ...]] = {
@@ -79,6 +91,7 @@ CONFIGENTRY_SUBENTRY_MAP: dict[ConfigEntryType, tuple[ConfigSubentryType, ...]] 
         ConfigSubentryType.MANAGER_BATTERY_METER,
         ConfigSubentryType.MANAGER_LOAD_METER,
         ConfigSubentryType.MANAGER_PV_METER,
+        ConfigSubentryType.MANAGER_ESTIMATOR,
     ),
 }
 

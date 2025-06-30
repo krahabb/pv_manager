@@ -12,7 +12,9 @@ from ...manager import Manager
 from ...sensor import EnergySensor, Sensor
 from .devices import (
     BatteryMeter,
+    LoadEstimator,
     LoadMeter,
+    PvEstimator,
     PvMeter,
     SourceType,
 )
@@ -24,7 +26,7 @@ if typing.TYPE_CHECKING:
 
     from ...controller import EntryData
     from ...controller.devices import Device
-    from .devices import MeterDevice
+    from .devices import EstimatorDevice, MeterDevice
 
     class ControllerStoreType(TypedDict):
         time: str
@@ -112,8 +114,17 @@ class ManagerLossesConfig(pmc.EntityConfig, pmc.SubentryConfig):
 
 
 class Controller(controller.Controller["Controller.Config"]):  # type: ignore
-    """Off-grid plant manager: a collection of integrated helpers for a basic off-grid system
-    with PV BATTERY and LOAD."""
+    """
+    Off-grid plant manager: a collection of integrated helpers for a complete off-grid system
+    with PV, BATTERY and LOAD.
+    Multiple source entities of the same type can be configured and their energy measures
+    are collected (sum) to build a 'complex' estimator for the whole system.
+    This estimator is composed of a total PV energy estimatio, a total LOAD estimation,
+    and a total BATTERY (total capacity if multiple batteries) estimator.
+    This complex estimator would then be able to forecast production, consumption, losses,
+    charge level, and many other estimations like TIME TO FULL CHARGE and TIME TO FULL DISCHARGE
+    and so on.
+    """
 
     if typing.TYPE_CHECKING:
 
@@ -146,6 +157,7 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
         conversion_yield_actual_sensor: Sensor | None
         """
         meter_devices: Final[dict[str, dict[str, MeterDevice]]]
+        estimator_devices: Final[dict[str, EstimatorDevice]]
         """
         example:
         {
@@ -154,6 +166,8 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
             }
         }
         """
+        load_estimator: LoadEstimator | None
+        pv_estimator: PvEstimator | None
 
     DEFAULT_NAME = "Off grid Manager"
     """REMOVE
@@ -186,6 +200,9 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
         # state
         "_store",
         "meter_devices",
+        "estimator_devices",
+        "load_estimator",
+        "pv_estimator",
         # REMOVE "losses_meter",
         # entities
         # REMOVE "losses_power_sensor",
@@ -252,12 +269,21 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
         config_entry: "ConfigEntry",
         subentry_type: str,
         config: pmc.ConfigMapping | None,
+        /,
     ) -> pmc.ConfigSchema:
         match subentry_type.split("_"):
             case ("manager", source_type, "meter"):
                 return SOURCE_TYPE_METER_MAP[source_type].get_config_schema(
                     config  # type:ignore
                 )
+
+            case pmc.ConfigSubentryType.MANAGER_ESTIMATOR:
+                # Subentry config is a bit hybrid since it must include configurations for all
+                # the estimators (so they'll share common config options)
+                schema = PvEstimator.get_config_schema(
+                    config  # type:ignore
+                )
+                return schema
 
             case pmc.ConfigSubentryType.MANAGER_LOSSES:
                 if not config:
@@ -285,19 +311,12 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
 
         return {}
 
-    @staticmethod
-    def get_config_subentry_unique_id(
-        subentry_type: str, user_input: pmc.ConfigMapping
-    ) -> str | None:
-        match subentry_type:
-            case pmc.ConfigSubentryType.MANAGER_LOSSES:
-                return pmc.ConfigSubentryType.MANAGER_LOSSES
-        return None
-
     def __init__(self, config_entry: "ConfigEntry"):
-        # REMOVE self.energy_meters = {}
         self._store = ControllerStore(config_entry.entry_id)
         self.meter_devices = {}
+        self.estimator_devices = {}
+        self.load_estimator = None
+        self.pv_estimator = None
         # REMOVE self.losses_meter = None
         self._final_write_unsub = None
         super().__init__(config_entry)
@@ -337,11 +356,6 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
 
         await self._async_store_save(None)
 
-        """REMOVE
-        for energy_meter_tuple in tuple(reversed(self.energy_meters.values())):
-            energy_meter_tuple[0].shutdown()
-        assert not self.energy_meters
-        """
         await super().async_shutdown()
 
     @typing.override
@@ -349,6 +363,10 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
         match entry_data.subentry_type.split("_"):  # type: ignore
             case ("manager", source_type, "meter"):
                 SOURCE_TYPE_METER_MAP[source_type](self, entry_data)
+
+            case pmc.ConfigSubentryType.MANAGER_ESTIMATOR:
+                self.load_estimator = LoadEstimator(self, entry_data)
+                self.pv_estimator = PvEstimator(self, entry_data)
 
             case pmc.ConfigSubentryType.MANAGER_LOSSES:
                 pass

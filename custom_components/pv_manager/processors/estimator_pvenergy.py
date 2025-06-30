@@ -1,6 +1,7 @@
 from collections import deque
 from dataclasses import dataclass
 import datetime as dt
+from time import time
 import typing
 
 from astral import sun
@@ -9,7 +10,7 @@ from homeassistant.components.recorder.history import state_changes_during_perio
 from homeassistant.helpers import sun as sun_helpers
 from homeassistant.util import dt as dt_util
 
-from ..helpers import datetime_from_epoch, validation as hv
+from ..helpers import datetime_from_epoch, history as hh, validation as hv
 from ..helpers.dataattr import DataAttr, DataAttrClass, DataAttrParam
 from ..manager import Manager
 from .estimator_energy import EnergyObserverEstimator
@@ -51,17 +52,33 @@ class WeatherSample:
     next: "WeatherSample | None" = None
 
     @staticmethod
-    def from_state(weather_state: "State"):
-        attributes = weather_state.attributes
-        condition = weather_state.state
+    def from_state(state: "State"):
+        attributes = state.attributes
+        condition = state.state
         if "cloud_coverage" in attributes:
             cloud_coverage = attributes["cloud_coverage"] / 100
         else:
             cloud_coverage = _WEATHER_CONDITION_TO_CLOUD.get(condition)
 
         return WeatherSample(
-            time=weather_state.last_updated,
-            time_ts=weather_state.last_updated_timestamp,
+            time=state.last_updated,
+            time_ts=state.last_updated_timestamp,
+            condition=condition,
+            cloud_coverage=cloud_coverage,
+        )
+
+    @staticmethod
+    def from_compressed_state(state: "hh.CompressedState"):
+        attributes = state["a"]
+        condition = state["s"]
+        if "cloud_coverage" in attributes:
+            cloud_coverage = attributes["cloud_coverage"] / 100
+        else:
+            cloud_coverage = _WEATHER_CONDITION_TO_CLOUD.get(condition)
+        time_ts = state["lu"]
+        return WeatherSample(
+            time=datetime_from_epoch(time_ts),
+            time_ts=time_ts,
             condition=condition,
             cloud_coverage=cloud_coverage,
         )
@@ -362,31 +379,13 @@ class PVEnergyEstimator(EnergyObserverEstimator):
         return super()._observed_energy_daystart(time_ts)
 
     @typing.override
-    def _restore_history(self, history_start_time: dt.datetime):
+    def _history_entities(self) -> "EnergyObserverEstimator.HistoryEntitiesDesc":
+        return super()._history_entities() | {
+            self.weather_entity_id: self._history_process_weather_entity_id
+        }
 
-        if self.weather_entity_id:
-            weather_states = state_changes_during_period(
-                Manager.hass,
-                history_start_time,
-                None,
-                self.weather_entity_id,
-                no_attributes=False,
-            )
-
-            if weather_states:
-                for weather_state in weather_states[self.weather_entity_id]:
-                    try:
-                        self.add_weather(WeatherSample.from_state(weather_state))
-                    except:
-                        pass
-            else:
-                self.log(
-                    self.WARNING,
-                    "Loading weather history for entity '%s' did not return any data. Is the entity correct?",
-                    self.weather_entity_id,
-                )
-
-        super()._restore_history(history_start_time)
+    def _history_process_weather_entity_id(self, state: "hh.CompressedState", /):
+        self.add_weather(WeatherSample.from_compressed_state(state))
 
     # interface: self
     def add_weather(self, weather: WeatherSample):

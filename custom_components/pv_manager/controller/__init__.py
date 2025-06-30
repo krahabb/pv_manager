@@ -119,8 +119,9 @@ class Controller[_ConfigT: pmc.EntryConfig](Device):
     def get_config_subentry_unique_id(
         subentry_type: str, user_input: pmc.ConfigMapping
     ) -> str | None:
-        # to be overriden
-        return None
+        # to be overriden for more complex behaviors
+        _config_subentry_type = pmc.ConfigSubentryType(subentry_type)
+        return _config_subentry_type.value if _config_subentry_type.unique else None
 
     def __init__(self, config_entry: "ConfigEntry"):
         self.config_entry = config_entry
@@ -337,10 +338,9 @@ class EnergyEstimatorController[_ConfigT: "EnergyEstimatorController.Config"](  
                         "name", pmc.ConfigSubentryType.ENERGY_ESTIMATOR_SENSOR
                     ),
                     config_subentry_id=subentry_id,
-                    forecast_duration_ts=int(entry_data.config.get(
-                        "forecast_duration_hours", 1
-                    )
-                    * 3600),
+                    forecast_duration_ts=int(
+                        entry_data.config.get("forecast_duration_hours", 1) * 3600
+                    ),
                 )
 
     @typing.override

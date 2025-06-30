@@ -94,7 +94,7 @@ class MeteringCycle(Loggable):
             self.last_reset_dt = None
             self.last_reset_ts = 0
             self.next_reset_dt = None
-            self.next_reset_ts = 2147483647
+            self.next_reset_ts = pmc.TIMESTAMP_MAX
         else:
             self.is_total = False
             self.update(None)
