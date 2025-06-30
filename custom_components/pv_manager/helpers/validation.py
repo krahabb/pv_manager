@@ -5,7 +5,7 @@ from homeassistant.helpers import selector
 import voluptuous as vol
 
 from .. import const as pmc
-from ..manager import MeteringCycle
+from .manager import MeteringCycle
 
 if typing.TYPE_CHECKING:
     from enum import StrEnum

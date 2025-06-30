@@ -5,7 +5,7 @@ from homeassistant.components import sensor
 
 from . import const as pmc
 from .helpers import entity as he
-from .manager import Manager, MeteringCycle
+from .helpers.manager import Manager, MeteringCycle
 
 if typing.TYPE_CHECKING:
     from typing import ClassVar, Final, NotRequired, Unpack

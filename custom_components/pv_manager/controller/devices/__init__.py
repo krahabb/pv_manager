@@ -4,7 +4,7 @@ from ... import const as pmc
 from ...binary_sensor import ProcessorWarningBinarySensor
 from ...helpers import Loggable, validation as hv
 from ...helpers.callback import CallbackTracker
-from ...manager import Manager
+from ...helpers.manager import Manager
 from ...processors import BaseProcessor, SignalEnergyProcessor
 from ...sensor import EnergySensor
 

@@ -7,7 +7,7 @@ from homeassistant.helpers.event import async_track_state_change_event
 
 from . import Loggable
 from .. import const as pmc
-from ..manager import Manager
+from .manager import Manager
 
 if typing.TYPE_CHECKING:
     from asyncio.events import TimerHandle
@@ -48,7 +48,9 @@ class CallbackTracker(Loggable):
         name: str,
         eager_start: bool = True,
     ):
-        return Manager.hass.async_create_task(target, f"{self.logtag}:{name}", eager_start)
+        return Manager.hass.async_create_task(
+            target, f"{self.logtag}:{name}", eager_start
+        )
 
     def track_callback(self, key: str, callback: "CALLBACK_TYPE"):
         try:

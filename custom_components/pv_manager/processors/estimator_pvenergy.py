@@ -12,7 +12,7 @@ from homeassistant.util import dt as dt_util
 
 from ..helpers import datetime_from_epoch, history as hh, validation as hv
 from ..helpers.dataattr import DataAttr, DataAttrClass, DataAttrParam
-from ..manager import Manager
+from ..helpers.manager import Manager
 from .estimator_energy import EnergyObserverEstimator
 
 if typing.TYPE_CHECKING:

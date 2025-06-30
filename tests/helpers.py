@@ -40,7 +40,7 @@ if typing.TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
     from custom_components.pv_manager.controller import Controller
-    from custom_components.pv_manager.manager import ManagerClass
+    from custom_components.pv_manager.helpers.manager import ManagerClass
 
 _TimeFactory = FrozenDateTimeFactory | StepTickTimeFactory | TickingDateTimeFactory
 

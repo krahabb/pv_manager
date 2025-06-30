@@ -5,7 +5,7 @@ from homeassistant.helpers import config_validation as cv, entity_registry
 
 from . import const as pmc
 from .controller import Controller
-from .manager import Manager
+from .helpers.manager import Manager
 
 if typing.TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry

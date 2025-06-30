@@ -18,7 +18,7 @@ from . import Estimator, SignalEnergyProcessor
 from .. import const as pmc
 from ..helpers import datetime_from_epoch, history as hh, validation as hv
 from ..helpers.dataattr import DataAttr, DataAttrClass, DataAttrParam, timestamp_i
-from ..manager import Manager
+from ..helpers.manager import Manager
 
 if typing.TYPE_CHECKING:
     from datetime import tzinfo

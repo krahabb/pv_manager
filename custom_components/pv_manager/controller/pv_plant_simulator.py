@@ -16,7 +16,7 @@ from homeassistant.util.unit_conversion import DistanceConverter, TemperatureCon
 
 from .. import const as pmc, controller, helpers
 from ..helpers import validation as hv
-from ..manager import Manager
+from ..helpers.manager import Manager
 from ..sensor import BatteryChargeSensor, PowerSensor, Sensor
 
 if typing.TYPE_CHECKING:

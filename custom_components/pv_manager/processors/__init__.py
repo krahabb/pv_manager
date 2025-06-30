@@ -16,7 +16,7 @@ from homeassistant.util import unit_conversion
 from ..helpers import Loggable, datetime_from_epoch, validation as hv
 from ..helpers.callback import CallbackTracker
 from ..helpers.dataattr import DataAttr, DataAttrClass
-from ..manager import Manager
+from ..helpers.manager import Manager
 from ..sensor import Sensor
 
 if typing.TYPE_CHECKING:

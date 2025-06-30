@@ -5,7 +5,7 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.helpers import entity, restore_state
 
 from . import Loggable
-from ..manager import Manager
+from .manager import Manager
 
 if typing.TYPE_CHECKING:
     from typing import ClassVar, Final, NotRequired, Unpack
@@ -93,7 +93,9 @@ class Entity(Loggable, entity.Entity if typing.TYPE_CHECKING else object):
     ):
         controller = device.controller
         self.device = device
-        self.config_subentry_id = kwargs.pop("config_subentry_id", device.config_subentry_id)
+        self.config_subentry_id = kwargs.pop(
+            "config_subentry_id", device.config_subentry_id
+        )
         self.assumed_state = False
         self.available = True
         self.device_info = device.device_info

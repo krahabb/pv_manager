@@ -8,7 +8,7 @@ from homeassistant.util import dt as dt_util
 from ... import const as pmc, controller
 from ...binary_sensor import BinarySensor
 from ...helpers import validation as hv
-from ...manager import Manager
+from ...helpers.manager import Manager
 from ...sensor import EnergySensor, Sensor
 from .devices import (
     BatteryMeter,

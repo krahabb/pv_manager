@@ -4,7 +4,7 @@ import enum
 import typing
 
 from custom_components.pv_manager import const as pmc
-from custom_components.pv_manager.manager import MeteringCycle
+from custom_components.pv_manager.helpers.manager import MeteringCycle
 
 if typing.TYPE_CHECKING:
     from typing import Iterable, NotRequired
@@ -144,7 +144,7 @@ CE_PVENERGY_HEURISTIC_ESTIMATOR = ConfigEntriesItem(
 )
 
 CONFIG_ENTRIES: list[ConfigEntriesItem] = [
-    CE_OFF_GRID_MANAGER,
+    # CE_OFF_GRID_MANAGER,
     CE_ENERGY_CALCULATOR,
     CE_CONSUMPTION_ESTIMATOR,
     CE_PVENERGY_HEURISTIC_ESTIMATOR,

@@ -9,7 +9,7 @@ from homeassistant import const as hac
 from . import EnergyEstimatorController
 from .. import const as pmc, helpers
 from ..helpers import validation as hv
-from ..manager import Manager
+from ..helpers.manager import Manager
 from ..processors.estimator_pvenergy_heuristic import HeuristicPVEnergyEstimator
 from ..sensor import DiagnosticSensor, EstimatorDiagnosticSensor
 from .devices.estimator_device import SignalEnergyEstimatorDevice

@@ -5,7 +5,7 @@ from homeassistant.util import slugify
 
 from .. import const as pmc, helpers
 from ..helpers import validation as hv
-from ..manager import Manager
+from ..helpers.manager import Manager
 from ..sensor import Sensor
 from .devices import Device
 from .devices.estimator_device import (
