@@ -11,7 +11,6 @@ from time import time
 import typing
 
 from homeassistant import const as hac
-from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import callback
 from homeassistant.helpers import (
     device_registry as dr,
@@ -27,18 +26,9 @@ if typing.TYPE_CHECKING:
     from asyncio.events import TimerHandle
     from datetime import tzinfo
     from logging import Logger
-    from typing import Any, Callable, Coroutine, Final, Iterable
+    from typing import Any, Callable, Coroutine, Final
 
-    from homeassistant.config_entries import ConfigEntry
-    from homeassistant.core import (
-        HassJob,
-        HomeAssistant,
-    )
-
-    from ..controller import (
-        Controller,
-        EnergyEstimatorController,
-    )
+    from homeassistant.core import HassJob, HomeAssistant
 
 
 class MeteringCycle(Loggable):
@@ -345,33 +335,6 @@ class ManagerClass(Loggable):
             ds = ManagerClass._DayStart(time_ts, tz)
             ds_queue.append(ds)
             return ds
-
-    def lookup_estimator_controller(
-        self, entity_id: str, entry_type: pmc.ConfigEntryType | None = None
-    ):
-        """Given an entity_id, looks through config_entries if any estimator exists for that
-        entity."""
-        if typing.TYPE_CHECKING:
-            config: EnergyEstimatorController.Config
-            config_entry: ConfigEntry[
-                EnergyEstimatorController[EnergyEstimatorController.Config]
-            ]
-        estimator_entry_types = (
-            pmc.ConfigEntryType.PV_ENERGY_ESTIMATOR,
-            pmc.ConfigEntryType.CONSUMPTION_ESTIMATOR,
-        )
-        for config_entry in self.hass.config_entries.async_entries(domain=pmc.DOMAIN):
-            _entry_type = pmc.ConfigEntryType.get_from_entry(config_entry)
-            if _entry_type in estimator_entry_types:
-                config = config_entry.data  # type: ignore
-                if (config.get("source_entity_id") == entity_id) and (
-                    (not entry_type) or (entry_type is _entry_type)
-                ):
-                    return config_entry, (
-                        config_entry.runtime_data
-                        if config_entry.state == ConfigEntryState.LOADED
-                        else None
-                    )
 
 
 Manager: ManagerClass = ManagerClass()
