@@ -144,25 +144,3 @@ class EnergyEstimatorDevice(EstimatorDevice, EnergyEstimator):
             "tomorrow_energy_estimate",
             name=f"{self.config.get("name", self.__class__.DEFAULT_NAME)} (tomorrow)",
         )
-
-
-class SignalEnergyEstimatorDevice(EnergyEstimatorDevice, SignalEnergyEstimator):
-
-    if typing.TYPE_CHECKING:
-
-        class Config(
-            SignalEnergyEstimator.Config,
-            EnergyEstimatorDevice.Config,
-        ):
-            pass
-
-        class Args(
-            SignalEnergyEstimator.Args,
-            EnergyEstimatorDevice.Args,
-        ):
-            config: "SignalEnergyEstimatorDevice.Config"
-
-    @classmethod
-    def get_config_schema(cls, config: "Config | None") -> pmc.ConfigSchema:
-        _config = config or {"name": cls.DEFAULT_NAME}
-        return hv.entity_schema(_config) | super().get_config_schema(config)

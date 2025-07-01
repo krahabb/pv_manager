@@ -4,18 +4,14 @@ Controller for pv energy production estimation
 
 import typing
 
-from homeassistant import const as hac
-
 from . import EnergyEstimatorController
-from .. import const as pmc, helpers
-from ..helpers import validation as hv
-from ..helpers.manager import Manager
+from .. import const as pmc
+from ..processors.estimator_energy import SignalEnergyEstimator
 from ..processors.estimator_pvenergy_heuristic import HeuristicPVEnergyEstimator
 from ..sensor import DiagnosticSensor, EstimatorDiagnosticSensor
-from .devices.estimator_device import SignalEnergyEstimatorDevice
 
 if typing.TYPE_CHECKING:
-    from typing import Any, Callable, Final, Unpack
+    from typing import Any, Callable, Final
 
     from ..processors import Estimator
     from .devices.estimator_device import EnergyEstimatorDevice
@@ -46,12 +42,12 @@ class WeatherModelDiagnosticSensor(EstimatorDiagnosticSensor):
 class DiagnosticDescr:
 
     if typing.TYPE_CHECKING:
-        InitT = Callable[[EnergyEstimatorDevice], DiagnosticSensor]
-        ValueT = Callable[[EnergyEstimatorDevice], Any]
+        type InitT = Callable[[EnergyEstimatorDevice], DiagnosticSensor]
+        type ValueT = Callable[[EnergyEstimatorDevice], Any]
 
-    id: "Final[str]"
-    init: "Final[InitT]"
-    value: "Final[ValueT]"
+        id: Final[str]
+        init: Final[InitT]
+        value: Final[ValueT]
 
     __slots__ = (
         "id",
@@ -110,17 +106,10 @@ DIAGNOSTIC_DESCR = {
 }
 
 
-class Controller(EnergyEstimatorController["Controller.Config"], HeuristicPVEnergyEstimator, SignalEnergyEstimatorDevice):  # type: ignore
+class Controller(
+    EnergyEstimatorController, HeuristicPVEnergyEstimator, SignalEnergyEstimator
+):
     """Base controller class for managing ConfigEntry behavior."""
-
-    if typing.TYPE_CHECKING:
-
-        class Config(
-            HeuristicPVEnergyEstimator.Config,
-            EnergyEstimatorController.Config,
-            SignalEnergyEstimatorDevice.Config,
-        ):
-            pass
 
     TYPE = pmc.ConfigEntryType.PV_ENERGY_ESTIMATOR
 

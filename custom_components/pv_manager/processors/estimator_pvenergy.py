@@ -6,7 +6,6 @@ import typing
 
 from astral import sun
 from homeassistant.components import weather
-from homeassistant.components.recorder.history import state_changes_during_period
 from homeassistant.helpers import sun as sun_helpers
 from homeassistant.util import dt as dt_util
 
@@ -300,7 +299,6 @@ class PVEnergyEstimator(EnergyObserverEstimator):
     )
 
     @classmethod
-    @typing.override
     def get_config_schema(cls, config: "Config | None", /) -> "pmc.ConfigSchema":
         _config = config or {"weather_model": "simple"}
         return super().get_config_schema(config) | {
@@ -379,7 +377,6 @@ class PVEnergyEstimator(EnergyObserverEstimator):
             pass
         return super()._observed_energy_daystart(time_ts)
 
-    @typing.override
     def _history_entities(self) -> "EnergyObserverEstimator.HistoryEntitiesDesc":
         return super()._history_entities() | {
             self.weather_entity_id: self._history_process_weather_entity_id
