@@ -115,7 +115,7 @@ class Entity(Loggable, entity.Entity if typing.TYPE_CHECKING else object):
         entities = controller.entries[self.config_subentry_id].entities
         if self.unique_id in entities:
             raise Exception(
-                f"{__name__}:{self.LN()} Duplicated id ({id}) in subentry ({self.config_subentry_id})"
+                f"{__name__}:{self.LN()} Duplicated id ({id}) in device ({device.name}:{device.unique_id}) subentry ({controller.entries[self.config_subentry_id].subentry_type}:{self.config_subentry_id})"
             )
         entities[self.unique_id] = self
         if self._parent_attr is ParentAttr.STATIC:

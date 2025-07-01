@@ -10,7 +10,7 @@ from homeassistant.components.recorder.history import state_changes_during_perio
 from homeassistant.helpers import sun as sun_helpers
 from homeassistant.util import dt as dt_util
 
-from ..helpers import datetime_from_epoch, history as hh, validation as hv
+from ..helpers import datetime_from_epoch, validation as hv
 from ..helpers.dataattr import DataAttr, DataAttrClass, DataAttrParam
 from ..helpers.manager import Manager
 from .estimator_energy import EnergyObserverEstimator
@@ -22,6 +22,7 @@ if typing.TYPE_CHECKING:
     from homeassistant.core import Event, EventStateChangedData, State
 
     from .. import const as pmc
+    from ..helpers.history import CompressedState
 
 _WEATHER_CONDITION_TO_CLOUD: typing.Final[dict[str | None, float | None]] = {
     None: None,
@@ -68,7 +69,7 @@ class WeatherSample:
         )
 
     @staticmethod
-    def from_compressed_state(state: "hh.CompressedState"):
+    def from_compressed_state(state: "CompressedState"):
         attributes = state["a"]
         condition = state["s"]
         if "cloud_coverage" in attributes:
@@ -384,7 +385,7 @@ class PVEnergyEstimator(EnergyObserverEstimator):
             self.weather_entity_id: self._history_process_weather_entity_id
         }
 
-    def _history_process_weather_entity_id(self, state: "hh.CompressedState", /):
+    def _history_process_weather_entity_id(self, state: "CompressedState", callback, /):
         self.add_weather(WeatherSample.from_compressed_state(state))
 
     # interface: self

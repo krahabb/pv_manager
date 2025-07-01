@@ -1,3 +1,4 @@
+from enum import IntEnum
 import typing
 
 from ... import const as pmc
@@ -31,6 +32,13 @@ if typing.TYPE_CHECKING:
 class Device(CallbackTracker, Loggable):
     """Base concrete class for any device."""
 
+    class Priority(IntEnum):
+        """Used to determine the initialization order of devices in the controller.async_setup method."""
+
+        HIGH = 10
+        STANDARD = 100
+        LOW = 1000
+
     if typing.TYPE_CHECKING:
 
         class Config(TypedDict):
@@ -38,6 +46,7 @@ class Device(CallbackTracker, Loggable):
 
         class Args(Loggable.Args):
             controller: Controller
+            priority: NotRequired[int]
             config_subentry_id: NotRequired[str | None]
             config: NotRequired["Device.Config"]
             name: NotRequired[str]
@@ -45,16 +54,20 @@ class Device(CallbackTracker, Loggable):
 
         DEFAULT_NAME: ClassVar[str]
         controller: Final[Controller]
+        priority: int
         config_subentry_id: Final[str | None]
         unique_id: Final[str]
         device_info: Final[DeviceInfo]
+        name: Final[str]
 
     DEFAULT_NAME = ""
     __slots__ = (
         "controller",
+        "priority",
         "config_subentry_id",
         "unique_id",
         "device_info",
+        "name",
     )
 
     @classmethod
@@ -63,21 +76,23 @@ class Device(CallbackTracker, Loggable):
 
     def __init__(self, id, /, **kwargs: "Unpack[Args]"):
         self.controller = controller = kwargs["controller"]
+        self.priority = kwargs.get("priority") or Device.Priority.STANDARD
         self.config_subentry_id = kwargs.pop("config_subentry_id", None)
-        entry_id = controller.config_entry.entry_id
+        config_entry_id = controller.config_entry.entry_id
         if controller is self:
-            self.unique_id = entry_id
+            self.unique_id = config_entry_id
             via_device = None
         else:
-            self.unique_id = f"{entry_id}.{id}"
+            self.unique_id = f"{config_entry_id}.{id}"
             via_device = next(iter(controller.device_info["identifiers"]))  # type: ignore
         self.device_info = {"identifiers": {(pmc.DOMAIN, self.unique_id)}}
+        self.name = kwargs.pop(
+            "name", self.__class__.DEFAULT_NAME or controller.config_entry.title
+        )
         Manager.device_registry.async_get_or_create(
-            config_entry_id=entry_id,
+            config_entry_id=config_entry_id,
             config_subentry_id=self.config_subentry_id,
-            name=kwargs.pop(
-                "name", self.__class__.DEFAULT_NAME or controller.config_entry.title
-            ),
+            name=self.name,
             model=kwargs.pop("model", controller.TYPE),
             via_device=via_device,
             **self.device_info,  # type: ignore
@@ -85,13 +100,13 @@ class Device(CallbackTracker, Loggable):
         if "logger" not in kwargs:
             kwargs["logger"] = controller
         super().__init__(id, **kwargs)
-        controller.devices[id] = self
+        controller.devices.append(self)
 
     async def async_start(self):
         pass
 
     def shutdown(self):
-        del self.controller.devices[self.id]
+        self.controller.devices.remove(self)
         super().shutdown()
         # self.controller = None  # type: ignore
 

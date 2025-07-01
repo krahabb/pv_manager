@@ -82,7 +82,7 @@ class Controller[_ConfigT: pmc.EntryConfig](Device):
     options: pmc.EntryOptionsConfig
     platforms: "Final[dict[str, AddConfigEntryEntitiesCallback | None]]"
     """Dict of add_entities callbacks."""
-    devices: "Final[dict[str, Device]]"
+    devices: "Final[list[Device]]"
     entries: "Final[dict[str | None, EntryData]]"
     """Cached copy of subentries used to manage subentry add/remove/update."""
     diagnostic_entities: "Final[dict[str, DiagnosticEntity]]"
@@ -128,7 +128,7 @@ class Controller[_ConfigT: pmc.EntryConfig](Device):
         self.config = config_entry.data  # type: ignore
         self.options = config_entry.options  # type: ignore
         self.platforms = {platform: None for platform in self.PLATFORMS}
-        self.devices = {}
+        self.devices = []
         self.entries = {None: EntryData.Entry(config_entry)}
         self.diagnostic_entities = {}
         logger = helpers.getLogger(
@@ -162,7 +162,9 @@ class Controller[_ConfigT: pmc.EntryConfig](Device):
             "_entry_update_listener",
             self.config_entry.add_update_listener(self._entry_update_listener),
         )
-        for device in self.devices.values():
+
+        self.devices.sort(key=lambda device: device.priority)
+        for device in self.devices:
             await device.async_start()
         await Manager.hass.config_entries.async_forward_entry_setups(
             self.config_entry, self.platforms
@@ -175,16 +177,16 @@ class Controller[_ConfigT: pmc.EntryConfig](Device):
             raise Exception("Failed to unload platforms")
 
         # removing circular refs here
-        for subentry_id, entry_data in self.entries.items():
+        for entry_data in self.entries.values():
             for entity in tuple(entry_data.entities.values()):
                 await entity.async_shutdown(False)
             assert not entry_data.entities
         assert not self.diagnostic_entities
         self.platforms.clear()
 
-        for device in tuple(reversed(self.devices.values())):
+        for device in tuple(reversed(self.devices)):
             device.shutdown()
-        self.devices.clear()
+        assert not self.devices
 
     async def async_setup_entry_platform(
         self,

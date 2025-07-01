@@ -26,7 +26,7 @@ if typing.TYPE_CHECKING:
 
     from ...controller import EntryData
     from ...controller.devices import Device
-    from .devices import EstimatorDevice, MeterDevice
+    from .devices import EnergyObserverEstimatorDevice, MeterDevice
 
     class ControllerStoreType(TypedDict):
         time: str
@@ -157,7 +157,7 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
         conversion_yield_actual_sensor: Sensor | None
         """
         meter_devices: Final[dict[str, dict[str, MeterDevice]]]
-        estimator_devices: Final[dict[str, EstimatorDevice]]
+        estimator_devices: Final[dict[str, EnergyObserverEstimatorDevice]]
         """
         example:
         {
@@ -277,7 +277,7 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
                     config  # type:ignore
                 )
 
-            case pmc.ConfigSubentryType.MANAGER_ESTIMATOR:
+            case ("manager", "estimator"):
                 # Subentry config is a bit hybrid since it must include configurations for all
                 # the estimators (so they'll share common config options)
                 schema = PvEstimator.get_config_schema(
@@ -285,7 +285,8 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
                 )
                 return schema
 
-            case pmc.ConfigSubentryType.MANAGER_LOSSES:
+            case ("manager", "losses"):
+                # REMOVE
                 if not config:
                     config = {
                         "name": "Losses",
@@ -313,7 +314,11 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
 
     def __init__(self, config_entry: "ConfigEntry"):
         self._store = ControllerStore(config_entry.entry_id)
-        self.meter_devices = {}
+        self.meter_devices = {
+            SourceType.BATTERY: {},
+            SourceType.LOAD: {},
+            SourceType.PV: {},
+        }
         self.estimator_devices = {}
         self.load_estimator = None
         self.pv_estimator = None
@@ -364,7 +369,7 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
             case ("manager", source_type, "meter"):
                 SOURCE_TYPE_METER_MAP[source_type](self, entry_data)
 
-            case pmc.ConfigSubentryType.MANAGER_ESTIMATOR:
+            case ("manager", "estimator"):
                 self.load_estimator = LoadEstimator(self, entry_data)
                 self.pv_estimator = PvEstimator(self, entry_data)
 

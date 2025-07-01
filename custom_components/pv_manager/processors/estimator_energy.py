@@ -35,8 +35,6 @@ if typing.TYPE_CHECKING:
         Unpack,
     )
 
-    from homeassistant.core import State
-
 
 class EnergyEstimator(Estimator):
     """
@@ -332,8 +330,10 @@ class EnergyObserverEstimator(EnergyEstimator):
         class Sample(EnergyEstimator.Sample):
             pass
 
-        type HistoryEntityProcess = Callable[[hh.CompressedState], None]
-        type HistoryEntitiesDesc = dict[str, HistoryEntityProcess]
+        type HistoryProcessT = Callable[
+            [hh.CompressedState, SignalEnergyProcessor.EnergyListenerT], Any
+        ]
+        type HistoryEntitiesDesc = dict[str, HistoryProcessT]
 
         class Config(EnergyEstimator.Config):
             observation_duration_minutes: int
@@ -494,33 +494,31 @@ class EnergyObserverEstimator(EnergyEstimator):
     def _history_entities(self, /) -> "HistoryEntitiesDesc":
         return {}
 
-    class _HistoryEntityIterator:
+    class _HistoryIterator:
+
+        if typing.TYPE_CHECKING:
+            process: Final["EnergyObserverEstimator.HistoryProcessT"]
+            iter: Final
+
+        __slots__ = (
+            "process",
+            "iter",
+            "state",
+            "time_ts",
+        )
 
         def __init__(
             self,
-            entity_id: str,
-            process: "EnergyObserverEstimator.HistoryEntityProcess",
+            process: "EnergyObserverEstimator.HistoryProcessT",
             states: "list[hh.CompressedState]",
         ):
-            self.entity_id = entity_id
-            self._process = process
-            self._states = states
-            self._iter = iter(states)
+            self.process = process
+            self.iter = iter(states)
             try:
-                self.state = next(self._iter)
+                self.state = next(self.iter)
                 self.time_ts = self.state["lu"]
             except StopIteration:
                 self.time_ts = pmc.TIMESTAMP_MAX
-
-        def process(self, /):
-            self._process(self.state)
-            try:
-                self.state = next(self._iter)
-                self.time_ts = self.state["lu"]
-                return False
-            except StopIteration:
-                self.time_ts = pmc.TIMESTAMP_MAX
-                return True
 
     def _restore_history(self):
 
@@ -539,36 +537,43 @@ class EnergyObserverEstimator(EnergyEstimator):
             )
 
             # Scan the entities states lists to find the next state update event in time ordering
-            entity_iterator_class = EnergyObserverEstimator._HistoryEntityIterator
+            entity_iterator_class = EnergyObserverEstimator._HistoryIterator
             state_iterators = [
-                entity_iterator_class(entity_id, history_entities[entity_id], states)
+                entity_iterator_class(history_entities[entity_id], states)
                 for entity_id, states in source_entity_states.items()
             ]
-            fake_iterator = entity_iterator_class("", lambda s: None, [])
+            fake_iterator = entity_iterator_class(lambda s, c: None, [])
             while True:
                 if not self._restore_history_task_ts:
                     # Shutting down
                     return
 
-                _next_iterator = fake_iterator
+                iterator = fake_iterator
                 for _iterator in state_iterators:
-                    if _iterator.time_ts < _next_iterator.time_ts:
-                        _next_iterator = _iterator
+                    if _iterator.time_ts < iterator.time_ts:
+                        iterator = _iterator
 
-                if _next_iterator is fake_iterator:
+                if iterator is fake_iterator:
                     break
 
-                if _next_iterator.process():
-                    # This iterator came to end: remove it to trim the loop
-                    state_iterators.remove(_next_iterator)
+                iterator.process(iterator.state, self._process_energy)
+                try:
+                    iterator.state = next(iterator.iter)
+                    iterator.time_ts = iterator.state["lu"]
+                except StopIteration:
+                    state_iterators.remove(iterator)
 
             if self.isEnabledFor(self.DEBUG):
                 self.log(
                     self.DEBUG,
-                    "Restored history for '%s' in %s sec (states = %d)",
-                    entity_ids,
+                    "Restored history for {%s} in %s sec",
+                    str(
+                        {
+                            _entity_id: len(_states)
+                            for _entity_id, _states in source_entity_states.items()
+                        }
+                    ),
                     round(time() - self._restore_history_task_ts, 2),
-                    len(source_entity_states),
                 )
 
         except Exception as e:
@@ -623,89 +628,7 @@ class SignalEnergyEstimator(EnergyObserverEstimator, SignalEnergyProcessor):
 
     @typing.override
     def _history_entities(self) -> "EnergyObserverEstimator.HistoryEntitiesDesc":
-        return {self.source_entity_id: self._history_process_source_entity_id}
-
-    def _history_process_source_entity_id(self, state: "hh.CompressedState", /):
-        """Fast path for processing source entity history. This is a partial replication of code in
-        SignalEnergyProcessor.process without some checks and the callbacks."""
-        time_ts = state["lu"]
-        try:
-            input = (
-                float(state["s"])
-                * self.input_convert[state["a"]["unit_of_measurement"]]
-            )
-            d_ts = time_ts - self.time_ts
-            if 0 <= d_ts < self.maximum_latency_ts:
-                if self._differential_mode:
-                    energy = input - self.input  # type: ignore
-                    if self.energy_min <= energy / d_ts <= self.energy_max:
-                        self._process_energy(energy, time_ts)
-                else:
-                    if not (self.input_min <= input <= self.input_max):
-                        # discard the out of range observation
-                        input = None
-                    # power left rect integration
-                    self._process_energy(self.input * d_ts / 3600, time_ts)  # type: ignore
-
-            self.input = input
-            self.time_ts = time_ts
-            return
-
-        except AttributeError as error:
-            if error.name != "input_convert":
-                raise error
-            # This path is executed on first history numeric state processing, when
-            # the energy processor is not yet configured
-            assert self.input is None
-            um = state["a"]["unit_of_measurement"]
-            unit = SignalEnergyProcessor.Unit.from_um(um)
-            if not unit:
-                raise ValueError(f"Unit '{um}' not supported")
-            self.configure(unit)
-            try:
-                self.input = float(state["s"]) * self.input_convert[um]
-                if not self._differential_mode:
-                    if not (self.input_min <= self.input <= self.input_max):
-                        # discard the out of range power observation
-                        self.input = None
-            except Exception as e:
-                # same as external handler
-                if state["s"] not in (hac.STATE_UNKNOWN, hac.STATE_UNAVAILABLE):
-                    self.log_exception(
-                        self.WARNING,
-                        e,
-                        "_history_process_source_entity_id (state:%s)",
-                        str(state),
-                        timeout=300,
-                    )
-            self.time_ts = time_ts
-            return
-        except TypeError as error:
-            # This code path 'must' be executed whenever input or self.input are 'None'
-            # See SignalEnergyProcessor.process. In this context we're skipping warnings
-            self.input = input
-            self.time_ts = time_ts
-            return
-        except Exception as e:
-            # Non-float states will raise ValueError but we catch everything here assuming the conversion
-            # could not be done. This is expected and silently managed when state 'unknown' or 'unavailable'
-            self.input = None
-            self.time_ts = time_ts
-            if state["s"] not in (hac.STATE_UNKNOWN, hac.STATE_UNAVAILABLE):
-                self.log_exception(
-                    self.WARNING,
-                    e,
-                    "_history_process_source_entity_id (state:%s)",
-                    str(state),
-                    timeout=300,
-                )
-            return
-
-    @typing.override
-    def _restore_history(self):
-        super()._restore_history()
-        # take care of this else self.process would fail to detect the transition
-        self.warning_no_signal_on = True if self.input is None else False
+        return {self.source_entity_id: self.history_process}
 
 
 class EnergyBalanceEstimator(EnergyEstimator):

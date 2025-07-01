@@ -36,13 +36,14 @@ if typing.TYPE_CHECKING:
     from homeassistant.core import Event, EventStateChangedData, State
 
     from .. import const as pmc
+    from ..helpers.history import CompressedState
 
 
 class GenericBroadcast[*_argsT]:
 
     if typing.TYPE_CHECKING:
-        type LISTENER_TYPE = Callable[[*_argsT], Any]
-        _listeners: set[LISTENER_TYPE]
+        type ListenerT = Callable[[*_argsT], Any]
+        _listeners: set[ListenerT]
 
     __slots__ = ("_listeners",)
 
@@ -52,7 +53,7 @@ class GenericBroadcast[*_argsT]:
         except AttributeError:
             pass
 
-    def listen(self, callback_func: "LISTENER_TYPE"):
+    def listen(self, callback_func: "ListenerT"):
         try:
             _listeners = self._listeners
         except AttributeError:
@@ -79,8 +80,8 @@ class GenericBroadcast[*_argsT]:
 class EnergyBroadcast(Loggable):
 
     if typing.TYPE_CHECKING:
-        ENERGY_LISTENER_TYPE = Callable[[float, float], None]
-        energy_listeners: set[ENERGY_LISTENER_TYPE]
+        type EnergyListenerT = Callable[[float, float], None]
+        energy_listeners: set[EnergyListenerT]
 
     _SLOTS_ = ("energy_listeners",)
 
@@ -88,7 +89,7 @@ class EnergyBroadcast(Loggable):
         self.energy_listeners = set()
         super().__init__(id, **kwargs)
 
-    def listen_energy(self, callback_func: "ENERGY_LISTENER_TYPE"):
+    def listen_energy(self, callback_func: "EnergyListenerT"):
         listeners = self.energy_listeners
         listeners.add(callback_func)
 
@@ -308,7 +309,7 @@ class SignalProcessor[_input_t](BaseProcessor):
         CHARGE = (UnitOfElectricCharge.AMPERE_HOUR, ElectricChargeConverter)
 
         @staticmethod
-        def from_um(unit_of_measurement: str | None):
+        def from_um(unit_of_measurement: str):
             for unit in SignalProcessor.Unit:
                 if unit_of_measurement in unit.units:
                     return unit
@@ -360,8 +361,8 @@ class SignalProcessor[_input_t](BaseProcessor):
         self.input = None
         self.input_unit = None
         super().__init__(id, **kwargs)
-        self.source_entity_id = self.config.get("source_entity_id")
-        self.update_period_ts = self.config.get("update_period", 0)
+        self.source_entity_id = self.config.get("source_entity_id") or ""
+        self.update_period_ts = self.config.get("update_period") or 0
 
     @typing.override
     async def async_start(self):
@@ -667,6 +668,87 @@ class SignalEnergyProcessor(SignalProcessor[float], EnergyBroadcast):
             self.warning_no_signal_activate()
 
     # interface: self
+    def history_process(
+        self, state: "CompressedState", callback: "EnergyBroadcast.EnergyListenerT", /
+    ):
+        """Fast path for processing source entity history. This is a partial replication of code in
+        'process' without some checks and the callbacks."""
+        time_ts = state["lu"]
+        try:
+            input = (
+                float(state["s"])
+                * self.input_convert[state["a"]["unit_of_measurement"]]
+            )
+            d_ts = time_ts - self.time_ts
+            if 0 <= d_ts < self.maximum_latency_ts:
+                if self._differential_mode:
+                    energy = input - self.input  # type: ignore
+                    if self.energy_min <= energy / d_ts <= self.energy_max:
+                        callback(energy, time_ts)
+                else:
+                    if not (self.input_min <= input <= self.input_max):
+                        # discard the out of range observation
+                        input = None
+                    # power left rect integration
+                    callback(self.input * d_ts / 3600, time_ts)  # type: ignore
+
+            self.input = input
+            self.time_ts = time_ts
+            return
+
+        except AttributeError as error:
+            if error.name != "input_convert":
+                raise error
+            # This path is executed on first history numeric state processing, when
+            # the energy processor is not yet configured
+            assert self.input is None
+            um = state["a"]["unit_of_measurement"]
+            unit = SignalEnergyProcessor.Unit.from_um(um)
+            if not unit:
+                raise ValueError(f"Unit '{um}' not supported")
+            self.configure(unit)
+            try:
+                self.input = float(state["s"]) * self.input_convert[um]
+                self.warning_no_signal_on = False
+                if not self._differential_mode:
+                    if not (self.input_min <= self.input <= self.input_max):
+                        # discard the out of range power observation
+                        self.input = None
+            except Exception as e:
+                # same as external handler
+                if state["s"] not in (hac.STATE_UNKNOWN, hac.STATE_UNAVAILABLE):
+                    self.log_exception(
+                        self.WARNING,
+                        e,
+                        "process_history (state:%s)",
+                        str(state),
+                        timeout=300,
+                    )
+            self.time_ts = time_ts
+            return
+        except TypeError as error:
+            # This code path 'must' be executed whenever input or self.input are 'None'
+            # See SignalEnergyProcessor.process. In this context we're skipping warning broadcast
+            self.input = input
+            self.time_ts = time_ts
+            self.warning_no_signal_on = True if input is None else False
+            return
+        except Exception as e:
+            # Non-float states will raise ValueError but we catch everything here assuming the conversion
+            # could not be done. This is expected and silently managed when state 'unknown' or 'unavailable'
+            self.input = None
+            self.time_ts = time_ts
+            self.warning_no_signal_on = True
+            if state["s"] not in (hac.STATE_UNKNOWN, hac.STATE_UNAVAILABLE):
+                self.log_exception(
+                    self.WARNING,
+                    e,
+                    "process_history (state:%s)",
+                    str(state),
+                    timeout=300,
+                )
+            return
+
     def reset(self, /):
         """Called to stop accumulation up until time_ts (see energy estimators) without raising any warning or
         dispatching any current accumulated energy."""

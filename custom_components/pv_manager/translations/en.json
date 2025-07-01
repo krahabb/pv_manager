@@ -61,29 +61,21 @@
                     "name": "Off Grid Manager"
                 },
                 "sections": {
-                    "battery":{
+                    "battery": {
                         "name": "Battery",
-                        "data": {
-
-                        }
+                        "data": {}
                     },
-                    "pv":{
+                    "pv": {
                         "name": "PV",
-                        "data": {
-
-                        }
+                        "data": {}
                     },
-                    "load":{
+                    "load": {
                         "name": "Load",
-                        "data": {
-
-                        }
+                        "data": {}
                     },
-                    "estimation":{
+                    "estimation": {
                         "name": "Estimation",
-                        "data": {
-
-                        }
+                        "data": {}
                     }
                 }
             },
@@ -173,6 +165,25 @@
             "error": {},
             "abort": {
                 "already_configured": "Subentry type already configured",
+                "reconfigure_successful": "Reconfigure successful"
+            }
+        },
+        "manager_estimator": {
+            "initiate_flow": {
+                "user": "Estimator"
+            },
+            "step": {
+                "user": {
+                    "title": "Estimator",
+                    "description": "Configure manager estimators",
+                    "data": {
+                        "name": "Sensor name(s)"
+                    }
+                }
+            },
+            "error": {},
+            "abort": {
+                "already_configured": "Estimator already configured",
                 "reconfigure_successful": "Reconfigure successful"
             }
         },
