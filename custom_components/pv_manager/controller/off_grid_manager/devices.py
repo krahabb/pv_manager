@@ -5,7 +5,7 @@ from homeassistant.config_entries import ConfigEntryState
 from ...helpers import validation as hv
 from ...helpers.dataattr import DataAttr, DataAttrParam
 from ...processors.estimator_consumption_heuristic import HeuristicConsumptionEstimator
-from ...processors.estimator_energy import EnergyObserverEstimator
+from ...processors.estimator_energy import SignalEnergyEstimator
 from ...processors.estimator_pvenergy_heuristic import HeuristicPVEnergyEstimator
 from ..devices import ProcessorDevice, SignalEnergyProcessorDevice
 from ..devices.battery_device import BatteryProcessorDevice
@@ -39,18 +39,18 @@ class OffGridManagerDevice(ProcessorDevice):
         controller: Final[OffGridManager]  # type: ignore
         config_subentry_id: Final[str]  # type: ignore
 
-        # metering_source: Final[SourceType]
         SOURCE_TYPE: ClassVar[SourceType]
 
-    def __init__(self, controller: "OffGridManager", entry_data: "EntryData", /):
-        source_type = self.__class__.SOURCE_TYPE
-        config: "OffGridManagerDevice.Config" = entry_data.config  # type: ignore
+    def __init__(
+        self, controller: "OffGridManager", config: "Config", subentry_id: str, /
+    ):
+        _class = self.__class__
         super().__init__(
-            f"{source_type}_{entry_data.subentry_id}",  # this should prove to be unique in the controller context
+            f"{_class.SOURCE_TYPE}_{subentry_id}",  # this should prove to be unique in the controller context
             controller=controller,
-            config_subentry_id=entry_data.subentry_id,
-            model=self.__class__.__name__,
-            name=f"{config.get("name") or self.__class__.DEFAULT_NAME} {source_type}",
+            config_subentry_id=subentry_id,
+            model=_class.__name__,
+            name=config.get("name") or _class.DEFAULT_NAME or _class.SOURCE_TYPE,
             config=config,
         )
 
@@ -61,8 +61,13 @@ class MeterDevice(OffGridManagerDevice, SignalEnergyProcessorDevice):
         class Config(SignalEnergyProcessorDevice.Config):
             pass
 
-    def __init__(self, controller: "OffGridManager", entry_data: "EntryData", /):
-        super().__init__(controller, entry_data)
+        ESTIMATOR_CLASS: type[OffGridManagerDevice]
+        """Used in Controller to conditionally instantiate the proper estimator"""
+
+    def __init__(
+        self, controller: "OffGridManager", config: "Config", subentry_id: str, /
+    ):
+        super().__init__(controller, config, subentry_id)
         controller.meter_devices[self.__class__.SOURCE_TYPE][
             self.config_subentry_id
         ] = self
@@ -129,64 +134,30 @@ class PvMeter(MeterDevice):
     SOURCE_TYPE = SourceType.PV
 
 
-class EnergyObserverEstimatorDevice(
-    OffGridManagerDevice, EnergyEstimatorDevice, EnergyObserverEstimator
+BatteryMeter.ESTIMATOR_CLASS = BatteryMeter  # TODO
+
+
+class SignalEnergyEstimatorDevice(
+    OffGridManagerDevice, EnergyEstimatorDevice, SignalEnergyEstimator
 ):
-    """Common ancestor for Load and Pv estimators which are based off EnergyObserverEstimator.
-    TODO: create a common 'EstimatorDevice' to share behaviors with 'BatterySetimator'.
-    """
 
-    if typing.TYPE_CHECKING:
-
-        class Config(EnergyEstimatorDevice.Config, EnergyObserverEstimator.Config):
-            pass
-
-        meter_devices: dict[str, MeterDevice]  # Lazy init
-        _listen_energy_unsub: list[Callable]  # Lazy init
-
-    __slots__ = (
-        "meter_devices",
-        "_listen_energy_unsub",
-    )
-
-    def __init__(self, controller: "OffGridManager", entry_data: "EntryData", /):
-        super().__init__(controller, entry_data)
-        self.priority = self.Priority.HIGH
-        controller.estimator_devices[self.__class__.SOURCE_TYPE] = self
-
-    async def async_start(self):
-        self.meter_devices = self.controller.meter_devices.get(self.SOURCE_TYPE, {})
-        self._listen_energy_unsub = [
-            meter_device.listen_energy(self._process_energy)
-            for meter_device in self.meter_devices.values()
-        ]
-        await super().async_start()
-
-    def shutdown(self):
-        try:
-            for _unsub in self._listen_energy_unsub:
-                _unsub()
-            self._listen_energy_unsub.clear()
-        except AttributeError:
-            pass
-        del self.controller.estimator_devices[self.__class__.SOURCE_TYPE]
-        super().shutdown()
-
-    @typing.override
-    def _history_entities(self) -> "EnergyObserverEstimator.HistoryEntitiesDesc":
-        return {
-            meter_device.source_entity_id: meter_device.history_process
-            for meter_device in self.meter_devices.values()
-        }
+    __slots__ = ()
 
 
-class LoadEstimator(EnergyObserverEstimatorDevice, HeuristicConsumptionEstimator):
-    SOURCE_TYPE = SourceType.LOAD
+class LoadEstimator(
+    LoadMeter, SignalEnergyEstimatorDevice, HeuristicConsumptionEstimator
+):
+    pass
 
 
-class PvEstimator(EnergyObserverEstimatorDevice, HeuristicPVEnergyEstimator):
-    SOURCE_TYPE = SourceType.PV
+LoadMeter.ESTIMATOR_CLASS = LoadEstimator
 
+
+class PvEstimator(PvMeter, SignalEnergyEstimatorDevice, HeuristicPVEnergyEstimator):
+    pass
+
+
+PvMeter.ESTIMATOR_CLASS = PvEstimator
 
 """REMOVE
 class LossesMeter(BaseProcessor, EnergyBroadcast):
