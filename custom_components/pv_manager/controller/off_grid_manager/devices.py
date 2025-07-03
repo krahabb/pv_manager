@@ -61,9 +61,6 @@ class MeterDevice(OffGridManagerDevice, SignalEnergyProcessorDevice):
         class Config(SignalEnergyProcessorDevice.Config):
             pass
 
-        ESTIMATOR_CLASS: type[OffGridManagerDevice]
-        """Used in Controller to conditionally instantiate the proper estimator"""
-
     def __init__(
         self, controller: "OffGridManager", config: "Config", subentry_id: str, /
     ):
@@ -134,14 +131,17 @@ class PvMeter(MeterDevice):
     SOURCE_TYPE = SourceType.PV
 
 
-BatteryMeter.ESTIMATOR_CLASS = BatteryMeter  # TODO
+class EstimatorDevice(OffGridManagerDevice, EnergyEstimatorDevice):
+    pass
 
 
-class SignalEnergyEstimatorDevice(
-    OffGridManagerDevice, EnergyEstimatorDevice, SignalEnergyEstimator
-):
+class BatteryEstimator(EstimatorDevice):
 
-    __slots__ = ()
+    SOURCE_TYPE = SourceType.BATTERY
+
+
+class SignalEnergyEstimatorDevice(EstimatorDevice, SignalEnergyEstimator):
+    pass
 
 
 class LoadEstimator(
@@ -150,14 +150,9 @@ class LoadEstimator(
     pass
 
 
-LoadMeter.ESTIMATOR_CLASS = LoadEstimator
-
-
 class PvEstimator(PvMeter, SignalEnergyEstimatorDevice, HeuristicPVEnergyEstimator):
     pass
 
-
-PvMeter.ESTIMATOR_CLASS = PvEstimator
 
 """REMOVE
 class LossesMeter(BaseProcessor, EnergyBroadcast):

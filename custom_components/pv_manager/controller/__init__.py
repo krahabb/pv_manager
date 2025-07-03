@@ -18,7 +18,7 @@ if typing.TYPE_CHECKING:
 
     from homeassistant.components.energy.types import SolarForecastType
     from homeassistant.config_entries import ConfigEntry, ConfigSubentry
-    from homeassistant.core import HomeAssistant, State
+    from homeassistant.core import HomeAssistant
     from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
     from ..helpers.entity import DiagnosticEntity, Entity
@@ -27,10 +27,11 @@ if typing.TYPE_CHECKING:
 class EntryData[_ConfigT: pmc.EntryConfig | pmc.SubentryConfig]:
     """Cached entry/subentry data."""
 
-    subentry_id: "Final[str | None]"
-    subentry_type: "Final[str | None]"
-    config: _ConfigT
-    entities: "Final[dict[str, Entity]]"
+    if typing.TYPE_CHECKING:
+        subentry_id: Final[str | None]  # type: ignore
+        subentry_type: Final[str | None]  # type: ignore
+        config: _ConfigT
+        entities: Final[dict[str, Entity]]  # type: ignore
 
     __slots__ = (
         "subentry_id",
@@ -42,24 +43,27 @@ class EntryData[_ConfigT: pmc.EntryConfig | pmc.SubentryConfig]:
     @staticmethod
     def Entry(config_entry: "ConfigEntry"):
         entry = EntryData()
-        entry.subentry_id = None
-        entry.subentry_type = None
+        entry.subentry_id = None  # type: ignore
+        entry.subentry_type = None  # type: ignore
         entry.config = config_entry.data
-        entry.entities = {}
+        entry.entities = {}  # type: ignore
         return entry
 
     @staticmethod
     def SubEntry(subentry: "ConfigSubentry"):
         entry = EntryData()
-        entry.subentry_id = subentry.subentry_id
-        entry.subentry_type = subentry.subentry_type
+        entry.subentry_id = subentry.subentry_id  # type: ignore
+        entry.subentry_type = subentry.subentry_type  # type: ignore
         entry.config = subentry.data
-        entry.entities = {}
+        entry.entities = {}  # type: ignore
         return entry
 
 
 class Controller[_ConfigT: pmc.EntryConfig](Device):
     """Base controller class for managing ConfigEntry behavior."""
+
+    class EntryReload(Exception):
+        pass
 
     if typing.TYPE_CHECKING:
 
@@ -69,23 +73,24 @@ class Controller[_ConfigT: pmc.EntryConfig](Device):
         class Args(TypedDict):
             pass
 
-    TYPE: "ClassVar[pmc.ConfigEntryType]"
+        logger: helpers.logging.Logger
 
-    PLATFORMS: "ClassVar[set[str]]" = set()
+        TYPE: ClassVar[pmc.ConfigEntryType]
+        PLATFORMS: ClassVar[set[str]]
+
+        config: _ConfigT
+        options: pmc.EntryOptionsConfig
+        platforms: Final[dict[str, AddConfigEntryEntitiesCallback | None]]
+        """Dict of add_entities callbacks."""
+        devices: Final[list[Device]]
+        entries: Final[dict[str | None, EntryData]]
+        """Cached copy of subentries used to manage subentry add/remove/update."""
+        diagnostic_entities: Final[dict[str, DiagnosticEntity]]
+
+    PLATFORMS = set()
     """Default entity platforms used by the controller. This is used to prepopulate the entities dict so
     that we'll (at least) forward entry setup to these platforms (even if we've still not registered any entity for those).
     This in turn allows us to later create and register entities since we'll register the add_entities callback in our platforms."""
-
-    logger: helpers.logging.Logger
-
-    config: _ConfigT
-    options: pmc.EntryOptionsConfig
-    platforms: "Final[dict[str, AddConfigEntryEntitiesCallback | None]]"
-    """Dict of add_entities callbacks."""
-    devices: "Final[list[Device]]"
-    entries: "Final[dict[str | None, EntryData]]"
-    """Cached copy of subentries used to manage subentry add/remove/update."""
-    diagnostic_entities: "Final[dict[str, DiagnosticEntity]]"
 
     __slots__ = (
         "config_entry",
@@ -207,6 +212,9 @@ class Controller[_ConfigT: pmc.EntryConfig](Device):
             if entities:
                 add_entities(entities, config_subentry_id=subentry_id)
 
+    def schedule_reload(self):
+        Manager.hass.config_entries.async_schedule_reload(self.config_entry.entry_id)
+
     def get_solar_forecast(self) -> "SolarForecastType | None":
         """Returns the forecasts array for HA energy integration.
         This is here to setup the entry-point to be called by the energy platform.
@@ -216,59 +224,60 @@ class Controller[_ConfigT: pmc.EntryConfig](Device):
     async def _entry_update_listener(
         self, hass: "HomeAssistant", config_entry: "ConfigEntry"
     ):
-        entries = self.entries
-        if self.config != config_entry.data:
-            self.config = config_entry.data  # type: ignore
-            entry_data = entries[None]
-            entry_data.config = config_entry.data
-            # eventually we can 'kick' a subentry_update
-            # self._subentry_update(None, entry_data)
+        try:
+            entries = self.entries
+            if self.config != config_entry.data:
+                self.config = config_entry.data  # type: ignore
+                entry_data = entries[None]
+                entry_data.config = config_entry.data
+                # eventually we can 'kick' a subentry_update
+                # self._subentry_update(None, entry_data)
 
-        # dispatch detailed subentry updates so that inheriteds don't have to bother
-        # every time scanning and matching variations
-        removed_entries = set()
-        for subentry_id in entries:
-            if subentry_id and (subentry_id not in config_entry.subentries):
-                removed_entries.add(subentry_id)
-        for subentry_id in removed_entries:
-            entry_data = entries[subentry_id]
-            try:
-                await self._async_subentry_remove(subentry_id, entry_data)
-            except Exception as e:
-                self.log_exception(self.WARNING, e, "_async_subentry_remove")
-            # removed leftover entities (eventually)
-            for entity in tuple(entry_data.entities.values()):
-                try:
-                    await entity.async_shutdown(True)
-                except Exception as e:
-                    self.log_exception(self.WARNING, e, "entity.async_shutdown")
-
-            assert not entry_data.entities
-            # remove only after shutting down entities
-            del entries[subentry_id]
-
-        for subentry_id, subentry in config_entry.subentries.items():
-            try:
+            # dispatch detailed subentry updates so that inheriteds don't have to bother
+            # every time scanning and matching variations
+            removed_entries = set()
+            for subentry_id in entries:
+                if subentry_id and (subentry_id not in config_entry.subentries):
+                    removed_entries.add(subentry_id)
+            for subentry_id in removed_entries:
                 entry_data = entries[subentry_id]
-                if entry_data.config is not subentry.data:
-                    entry_data.config = subentry.data
-                    await self._async_subentry_update(subentry_id, entry_data)
-            except KeyError:
-                # new subentry
-                entries[subentry_id] = entry_data = EntryData.SubEntry(subentry)
-                self._subentry_add(subentry_id, entry_data)
+                await self._async_subentry_remove(subentry_id, entry_data)
+                # removed leftover entities (eventually)
+                for entity in tuple(entry_data.entities.values()):
+                    try:
+                        await entity.async_shutdown(True)
+                    except Exception as e:
+                        self.log_exception(self.WARNING, e, "entity.async_shutdown")
 
-        if self.options != config_entry.options:
-            self.options = config_entry.options  # type: ignore
-            self.logger.setLevel(
-                pmc.CONF_LOGGING_LEVEL_OPTIONS.get(
-                    self.options.get("logging_level", "default"), self.DEFAULT
+                assert not entry_data.entities
+                # remove only after shutting down entities
+                del entries[subentry_id]
+
+            for subentry_id, subentry in config_entry.subentries.items():
+                try:
+                    entry_data = entries[subentry_id]
+                    if entry_data.config is not subentry.data:
+                        entry_data.config = subentry.data
+                        await self._async_subentry_update(subentry_id, entry_data)
+                except KeyError:
+                    # new subentry
+                    entries[subentry_id] = entry_data = EntryData.SubEntry(subentry)
+                    self._subentry_add(subentry_id, entry_data)
+
+            if self.options != config_entry.options:
+                self.options = config_entry.options  # type: ignore
+                self.logger.setLevel(
+                    pmc.CONF_LOGGING_LEVEL_OPTIONS.get(
+                        self.options.get("logging_level", "default"), self.DEFAULT
+                    )
                 )
-            )
-            if self.options.get("create_diagnostic_entities"):
-                self._create_diagnostic_entities()
-            else:
-                await self._async_destroy_diagnostic_entities()
+                if self.options.get("create_diagnostic_entities"):
+                    self._create_diagnostic_entities()
+                else:
+                    await self._async_destroy_diagnostic_entities()
+
+        except Controller.EntryReload:
+            self.schedule_reload()
 
     def _create_diagnostic_entities(self):
         """Dynamically create some diagnostic entities depending on configuration"""
@@ -281,13 +290,19 @@ class Controller[_ConfigT: pmc.EntryConfig](Device):
         assert not self.diagnostic_entities
 
     def _subentry_add(self, subentry_id: str, entry_data: EntryData):
-        pass
+        """Placeholder method invoked whan a new subentry is added and at start.
+        Raises 'EntryReload' if not able to handle adding an entry 'on the fly' so that the
+        config_entry will be reloaded."""
 
     async def _async_subentry_update(self, subentry_id: str, entry_data: EntryData):
-        pass
+        """Placeholder method invoked whan a subentry is updated.
+        Raises 'EntryReload' if not able to handle updating an entry 'on the fly' so that the
+        config_entry will be reloaded."""
 
     async def _async_subentry_remove(self, subentry_id: str, entry_data: EntryData):
-        pass
+        """Placeholder method invoked whan a subentry is removed.
+        Raises 'EntryReload' if not able to handle removing an entry 'on the fly' so that the
+        config_entry will be reloaded."""
 
 
 class EnergyEstimatorController[_ConfigT: "EnergyEstimatorController.Config"](  # type: ignore

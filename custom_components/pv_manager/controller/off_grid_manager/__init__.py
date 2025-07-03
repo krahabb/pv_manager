@@ -11,19 +11,35 @@ from ...helpers import validation as hv
 from ...helpers.manager import Manager
 from ...sensor import Sensor
 from .devices import (
+    BatteryEstimator,
     BatteryMeter,
     HeuristicPVEnergyEstimator,
+    LoadEstimator,
     LoadMeter,
+    PvEstimator,
     PvMeter,
 )
 
 if typing.TYPE_CHECKING:
-    from typing import Any, Final, Iterable, Mapping, NotRequired, TypedDict, Unpack
+    from typing import (
+        Any,
+        Callable,
+        Final,
+        Iterable,
+        Mapping,
+        NotRequired,
+        TypedDict,
+        Unpack,
+    )
 
     from homeassistant.config_entries import ConfigEntry
 
     from ...controller import EntryData
-    from .devices import MeterDevice
+    from .devices import EstimatorDevice, MeterDevice, OffGridManagerDevice
+
+    SUBENTRY_TYPE_CONFIG_MAP: dict[str | None, Callable]
+    SUBENTRY_TYPE_DEVICE_MAP: dict[str | None, type[OffGridManagerDevice]]
+    SUBENTRY_TYPE_ESTIMATOR_MAP: dict[str | None, type[OffGridManagerDevice]]
 
     class ControllerStoreType(TypedDict):
         time: str
@@ -47,10 +63,24 @@ class ControllerStore(storage.Store["ControllerStoreType"]):
         )
 
 
-SUBENTRY_TYPE_DEVICE_MAP: dict[str | None, type["MeterDevice"]] = {
+SUBENTRY_TYPE_CONFIG_MAP = {
+    pmc.ConfigSubentryType.MANAGER_BATTERY_METER: BatteryMeter.get_config_schema,
+    pmc.ConfigSubentryType.MANAGER_LOAD_METER: LoadMeter.get_config_schema,
+    pmc.ConfigSubentryType.MANAGER_PV_METER: PvMeter.get_config_schema,
+    pmc.ConfigSubentryType.MANAGER_ESTIMATOR: HeuristicPVEnergyEstimator.get_config_schema,
+}
+
+SUBENTRY_TYPE_DEVICE_MAP = {
     pmc.ConfigSubentryType.MANAGER_BATTERY_METER: BatteryMeter,
     pmc.ConfigSubentryType.MANAGER_LOAD_METER: LoadMeter,
     pmc.ConfigSubentryType.MANAGER_PV_METER: PvMeter,
+}
+
+SUBENTRY_TYPE_ESTIMATOR_MAP = {
+    pmc.ConfigSubentryType.MANAGER_BATTERY_METER: BatteryMeter,
+    pmc.ConfigSubentryType.MANAGER_LOAD_METER: LoadEstimator,
+    pmc.ConfigSubentryType.MANAGER_PV_METER: PvEstimator,
+    pmc.ConfigSubentryType.MANAGER_ESTIMATOR: BatteryEstimator,
 }
 
 """
@@ -230,19 +260,10 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
     ) -> pmc.ConfigSchema:
 
         try:
-            return SUBENTRY_TYPE_DEVICE_MAP[subentry_type].get_config_schema(
-                config  # type:ignore
-            )
+            return SUBENTRY_TYPE_CONFIG_MAP[subentry_type](config)
         except KeyError:
 
             match subentry_type:
-                case pmc.ConfigSubentryType.MANAGER_ESTIMATOR:
-                    # Subentry config is a bit hybrid since it must include configurations for all
-                    # the estimators (so they'll share common config options)
-                    schema = HeuristicPVEnergyEstimator.get_config_schema(
-                        config  # type:ignore
-                    )
-                    return schema
 
                 case pmc.ConfigSubentryType.MANAGER_LOSSES:
                     """REMOVE
@@ -329,19 +350,19 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
     @typing.override
     def _subentry_add(self, subentry_id: str, entry_data: "EntryData"):
         try:
-            meter_device_class = SUBENTRY_TYPE_DEVICE_MAP[entry_data.subentry_type]
             if self.estimator_config:
-                meter_device_class.ESTIMATOR_CLASS(
+                SUBENTRY_TYPE_ESTIMATOR_MAP[entry_data.subentry_type](
                     self, self.estimator_config | entry_data.config, subentry_id
                 )
             else:
-                meter_device_class(self, entry_data.config, subentry_id)
-
+                SUBENTRY_TYPE_DEVICE_MAP[entry_data.subentry_type](
+                    self, entry_data.config, subentry_id
+                )
         except KeyError:
-
             match entry_data.subentry_type:
                 case pmc.ConfigSubentryType.MANAGER_ESTIMATOR:
-                    pass
+                    # This means the estimator subentry is being added after load
+                    raise Controller.EntryReload()
 
                 case pmc.ConfigSubentryType.MANAGER_LOSSES:
                     pass
@@ -382,8 +403,9 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
                 SUBENTRY_TYPE_DEVICE_MAP[entry_data.subentry_type].SOURCE_TYPE
             ][subentry_id].update_entry(entry_data)
         except KeyError:
-
             match entry_data.subentry_type:
+                case pmc.ConfigSubentryType.MANAGER_ESTIMATOR:
+                    raise Controller.EntryReload()
 
                 case pmc.ConfigSubentryType.MANAGER_LOSSES:
                     """REMOVE
@@ -451,7 +473,9 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
                 SUBENTRY_TYPE_DEVICE_MAP[entry_data.subentry_type].SOURCE_TYPE
             ][subentry_id].shutdown()
         except KeyError:
-            pass
+            match entry_data.subentry_type:
+                case pmc.ConfigSubentryType.MANAGER_ESTIMATOR:
+                    raise Controller.EntryReload()
 
     # interface: self
     async def _async_store_save(self, time_or_event_or_none, /):
