@@ -1,7 +1,6 @@
 import enum
 from functools import partial
-from types import MappingProxyType
-import typing
+from typing import TYPE_CHECKING
 import uuid
 
 from homeassistant import config_entries, const as hac, data_entry_flow
@@ -12,30 +11,37 @@ from . import const as pmc
 from .controller import Controller
 from .helpers import validation as hv
 
-if typing.TYPE_CHECKING:
-    from typing import Any
+if TYPE_CHECKING:
 
-    from homeassistant.config_entries import ConfigEntry, ConfigSubentry
+    from homeassistant.config_entries import CALLBACK_TYPE, ConfigEntry, ConfigSubentry
+    from homeassistant.core import HomeAssistant
+
+    SUBENTRY_FLOW_MAP: dict[str, dict[str, type[config_entries.ConfigSubentryFlow]]]
+    ENTRY_UPDATE_LISTENERS: dict[ConfigEntry, CALLBACK_TYPE]
 
 
-class CommonFlow(data_entry_flow.FlowHandler if typing.TYPE_CHECKING else object):
+class CommonFlow(data_entry_flow.FlowHandler if TYPE_CHECKING else object):
     """Common Mixin style base class for all of our flows.
     This will need special care in implementations in order to set its attributes depending on context.
     """
 
-    controller_class: type[Controller] = None  # type: ignore
-    """Cached Controller class instance providing schemas and rules to this flow."""
+    if TYPE_CHECKING:
+        controller_class: type[Controller]
+        """Cached Controller class instance providing schemas and rules to this flow."""
+        config_entry: ConfigEntry | None
+        """Cached config_entry when reconfiguring or managing subentry flows. Hoping it doesn't mess with HA."""
+        current_schema: pmc.ConfigSchema
+        """current_schema is updated whenever we show a form so that the context knows the actual
+        validation Schema. This is used for example to correctly merge updates in reconfigure flows."""
+        current_config: pmc.ConfigMapping
+        """current_config is used to generate defaults for schema by passing it to the Controller schema creator.
+        Being 'None' or empty means the configuration is new so the controller should fill in some defaults else
+        it should just the available config (reconfigure flows)."""
 
-    config_entry: "ConfigEntry | None" = None
-    """Cached config_entry when reconfiguring or managing subentry flows. Hoping it doesn't mess with HA."""
-
-    current_schema: pmc.ConfigSchema = {}
-    """current_schema is updated whenever we show a form so that the context knows the actual
-    validation Schema. This is used for example to correctly merge updates in reconfigure flows."""
-    current_config: pmc.ConfigMapping = {}
-    """current_config is used to generate defaults for schema by passing it to the Controller schema creator.
-    Being 'None' or empty means the configuration is new so the controller should fill in some defaults else
-    it should just the available config (reconfigure flows)."""
+    controller_class = None  # type: ignore
+    config_entry = None
+    current_schema = {}
+    current_config = {}
 
     def merge_input(self, user_input: pmc.ConfigMapping):
         """Merge current input into current config allowing to preserve values which will not be changed
@@ -59,27 +65,23 @@ class CommonFlow(data_entry_flow.FlowHandler if typing.TYPE_CHECKING else object
 class ConfigSubentryFlow(CommonFlow, config_entries.ConfigSubentryFlow):  # type: ignore
     """Generalized subentry flow."""
 
-    ENTRY_TYPE: typing.ClassVar[pmc.ConfigEntryType]
-    SUBENTRY_TYPE: typing.ClassVar[pmc.ConfigSubentryType]
+    if TYPE_CHECKING:
+        entry_id: str
+        subentry_type: str
+        config_entry: ConfigEntry
+        subentry_id: str | None
+        config_subentry: ConfigSubentry
 
-    entry_id: str
-    subentry_type: str
-    config_entry: "ConfigEntry"
-    subentry_id: str | None = None
-    config_subentry: "ConfigSubentry"
-    """
-    TODO: self.handler should be a tuple like: (entry_id, subentry_type)
-    so we could simplify our generalization
-    """
+    subentry_id = None
 
     async def _async_init_controller(self):
         assert not self.controller_class
         self.entry_id, self.subentry_type = self.handler
-        self.controller_class = await Controller.get_controller_class(
-            self.hass, self.ENTRY_TYPE
-        )
         self.config_entry = self.hass.config_entries.async_get_known_entry(
             self.entry_id
+        )
+        self.controller_class = await Controller.get_controller_class(
+            self.hass, pmc.ConfigEntryType.get_from_entry(self.config_entry)
         )
 
     async def async_step_user(self, user_input: pmc.ConfigDict | None = None):
@@ -108,7 +110,7 @@ class ConfigSubentryFlow(CommonFlow, config_entries.ConfigSubentryFlow):  # type
             return self.async_update_and_abort(
                 self.config_entry,
                 self.config_subentry,
-                title=user_input.get("name", self.SUBENTRY_TYPE),
+                title=user_input.get("name", self.subentry_type),
                 data=self.merge_input(user_input),
             )
         else:
@@ -129,16 +131,34 @@ class ConfigSubentryFlow(CommonFlow, config_entries.ConfigSubentryFlow):  # type
         )
 
 
-SUBENTRY_FLOW_MAP = {entry_type: {} for entry_type in pmc.ConfigEntryType}
-for entry_type, subentry_tuple in pmc.CONFIGENTRY_SUBENTRY_MAP.items():
-    subentry_flows = SUBENTRY_FLOW_MAP[entry_type]
-    for subentry_type in subentry_tuple:
+SUBENTRY_FLOW_MAP = {
+    pmc.ConfigEntryType.PV_ENERGY_ESTIMATOR: {
+        pmc.ConfigSubentryType.ENERGY_ESTIMATOR_SENSOR: ConfigSubentryFlow,
+    },
+    pmc.ConfigEntryType.CONSUMPTION_ESTIMATOR: {
+        pmc.ConfigSubentryType.ENERGY_ESTIMATOR_SENSOR: ConfigSubentryFlow,
+    },
+    pmc.ConfigEntryType.OFF_GRID_MANAGER: {
+        pmc.ConfigSubentryType.MANAGER_BATTERY_METER: ConfigSubentryFlow,
+        pmc.ConfigSubentryType.MANAGER_LOAD_METER: ConfigSubentryFlow,
+        pmc.ConfigSubentryType.MANAGER_PV_METER: ConfigSubentryFlow,
+        pmc.ConfigSubentryType.MANAGER_ESTIMATOR: ConfigSubentryFlow,
+    },
+}
+UNIQUE_SUBENTRY_TYPES = [
+    subentry_type for subentry_type in pmc.ConfigSubentryType if subentry_type.unique
+]
+ENTRY_UPDATE_LISTENERS = {}
 
-        class _ConfigSubentryFlow(ConfigSubentryFlow):
-            ENTRY_TYPE = entry_type
-            SUBENTRY_TYPE = subentry_type
 
-        subentry_flows[subentry_type.value] = _ConfigSubentryFlow
+async def _entry_update_listener(hass: "HomeAssistant", config_entry: "ConfigEntry"):
+    """Called on every entry change for entries that support unique subentry types.
+    This callback will make sure that the 'supported_subentry_types' property gets updated
+    depending on unique ones being already (or not) configured."""
+    # Raw approach: just invalidate the underlying property and let the code invoke
+    # async_get_supported_subentry_types since the "update" logic is the same and we would
+    # just duplicate the code
+    object.__setattr__(config_entry, "_supported_subentry_types", None)
 
 
 class ConfigFlow(CommonFlow, config_entries.ConfigFlow, domain=pmc.DOMAIN):  # type: ignore
@@ -160,7 +180,39 @@ class ConfigFlow(CommonFlow, config_entries.ConfigFlow, domain=pmc.DOMAIN):  # t
     ) -> dict[str, type[config_entries.ConfigSubentryFlow]]:
         """Return subentries supported by this integration."""
         try:
-            return SUBENTRY_FLOW_MAP[pmc.ConfigEntryType.get_from_entry(config_entry)]
+            supported_subentry_types = SUBENTRY_FLOW_MAP[
+                pmc.ConfigEntryType.get_from_entry(config_entry)
+            ]
+            unique_subentry_types = [
+                subentry_type
+                for subentry_type in UNIQUE_SUBENTRY_TYPES
+                if subentry_type in supported_subentry_types
+            ]
+            if not unique_subentry_types:
+                return supported_subentry_types
+
+            # This config_entry has some unique subentry types so we have to check
+            # if these are already configured. We also setup a listener for changes so that
+            # we can dynamically update the ConfigEntry.supported_subentry_types
+            if config_entry not in ENTRY_UPDATE_LISTENERS:
+                ENTRY_UPDATE_LISTENERS[config_entry] = config_entry.add_update_listener(
+                    _entry_update_listener
+                )
+
+            configured_unique_subentry_types = [
+                subentry.subentry_type
+                for subentry in config_entry.subentries.values()
+                if subentry.subentry_type in unique_subentry_types
+            ]
+            if not configured_unique_subentry_types:
+                return supported_subentry_types
+
+            return {
+                subentry_type: subentry_flow_class
+                for subentry_type, subentry_flow_class in supported_subentry_types.items()
+                if subentry_type not in configured_unique_subentry_types
+            }
+
         except:
             # no log since the entry is likely unloadable and more detailed logging should
             # be available in async_setup_entry

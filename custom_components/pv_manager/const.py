@@ -82,19 +82,6 @@ class ConfigSubentryType(_ConfigSubentryType, enum.ReprEnum):
     MANAGER_ESTIMATOR = ("manager_estimator", True)
 
 
-CONFIGENTRY_SUBENTRY_MAP: dict[ConfigEntryType, tuple[ConfigSubentryType, ...]] = {
-    ConfigEntryType.PV_ENERGY_ESTIMATOR: (ConfigSubentryType.ENERGY_ESTIMATOR_SENSOR,),
-    ConfigEntryType.CONSUMPTION_ESTIMATOR: (
-        ConfigSubentryType.ENERGY_ESTIMATOR_SENSOR,
-    ),
-    ConfigEntryType.OFF_GRID_MANAGER: (
-        ConfigSubentryType.MANAGER_BATTERY_METER,
-        ConfigSubentryType.MANAGER_LOAD_METER,
-        ConfigSubentryType.MANAGER_PV_METER,
-        ConfigSubentryType.MANAGER_ESTIMATOR,
-    ),
-}
-
 CONF_TYPE: typing.Final = "type"
 
 
