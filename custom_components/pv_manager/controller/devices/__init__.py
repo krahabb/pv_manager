@@ -86,9 +86,14 @@ class Device(CallbackTracker, Loggable):
             self.unique_id = f"{config_entry_id}.{id}"
             via_device = next(iter(controller.device_info["identifiers"]))  # type: ignore
         self.device_info = {"identifiers": {(pmc.DOMAIN, self.unique_id)}}
-        self.name = kwargs.pop(
-            "name", self.__class__.DEFAULT_NAME or controller.config_entry.title
+        self.name = (
+            kwargs.pop("name")
+            if "name" in kwargs
+            else (kwargs["config"].get("name") if "config" in kwargs else None)
+            or self.__class__.DEFAULT_NAME
+            or controller.config_entry.title
         )
+
         Manager.device_registry.async_get_or_create(
             config_entry_id=config_entry_id,
             config_subentry_id=self.config_subentry_id,
@@ -155,7 +160,6 @@ class SignalEnergyProcessorDevice(ProcessorDevice, SignalEnergyProcessor):
         config: Config
 
     @classmethod
-    @typing.override
     def get_config_schema(cls, config: "Config | None", /) -> pmc.ConfigSchema:
         _config = config or {
             "name": cls.DEFAULT_NAME,

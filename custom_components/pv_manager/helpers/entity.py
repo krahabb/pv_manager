@@ -1,5 +1,5 @@
 import enum
-import typing
+from typing import TYPE_CHECKING
 
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.helpers import entity, restore_state
@@ -7,8 +7,17 @@ from homeassistant.helpers import entity, restore_state
 from . import Loggable
 from .manager import Manager
 
-if typing.TYPE_CHECKING:
-    from typing import ClassVar, Final, NotRequired, Unpack
+if TYPE_CHECKING:
+    from typing import (
+        Any,
+        Callable,
+        ClassVar,
+        Final,
+        NotRequired,
+        Self,
+        TypedDict,
+        Unpack,
+    )
 
     from .. import const as pmc
     from ..controller import Controller, Device
@@ -30,26 +39,33 @@ class ParentAttr(enum.Enum):
     """The entity will set a reference when added to hass and clear it when removed."""
 
 
-class Entity(Loggable, entity.Entity if typing.TYPE_CHECKING else object):
+class Entity(Loggable, entity.Entity if TYPE_CHECKING else object):
 
-    if typing.TYPE_CHECKING:
+    if TYPE_CHECKING:
 
-        class Args(typing.TypedDict):
+        class Args(TypedDict):
             config_subentry_id: NotRequired[str | None]
             name: NotRequired[str | None]
             entity_category: NotRequired[entity.EntityCategory]
             icon: NotRequired[str]
-            # translation_key: typing.NotRequired[str]
-            parent_attr: NotRequired["ParentAttr | None"]
+            parent_attr: NotRequired[ParentAttr | None]
 
-    PLATFORM: typing.ClassVar[str]
+        PLATFORM: ClassVar[str]
+        is_diagnostic: ClassVar[bool]
+
+        device: Final[Device]
+        # HA core cache/slots const presets
+        available: Final
+        assumed_state: Final
+        force_update: Final
+        has_entity_name: Final
+        should_poll: Final
+        unique_id: Final[str]
 
     EntityCategory = entity.EntityCategory
     ParentAttr = ParentAttr
 
-    is_diagnostic: typing.ClassVar[bool] = False
-
-    device: "Final[Device]"
+    is_diagnostic = False
 
     _attr_parent_attr: ParentAttr | None = ParentAttr.REMOVE
     """By default our entities will automatically remove their reference from the controller
@@ -61,13 +77,6 @@ class Entity(Loggable, entity.Entity if typing.TYPE_CHECKING else object):
     _attr_entity_category = None
     _attr_icon = None
 
-    # HA core cache/slots const presets
-    available: typing.Final
-    assumed_state: typing.Final
-    force_update: typing.Final
-    should_poll: typing.Final
-    unique_id: typing.Final[str]
-
     __slots__ = (
         "device",
         "config_subentry_id",
@@ -77,6 +86,7 @@ class Entity(Loggable, entity.Entity if typing.TYPE_CHECKING else object):
         "entity_category",
         "extra_state_attributes",
         "force_update",
+        "has_entity_name",
         "icon",
         "name",
         "should_poll",
@@ -102,6 +112,7 @@ class Entity(Loggable, entity.Entity if typing.TYPE_CHECKING else object):
         self.entity_category = kwargs.pop("entity_category", self._attr_entity_category)
         self.extra_state_attributes = None
         self.force_update = False
+        self.has_entity_name = True
         self.icon = kwargs.pop("icon", self._attr_icon)
         self.name = kwargs.pop("name", None) or id
         self.should_poll = False
@@ -130,7 +141,7 @@ class Entity(Loggable, entity.Entity if typing.TYPE_CHECKING else object):
         except KeyError:
             controller.platforms[self.PLATFORM] = None
 
-    async def async_shutdown(self, remove: bool):
+    async def async_shutdown(self, remove: bool, /):
         if self._parent_attr:
             delattr(self.device, f"{self.id}_{self.PLATFORM}")
         del self.device.controller.entries[self.config_subentry_id].entities[
@@ -156,15 +167,15 @@ class Entity(Loggable, entity.Entity if typing.TYPE_CHECKING else object):
         await super().async_will_remove_from_hass()
         self.log(self.DEBUG, "removed from hass")
 
-    def update(self, value):
+    def update(self, value, /):
         """Optimized update and flush to HA without checking the entity is added."""
         pass
 
-    def update_safe(self, value):
+    def update_safe(self, value, /):
         """Update and flush with safety check: only flush if added to HA"""
         pass
 
-    def update_name(self, name: str):
+    def update_name(self, name: str, /):
         """Updates entity name and flush to HA state. Useful when updating ConfigEntries/Subentries
         as a shortcut update."""
         self.name = name
@@ -175,11 +186,11 @@ class Entity(Loggable, entity.Entity if typing.TYPE_CHECKING else object):
 class ExtraStoredDataDict(dict, restore_state.ExtraStoredData):
     """Object to hold extra stored data as a plain dict"""
 
-    def as_dict(self) -> dict[str, typing.Any]:
+    def as_dict(self) -> "dict[str, Any]":
         return self
 
     @classmethod
-    def from_dict(cls, restored: dict[str, typing.Any]) -> typing.Self | None:
+    def from_dict(cls, restored: "dict[str, Any]", /) -> "Self | None":
         """Initialize a stored state from a dict."""
         return cls(restored)
 
@@ -188,25 +199,25 @@ class RestoreEntity(restore_state.RestoreEntity):
     pass
 
 
-class DiagnosticEntity(Entity if typing.TYPE_CHECKING else object):
+class DiagnosticEntity(Entity if TYPE_CHECKING else object):
 
-    is_diagnostic: typing.Final = True
+    is_diagnostic: "Final" = True
 
     _attr_parent_attr = None
 
     # HA core entity attributes:
     _attr_entity_category = entity.EntityCategory.DIAGNOSTIC
 
-    def __init__(self, device: "Device", id: str, *args, **kwargs):
+    def __init__(self, device: "Device", id: str, /, *args, **kwargs):
         super().__init__(device, id, *args, **kwargs)
         device.controller.diagnostic_entities[id] = self
 
-    async def async_shutdown(self, remove: bool):
+    async def async_shutdown(self, remove: bool, /):
         del self.device.controller.diagnostic_entities[self.id]
         await super().async_shutdown(remove)
 
 
-class EstimatorEntity(Entity if typing.TYPE_CHECKING else object):
+class EstimatorEntity(Entity if TYPE_CHECKING else object):
 
     estimator: "Estimator"
 
@@ -226,17 +237,15 @@ class EstimatorEntity(Entity if typing.TYPE_CHECKING else object):
         estimator: "Estimator",
         /,
         *args,
-        estimator_update_func: typing.Callable[
-            ["Estimator"], typing.Any
-        ] = lambda e: None,
-        **kwargs,
+        estimator_update_func: "Callable[[Estimator], Any]" = lambda e: None,
+        **kwargs: "Unpack[EstimatorEntity.Args]",
     ):
         self.estimator = estimator
         self._estimator_update_unsub = None
         self._estimator_update_func = estimator_update_func
         super().__init__(device, id, *args, **kwargs)
 
-    async def async_shutdown(self, remove: bool):
+    async def async_shutdown(self, remove: bool, /):
         if self._estimator_update_unsub:
             self._estimator_update_unsub()
             self._estimator_update_unsub = None
@@ -256,7 +265,7 @@ class EstimatorEntity(Entity if typing.TYPE_CHECKING else object):
             self._estimator_update_unsub = None
         await super().async_will_remove_from_hass()
 
-    def on_estimator_update(self, estimator: "Estimator"):
+    def on_estimator_update(self, estimator: "Estimator", /):
         """Called automatically whenever the binded estimator updates (if the entity is loaded).
         Since it could be used to prepare the state before adding to hass it will nevertheless
         need to check for added_to_hass.
