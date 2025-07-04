@@ -1,13 +1,13 @@
-import typing
+from typing import TYPE_CHECKING
 
 from . import SignalEnergyProcessorDevice
 from ...helpers import validation as hv
 from ...processors.battery import BatteryEstimator, BatteryProcessor
-from ...sensor import BatteryChargeSensor, EnergySensor
+from ...sensor import BatteryChargeSensor, EnergySensor, Sensor
 from .estimator_device import EnergyEstimatorDevice
 
-if typing.TYPE_CHECKING:
-    from typing import Final, NotRequired
+if TYPE_CHECKING:
+    from typing import Final, NotRequired, Unpack
 
     from .. import EntryData
     from ... import const as pmc
@@ -15,13 +15,13 @@ if typing.TYPE_CHECKING:
 
 class BatteryProcessorDevice(SignalEnergyProcessorDevice, BatteryProcessor):
 
-    if typing.TYPE_CHECKING:
+    if TYPE_CHECKING:
 
-        class Config(SignalEnergyProcessorDevice.Config, BatteryProcessor.Config):
+        class Config(BatteryProcessor.Config, SignalEnergyProcessorDevice.Config):
             cycle_modes_in: NotRequired[list[EnergySensor.CycleMode]]
             cycle_modes_out: NotRequired[list[EnergySensor.CycleMode]]
 
-        class Args(SignalEnergyProcessorDevice.Args, BatteryProcessor.Args):
+        class Args(BatteryProcessor.Args, SignalEnergyProcessorDevice.Args):
             config: "BatteryProcessorDevice.Config"
 
         config: Config
@@ -31,7 +31,6 @@ class BatteryProcessorDevice(SignalEnergyProcessorDevice, BatteryProcessor):
     _SLOTS_ = ("battery_charge_sensor",)
 
     @classmethod
-    @typing.override
     def get_config_schema(cls, config: "Config | None", /) -> "pmc.ConfigSchema":
         _config = config or {}
         return super().get_config_schema(config) | {
@@ -39,7 +38,7 @@ class BatteryProcessorDevice(SignalEnergyProcessorDevice, BatteryProcessor):
             hv.opt_config("cycle_modes_out", _config): hv.cycle_modes_selector(),
         }
 
-    def __init__(self, id, /, **kwargs):
+    def __init__(self, id, /, **kwargs: "Unpack[Args]"):
         super().__init__(id, **kwargs)
         config = self.config
         self._create_energy_sensors(
@@ -70,7 +69,6 @@ class BatteryProcessorDevice(SignalEnergyProcessorDevice, BatteryProcessor):
             )
         )
 
-    @typing.override
     async def update_entry(self, entry_data: "EntryData", /):
         await super().update_entry(entry_data)
         config = self.config
@@ -91,4 +89,47 @@ class BatteryProcessorDevice(SignalEnergyProcessorDevice, BatteryProcessor):
 
 
 class BatteryEstimatorDevice(EnergyEstimatorDevice, BatteryEstimator):
-    pass
+
+    if TYPE_CHECKING:
+
+        class Config(BatteryEstimator.Config, EnergyEstimatorDevice.Config):
+            cycle_modes_in: NotRequired[list[EnergySensor.CycleMode]]
+            cycle_modes_out: NotRequired[list[EnergySensor.CycleMode]]
+
+        class Args(BatteryEstimator.Args, EnergyEstimatorDevice.Args):
+            config: "BatteryEstimatorDevice.Config"
+
+        config: Config
+
+        today_charge_estimate_sensor: Sensor
+        tomorrow_charge_estimate_sensor: Sensor
+
+    def __init__(self, id, /, **kwargs: "Unpack[Args]"):
+        super().__init__(id, **kwargs)
+        self.listen_update(self.on_update_estimate)
+
+        self.today_charge_estimate_sensor = Sensor(
+            self,
+            "today_charge_estimate",
+            name="Charge estimate (today)",
+            native_unit_of_measurement="Ah",
+            suggested_display_precision=0,
+            parent_attr=Sensor.ParentAttr.REMOVE,
+        )
+        self.tomorrow_charge_estimate_sensor = Sensor(
+            self,
+            "tomorrow_charge_estimate",
+            name="Charge estimate (tomorrow)",
+            native_unit_of_measurement="Ah",
+            suggested_display_precision=0,
+            parent_attr=Sensor.ParentAttr.REMOVE,
+        )
+
+    def on_update_estimate(self, estimator: "BatteryEstimator", /):
+        f = estimator.get_forecast(estimator.estimation_time_ts, estimator.tomorrow_ts)
+        today_charge_estimate = estimator.charge_in - estimator.charge_out + f.charge
+        self.today_charge_estimate_sensor.update_safe(today_charge_estimate)
+        f = estimator.get_forecast(estimator.tomorrow_ts, estimator.tomorrow_ts + 86400)
+        self.tomorrow_charge_estimate_sensor.update_safe(
+            today_charge_estimate + f.charge
+        )

@@ -156,7 +156,13 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
     if typing.TYPE_CHECKING:
 
         estimator_config: Final[pmc.ConfigMapping | None]
-        meter_devices: Final[dict[str, dict[str, MeterDevice]]]
+
+        class MeterDevicesT(TypedDict):
+            battery: dict[str, BatteryMeter]
+            load: dict[str, LoadMeter]  # could be LoadEstimator
+            pv: dict[str, PvMeter]  # could be PvEstimator
+
+        meter_devices: Final[MeterDevicesT]
 
     DEFAULT_NAME = "Off grid Manager"
     """REMOVE
@@ -303,10 +309,7 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
     def __init__(self, config_entry: "ConfigEntry"):
         self._store = ControllerStore(config_entry.entry_id)
         self.estimator_config = Controller._get_estimator_config(config_entry)
-        self.meter_devices = {
-            _meter_device_class.SOURCE_TYPE: {}
-            for _meter_device_class in SUBENTRY_TYPE_DEVICE_MAP.values()
-        }
+        self.meter_devices = {"battery": {}, "load": {}, "pv": {}}
         self._final_write_unsub = None
         super().__init__(config_entry)
 

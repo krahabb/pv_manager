@@ -50,7 +50,6 @@ class BatteryProcessor(SignalEnergyProcessor):
 
     energy_in: DataAttr[float, DataAttrParam.stored] = 0
     energy_out: DataAttr[float, DataAttrParam.stored] = 0
-    charge: DataAttr[float, DataAttrParam.stored] = 0
     charge_in: DataAttr[float, DataAttrParam.stored] = 0
     charge_out: DataAttr[float, DataAttrParam.stored] = 0
     capacity_estimate: DataAttr[float, DataAttrParam.stored] = 0
@@ -77,7 +76,6 @@ class BatteryProcessor(SignalEnergyProcessor):
     )
 
     @classmethod
-    @typing.override
     def get_config_schema(cls, config: "Config | None", /) -> "pmc.ConfigSchema":
         _config = config or {}
         schema = {
@@ -147,11 +145,11 @@ class BatteryProcessor(SignalEnergyProcessor):
         self.energy_broadcast_out.shutdown()
         super().shutdown()
 
-    def update(self, time_ts):
+    def update(self, time_ts, /):
         self.charge_processor.update(time_ts)
         return super().update(time_ts)
 
-    def _process_energy(self, energy: float, time_ts: float):
+    def _process_energy(self, energy: float, time_ts: float, /):
         """Energy listener called by SignalEnergyProcessor(self).process when a sample of energy
         has been calculated."""
         if energy > 0:
@@ -168,7 +166,6 @@ class BatteryProcessor(SignalEnergyProcessor):
         """Energy listener called by charge_processor.process when a sample of energy
         has been calculated (the energy reported is actually the charge leaving the battery).
         """
-        self.charge -= charge
         if charge > 0:
             self.charge_out += charge
         else:
@@ -176,7 +173,7 @@ class BatteryProcessor(SignalEnergyProcessor):
 
     @callback
     def _current_callback(
-        self, event: "Event[EventStateChangedData] | BatteryProcessor.Event"
+        self, event: "Event[EventStateChangedData] | BatteryProcessor.Event", /
     ):
         battery_current = None
         time_ts = event.time_fired_timestamp
@@ -213,7 +210,7 @@ class BatteryProcessor(SignalEnergyProcessor):
 
     @callback
     def _voltage_callback(
-        self, event: "Event[EventStateChangedData] | BatteryProcessor.Event"
+        self, event: "Event[EventStateChangedData] | BatteryProcessor.Event", /
     ):
         battery_voltage = None
         try:
@@ -239,14 +236,23 @@ class BatteryProcessor(SignalEnergyProcessor):
         self.battery_voltage = battery_voltage
 
 
-class BatteryEstimator(EnergyBalanceEstimator, BatteryProcessor):  # type: ignore
+class BatteryEstimator(EnergyBalanceEstimator):
     """A 'Battery estimator':
     This works by collecting production(pv) and consumption data (and estimates)
-    together with battery energy and charge balance to  build an estimate of
-    energy balnce and charge balance for the battery itself.
-    This is also able to estimate system losses (i.e. energy not measured by the 3 systems)
-    and battery charging efficiency."""
-    
+    together with battery energy and charge balance to build a forecast of
+    energy balance and charge balance for the battery itself.
+    This is also able to estimate system losses (i.e. energy not measured by the 3 type of sources)
+    and battery charging efficiency.
+    Battery data need to be forwarded to 'process_energy' and 'process_charge'
+    as produced by a BatteryProcessor.
+    This class is able to collect data from several estimators for load and pv and from
+    several batteries (BatteryProcessor) in order to collect them and provide estimation/forecasts
+    for a battery system which may be composed by multiple devices of the same type.
+    For example we could have 2 or 3 PV sources that feed 2 batteries (in parallel as if it were
+    a single larger battery). Load (consumption) also can be configured with multiple
+    meters/estimators if the system supply diefferent loads (say an inverter
+    and DC loads connected to the battery bank)."""
+
     class Sample(EnergyBalanceEstimator.Sample):
         energy_in: DataAttr[float] = 0
         energy_out: DataAttr[float] = 0
@@ -284,18 +290,25 @@ class BatteryEstimator(EnergyBalanceEstimator, BatteryProcessor):  # type: ignor
 
     if typing.TYPE_CHECKING:
 
-        class Config(EnergyBalanceEstimator.Config, BatteryProcessor.Config):
+        class Config(EnergyBalanceEstimator.Config):
             pass
 
-        class Args(EnergyBalanceEstimator.Args, BatteryProcessor.Args):
+        class Args(EnergyBalanceEstimator.Args):
             config: "BatteryEstimator.Config"
 
         # (override base typehint)
         config: Config
         forecasts: Final[list[Forecast]]  # type: ignore
         _forecasts_recycle: Final[list[Forecast]]  # type: ignore
-        production_estimator: SignalEnergyEstimator
-        consumption_estimator: SignalEnergyEstimator
+        _battery_processors: Final[
+            dict[BatteryProcessor, BatteryProcessor.EnergyListenerUnsub]
+        ]
+        _consumption_estimators: Final[
+            dict[SignalEnergyEstimator, SignalEnergyEstimator.EnergyListenerUnsub]
+        ]
+        _production_estimators: Final[
+            dict[SignalEnergyEstimator, SignalEnergyEstimator.EnergyListenerUnsub]
+        ]
         _sample_curr: Sample
 
         @typing.override
@@ -308,13 +321,17 @@ class BatteryEstimator(EnergyBalanceEstimator, BatteryProcessor):  # type: ignor
 
     DEFAULT_NAME = "Battery estimator"
 
+    energy_in: DataAttr[float, DataAttrParam.stored] = 0
+    energy_out: DataAttr[float, DataAttrParam.stored] = 0
+    charge_in: DataAttr[float, DataAttrParam.stored] = 0
+    charge_out: DataAttr[float, DataAttrParam.stored] = 0
+    production: DataAttr[float, DataAttrParam.stored] = 0
+    consumption: DataAttr[float, DataAttrParam.stored] = 0
     # losses are computed as: production + battery - consumption
     # where:
     # - production: generated (pv) energy
     # - battery: energy from the battery to the load (i.e. positive discharging)
     # - consumption: energy output from inverter (i.e. measure of all the loads)
-    production: DataAttr[float, DataAttrParam.stored] = 0
-    consumption: DataAttr[float, DataAttrParam.stored] = 0
     losses: DataAttr[float, DataAttrParam.stored] = 0
 
     # conversion_yield is the ratio: losses / load and gives a raw figure of
@@ -336,49 +353,28 @@ class BatteryEstimator(EnergyBalanceEstimator, BatteryProcessor):  # type: ignor
     charging_efficiency_total: DataAttr[float, DataAttrParam.stored] = 1
 
     _SLOTS_ = (
-        "_production_broadcast_unsub",
-        "_consumption_broadcast_unsub",
+        "_battery_processors",
+        "_consumption_estimators",
+        "_production_estimators",
     )
 
     def __init__(self, id, **kwargs: "Unpack[Args]"):
         super().__init__(id, **kwargs)
-        self._production_broadcast_unsub = None
-        self._consumption_broadcast_unsub = None
-
-    # interface: EnergyBalanceEstimator
-    @typing.override
-    def connect_production(self, estimator: "SignalEnergyEstimator"):
-        self.production_estimator = estimator
-
-    @typing.override
-    def connect_consumption(self, estimator: "SignalEnergyEstimator"):
-        self.consumption_estimator = estimator
-
-    async def async_start(self):
-        await super().async_start()
-        # since we're not (yet?) restoring history for battery estimation we have to
-        # fix today_energy since it gets lost when unloading the entry.
-        # We could eventually store the estimator state but that's another story
-        # since most of its state is initialized in async_init and that's actually called
-        # after restoring (we have to think about this. TODO)
-        # BEWARE: ensure the battery estimator is started after the production/consumption
-        self._production_broadcast_unsub = self.production_estimator.listen_energy(
-            self._process_production
-        )
-        self._consumption_broadcast_unsub = self.consumption_estimator.listen_energy(
-            self._process_consumption
-        )
+        self._battery_processors = {}
+        self._consumption_estimators = {}
+        self._production_estimators = {}
 
     def shutdown(self):
-        if self._production_broadcast_unsub:
-            self._production_broadcast_unsub()
-            self._production_broadcast_unsub = None
-        if self._consumption_broadcast_unsub:
-            self._consumption_broadcast_unsub()
-            self._consumption_broadcast_unsub = None
+        for _unsub in self._consumption_estimators.values():
+            _unsub()
+        for _unsub in self._production_estimators.values():
+            _unsub()
+        for _unsub in self._battery_processors.values():
+            _unsub()
         super().shutdown()
 
     # interface: EnergyEstimator
+    # Skip EnergyBalanceEstimator.update_estimate
     update_estimate = EnergyEstimator.update_estimate
 
     @typing.override
@@ -406,7 +402,6 @@ class BatteryEstimator(EnergyBalanceEstimator, BatteryProcessor):  # type: ignor
             self.losses += losses
             self.energy_in += energy_in
             self.energy_out += energy_out
-            self.charge += charge_in - charge_out
 
             if production:
                 self.production += production
@@ -462,15 +457,26 @@ class BatteryEstimator(EnergyBalanceEstimator, BatteryProcessor):  # type: ignor
             # trigger a reset since previous sample did not collect any data
             time_end_curr_ts = 0
 
-        # since we're not storing the old sample we'll try this hack to recycle
-        sample_curr.__init__(time_ts, self)
+        sample_curr.__init__(time_ts, self)  # recycle sample_curr
         if time_end_curr_ts != sample_curr.time_begin_ts:
             # when samples are not consecutive
-            self.reset()
+            for _processor in self._battery_processors:
+                _processor.reset()
+            for _processor in self._consumption_estimators:
+                _processor.reset()
+            for _processor in self._production_estimators:
+                _processor.reset()
 
         # make sure those are time aligned else the estimate calculations will mess up
-        self.production_estimator._check_sample_curr(time_ts)
-        self.consumption_estimator._check_sample_curr(time_ts)
+        # TODO: reorganize synchronization of _check_sample_curr among all the estimators
+        # since they should be all aligned to the same sampling period/boundary.
+        # This is to have a predictable sequence so that all estimators are updated in
+        # a 'controlled' way
+        for _consumption_estimator in self._consumption_estimators:
+            _consumption_estimator._check_sample_curr(time_ts)
+        for _production_estimator in self._production_estimators:
+            _production_estimator._check_sample_curr(time_ts)
+
         self.update_estimate()
 
         return sample_curr
@@ -481,8 +487,6 @@ class BatteryEstimator(EnergyBalanceEstimator, BatteryProcessor):  # type: ignor
         sampling_interval_ts = self.sampling_interval_ts
         forecasts = self.forecasts
         _forecasts_recycle = self._forecasts_recycle
-        production_estimator = self.production_estimator
-        consumption_estimator = self.consumption_estimator
 
         time_ts = estimation_time_ts + len(forecasts) * sampling_interval_ts
         time_end_ts = estimation_time_ts + count * sampling_interval_ts
@@ -495,15 +499,17 @@ class BatteryEstimator(EnergyBalanceEstimator, BatteryProcessor):  # type: ignor
             except IndexError:
                 _f = self.__class__.Forecast(time_ts, time_next_ts)
 
-            _f_p = production_estimator.get_forecast(time_ts, time_next_ts)
-            _f.production = _f_p.energy
-            _f.production_min = _f_p.energy_min
-            _f.production_max = _f_p.energy_max
+            for _production_estimator in self._production_estimators:
+                _f_p = _production_estimator.get_forecast(time_ts, time_next_ts)
+                _f.production += _f_p.energy
+                _f.production_min += _f_p.energy_min
+                _f.production_max += _f_p.energy_max
 
-            _f_c = consumption_estimator.get_forecast(time_ts, time_next_ts)
-            _f.consumption = _f_c.energy
-            _f.consumption_min = _f_c.energy_min
-            _f.consumption_max = _f_c.energy_max
+            for _consumption_estimator in self._consumption_estimators:
+                _f_c = _consumption_estimator.get_forecast(time_ts, time_next_ts)
+                _f.consumption += _f_c.energy
+                _f.consumption_min += _f_c.energy_min
+                _f.consumption_max += _f_c.energy_max
 
             losses_ratio = (
                 (1 / self.conversion_yield_avg) - 1 if self.conversion_yield_avg else 0
@@ -532,35 +538,60 @@ class BatteryEstimator(EnergyBalanceEstimator, BatteryProcessor):  # type: ignor
             forecasts.append(_f)
             time_ts = time_next_ts
 
-    # interface: BatteryProcessor
+    # interface: self
+    def connect_battery(self, processor: BatteryProcessor):
+        _unsub_battery_energy = processor.listen_energy(self.process_energy)
+        _unsub_battery_charge = processor.charge_processor.listen_energy(
+            self.process_charge
+        )
+
+        def _unsub():
+            _unsub_battery_energy()
+            _unsub_battery_charge()
+
+        self._battery_processors[processor] = _unsub
+
     @typing.override
-    def _process_energy(self, energy: float, time_ts: float):
+    def process_energy(self, energy: float, time_ts: float):
         sample_curr = self._check_sample_curr(time_ts)
         # don't accumulate energy in sample_curr..it'll be computed then
         sample_curr.samples += 1
         if energy > 0:
             sample_curr.energy_out += energy
-            for listener in self.energy_broadcast_out.energy_listeners:
-                listener(energy, time_ts)
         else:
-            energy = -energy
-            sample_curr.energy_in += energy
-            for listener in self.energy_broadcast_in.energy_listeners:
-                listener(energy, time_ts)
+            sample_curr.energy_in -= energy
 
-    @typing.override
-    def _process_charge(self, charge: float, time_ts: float, /):
+    def process_charge(self, charge: float, time_ts: float, /):
         sample_curr = self._check_sample_curr(time_ts)
         if charge > 0:
             sample_curr.charge_out += charge
         else:
             sample_curr.charge_in -= charge
 
-    # interface: self
-    def _process_production(self, energy: float, time_ts: float):
+    def connect_consumption(self, estimator: "SignalEnergyEstimator"):
+        self._consumption_estimators[estimator] = estimator.listen_energy(
+            self.process_consumption
+        )
+
+    def process_consumption(self, energy: float, time_ts: float):
+        sample_curr = self._check_sample_curr(time_ts)
+        sample_curr.consumption += energy
+
+    def connect_production(self, estimator: "SignalEnergyEstimator"):
+        self._production_estimators[estimator] = estimator.listen_energy(
+            self.process_production
+        )
+
+    def process_production(self, energy: float, time_ts: float):
         sample_curr = self._check_sample_curr(time_ts)
         sample_curr.production += energy
 
-    def _process_consumption(self, energy: float, time_ts: float):
-        sample_curr = self._check_sample_curr(time_ts)
-        sample_curr.consumption += energy
+
+class SignalBatteryEstimator(BatteryEstimator, BatteryProcessor):
+    """A 'compact' single object encapsulating both a BatteryProcessor to
+    process raw battery signals (voltage, current and so) and to also
+    forecast battery state."""
+
+    def __init__(self, id, **kwargs):
+        super().__init__(id, **kwargs)
+        self.connect_battery(self)

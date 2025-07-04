@@ -81,6 +81,7 @@ class EnergyBroadcast(Loggable):
 
     if typing.TYPE_CHECKING:
         type EnergyListenerT = Callable[[float, float], None]
+        type EnergyListenerUnsub = Callable[[], None]
         energy_listeners: set[EnergyListenerT]
 
     _SLOTS_ = ("energy_listeners",)
@@ -89,7 +90,7 @@ class EnergyBroadcast(Loggable):
         self.energy_listeners = set()
         super().__init__(id, **kwargs)
 
-    def listen_energy(self, callback_func: "EnergyListenerT"):
+    def listen_energy(self, callback_func: "EnergyListenerT") -> "EnergyListenerUnsub":
         listeners = self.energy_listeners
         listeners.add(callback_func)
 

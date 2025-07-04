@@ -193,7 +193,7 @@ class EnergyEstimator(Estimator):
             ).as_formatted_dict(self.tz),
         } | super().as_state_dict()
 
-    def _process_energy(self, energy: float, time_ts: float):
+    def process_energy(self, energy: float, time_ts: float):
         sample_curr = self._check_sample_curr(time_ts)
         sample_curr.energy += energy
         sample_curr.samples += 1
@@ -556,7 +556,7 @@ class EnergyObserverEstimator(EnergyEstimator):
                 if iterator is fake_iterator:
                     break
 
-                iterator.process(iterator.state, self._process_energy)
+                iterator.process(iterator.state, self.process_energy)
                 try:
                     iterator.state = next(iterator.iter)
                     iterator.time_ts = iterator.state["lu"]
@@ -611,7 +611,7 @@ class SignalEnergyEstimator(EnergyObserverEstimator, SignalEnergyProcessor):
 
     @typing.override
     async def async_start(self):
-        self.listen_energy(self._process_energy)
+        self.listen_energy(self.process_energy)
         await super().async_start()
 
     @typing.override

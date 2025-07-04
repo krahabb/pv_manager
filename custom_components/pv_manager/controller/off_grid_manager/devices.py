@@ -1,45 +1,36 @@
-import typing
+from typing import TYPE_CHECKING
 
 from homeassistant.config_entries import ConfigEntryState
 
+from .. import devices
 from ...helpers import validation as hv
 from ...helpers.dataattr import DataAttr, DataAttrParam
+from ...processors import battery
 from ...processors.estimator_consumption_heuristic import HeuristicConsumptionEstimator
 from ...processors.estimator_energy import SignalEnergyEstimator
 from ...processors.estimator_pvenergy_heuristic import HeuristicPVEnergyEstimator
-from ..devices import ProcessorDevice, SignalEnergyProcessorDevice
-from ..devices.battery_device import BatteryProcessorDevice
-from ..devices.estimator_device import EnergyEstimatorDevice
+from ..devices import battery_device, estimator_device
 
-if typing.TYPE_CHECKING:
-    from typing import (
-        Any,
-        Callable,
-        ClassVar,
-        Final,
-        NotRequired,
-        Self,
-        TypedDict,
-        Unpack,
-    )
+if TYPE_CHECKING:
+    from typing import ClassVar, Final
 
     from . import Controller as OffGridManager
-    from .. import EntryData
 
-SourceType = SignalEnergyProcessorDevice.SourceType
+SourceType = devices.SignalEnergyProcessorDevice.SourceType
 
 
-class OffGridManagerDevice(ProcessorDevice):
-    if typing.TYPE_CHECKING:
+class OffGridManagerDevice(devices.ProcessorDevice):
+    if TYPE_CHECKING:
 
-        class Config(ProcessorDevice.Config):
+        class Config(devices.ProcessorDevice.Config):
             pass
 
         # override base types
+        config: Config
         controller: Final[OffGridManager]  # type: ignore
         config_subentry_id: Final[str]  # type: ignore
 
-        SOURCE_TYPE: ClassVar[SourceType]
+        SOURCE_TYPE: ClassVar[str]
 
     def __init__(
         self, controller: "OffGridManager", config: "Config", subentry_id: str, /
@@ -55,11 +46,15 @@ class OffGridManagerDevice(ProcessorDevice):
         )
 
 
-class MeterDevice(OffGridManagerDevice, SignalEnergyProcessorDevice):
-    if typing.TYPE_CHECKING:
+class MeterDevice(OffGridManagerDevice, devices.SignalEnergyProcessorDevice):
+    if TYPE_CHECKING:
 
-        class Config(SignalEnergyProcessorDevice.Config):
+        class Config(
+            devices.SignalEnergyProcessorDevice.Config, OffGridManagerDevice.Config
+        ):
             pass
+
+        config: Config
 
     def __init__(
         self, controller: "OffGridManager", config: "Config", subentry_id: str, /
@@ -78,45 +73,14 @@ class MeterDevice(OffGridManagerDevice, SignalEnergyProcessorDevice):
         super().shutdown()
 
 
-"""TODO
-class BatteryEstimatorMeter(BatteryMeter, BatteryEstimator, EnergyEstimatorDevice):
+class BatteryMeter(MeterDevice, battery_device.BatteryProcessorDevice):
 
-    def __init__(self, controller, config):
-        super().__init__(controller, config)
-        self.listen_update(self.on_update_estimate)
+    if TYPE_CHECKING:
 
-        self.today_charge_estimate_sensor = Sensor(
-            self,
-            "today_charge_estimate",
-            name="Charge estimate (today)",
-            native_unit_of_measurement="Ah",
-            suggested_display_precision=0,
-            parent_attr=Sensor.ParentAttr.REMOVE
-        )
-        self.tomorrow_charge_estimate_sensor = Sensor(
-            self,
-            "tomorrow_charge_estimate",
-            name="Charge estimate (tomorrow)",
-            native_unit_of_measurement="Ah",
-            suggested_display_precision=0,
-            parent_attr=Sensor.ParentAttr.REMOVE
-        )
-
-    def on_update_estimate(self, estimator: "BatteryEstimator"):
-        f = estimator.get_forecast(estimator.estimation_time_ts, estimator.tomorrow_ts)
-        today_charge_estimate = estimator.charge + f.charge
-        self.today_charge_estimate_sensor.update_safe(today_charge_estimate)
-        f = estimator.get_forecast(estimator.tomorrow_ts, estimator.tomorrow_ts + 86400)
-        self.tomorrow_charge_estimate_sensor.update_safe(today_charge_estimate + f.charge)
-"""
-
-
-class BatteryMeter(MeterDevice, BatteryProcessorDevice):
-
-    if typing.TYPE_CHECKING:
-
-        class Config(BatteryProcessorDevice.Config):
+        class Config(battery_device.BatteryProcessorDevice.Config, MeterDevice.Config):
             pass
+
+        config: Config
 
     SOURCE_TYPE = SourceType.BATTERY
 
@@ -131,13 +95,40 @@ class PvMeter(MeterDevice):
     SOURCE_TYPE = SourceType.PV
 
 
-class EstimatorDevice(OffGridManagerDevice, EnergyEstimatorDevice):
-    pass
+class EstimatorDevice(OffGridManagerDevice, estimator_device.EnergyEstimatorDevice):
+    if TYPE_CHECKING:
+
+        class Config(
+            estimator_device.EnergyEstimatorDevice.Config, OffGridManagerDevice.Config
+        ):
+            pass
+
+        config: Config
 
 
-class BatteryEstimator(EstimatorDevice):
+class BatteryEstimator(EstimatorDevice, battery_device.BatteryEstimatorDevice):
+    if TYPE_CHECKING:
+
+        class Config(
+            battery_device.BatteryEstimatorDevice.Config, EstimatorDevice.Config
+        ):
+            pass
+
+        config: Config
 
     SOURCE_TYPE = SourceType.BATTERY
+
+    async def async_start(self):
+
+        meter_devices = self.controller.meter_devices
+        for battery in meter_devices["battery"].values():
+            self.connect_battery(battery)
+        for load in meter_devices["load"].values():
+            self.connect_consumption(load)  # type: ignore
+        for pv in meter_devices["pv"].values():
+            self.connect_production(pv)  # type: ignore
+
+        return await super().async_start()
 
 
 class SignalEnergyEstimatorDevice(EstimatorDevice, SignalEnergyEstimator):
