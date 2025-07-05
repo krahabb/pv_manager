@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 import enum
 from threading import Lock
 from time import time
-import typing
+from typing import TYPE_CHECKING
 
 from homeassistant import const as hac
 from homeassistant.core import callback
@@ -22,13 +22,13 @@ from homeassistant.util import dt as dt_util
 from . import Loggable, datetime_from_epoch
 from .. import const as pmc
 
-if typing.TYPE_CHECKING:
+if TYPE_CHECKING:
     from asyncio.events import TimerHandle
     from datetime import tzinfo
     from logging import Logger
-    from typing import Any, Callable, Coroutine, Final
+    from typing import Any, Callable, Concatenate, Coroutine, Final
 
-    from homeassistant.core import HassJob, HomeAssistant
+    from homeassistant.core import CALLBACK_TYPE, HassJob, HomeAssistant
 
 
 class MeteringCycle(Loggable):
@@ -50,7 +50,7 @@ class MeteringCycle(Loggable):
         DAILY = enum.auto()
         HOURLY = enum.auto()
 
-    class Sink(Loggable if typing.TYPE_CHECKING else object):
+    class Sink(Loggable if TYPE_CHECKING else object):
         """Mixin style class for metering sensors"""
 
         cycle_mode: "Final[MeteringCycle.Mode]"
@@ -58,7 +58,7 @@ class MeteringCycle(Loggable):
         def _reset_cycle(self, metering_cycle: "MeteringCycle", /):
             pass
 
-    if typing.TYPE_CHECKING:
+    if TYPE_CHECKING:
         cycle_mode: Final[Mode]
         is_total: Final[bool]
         _sinks: set[Sink]
@@ -97,7 +97,7 @@ class MeteringCycle(Loggable):
 
         if time_ts:
             if self._reset_cycle_unsub:
-                self._reset_cycle_unsub.cancel()
+                self._reset_cycle_unsub()
                 self._reset_cycle_unsub = None
         else:
             time_ts = time()
@@ -150,21 +150,19 @@ class MeteringCycle(Loggable):
         for sink in self._sinks:
             sink._reset_cycle(self)
 
-        self._reset_cycle_unsub = Manager.schedule(
-            self.next_reset_ts - time_ts, self.update, None
+        self._reset_cycle_unsub = Manager.schedule_at_epoch(
+            self.next_reset_ts, self.update, None
         )
-        self.log(
-            Loggable.WARNING, "Scheduled metering cycle at: %s", self.next_reset_dt
-        )
+        self.log(Loggable.DEBUG, "Scheduled metering cycle at: %s", self.next_reset_dt)
 
     def unregister(self, sink: Sink, /):
-        self.log(Loggable.WARNING, "Unregistering synk: %s", sink.logtag)
+        self.log(Loggable.DEBUG, "Unregistering synk: %s", sink.logtag)
         self._sinks.remove(sink)
         if self._reset_cycle_unsub and not self._sinks:
-            self._reset_cycle_unsub.cancel()
+            self._reset_cycle_unsub()
             self._reset_cycle_unsub = None
             self.log(
-                Loggable.WARNING, "Cancelled metering cycle at: %s", self.next_reset_dt
+                Loggable.DEBUG, "Cancelled metering cycle at: %s", self.next_reset_dt
             )
 
 
@@ -185,12 +183,13 @@ class ManagerClass(Loggable):
             self.today_ts = int(today.astimezone(UTC).timestamp())
             self.tomorrow_ts = int(tomorrow.astimezone(UTC).timestamp())
 
-    if typing.TYPE_CHECKING:
+    if TYPE_CHECKING:
         logger: Logger
         hass: "Final[HomeAssistant]"
         device_registry: "Final[dr.DeviceRegistry]"
         entity_registry: "Final[er.EntityRegistry]"
-        _call_later: "Final[Callable[[float, Callable, ], TimerHandle]]"
+        _call_later: "Final[Callable[Concatenate[float, Callable, ...], TimerHandle]]"
+        _scheduled: Final[dict[float, "_ScheduleCallback"]]
         _metering_cycles: Final[dict[MeteringCycle.Mode, MeteringCycle]]
         _daystart_cache: Final[dict[tzinfo, deque["ManagerClass._DayStart"]]]
         _lock: Lock
@@ -200,6 +199,7 @@ class ManagerClass(Loggable):
         "device_registry",
         "entity_registry",
         "_call_later",
+        "_scheduled",
         "_metering_cycles",
         "_daystart_cache",
         "_lock",
@@ -222,7 +222,7 @@ class ManagerClass(Loggable):
                 Manager.hass = None  # type: ignore
                 Manager.device_registry = None  # type: ignore
                 Manager.entity_registry = None  # type: ignore
-                Manager._call_later = lambda *args: Manager.log(Manager.DEBUG, "call_later called while shutting down (args:%s)", args)  # type: ignore
+                Manager._call_later = lambda *args: Manager.log(Loggable.DEBUG, "call_later called while shutting down (args:%s)", args)  # type: ignore
 
             hass.bus.async_listen_once(hac.EVENT_HOMEASSISTANT_STOP, _async_unload)
 
@@ -230,6 +230,7 @@ class ManagerClass(Loggable):
 
     def __init__(self, /):
         super().__init__(None)
+        self._scheduled = {}
         self._metering_cycles = {}
         self._daystart_cache = {}
         self._lock = Lock()
@@ -262,6 +263,7 @@ class ManagerClass(Loggable):
     def schedule(self, delay: float, target: "Callable", /, *args):
         return self._call_later(delay, target, *args)
 
+    """
     def schedule_at(
         self,
         dt: "datetime",
@@ -269,12 +271,84 @@ class ManagerClass(Loggable):
         /,
     ):
         return event.async_track_point_in_utc_time(self.hass, target, dt)
+    """
 
-    def schedule_at_epoch(self, epoch: float, target: "Callable", /, *args):
+    @dataclass(slots=True, frozen=True, eq=False)
+    class _ScheduleCallback:
+        handle: "TimerHandle"
+        targets: "set[tuple[Callable, tuple]]"
+
+    def schedule_at_epoch(
+        self, epoch: float, target: "Callable", /, *args
+    ) -> "CALLBACK_TYPE":
         # fragile api: this doesn't really care about the loop drifting or so.
         # schedule_at is better at doing the job (relying on the HA api for that) but bulkier.
         # Either way, we're concerned with what happens when the loop restarts after a power suspend.
-        return self._call_later(epoch - time(), target, *args)
+        if pmc.DEBUG:
+            epoch_dt = datetime_from_epoch(epoch)
+        target_args = (target, args)
+        try:
+            self._scheduled[epoch].targets.add(target_args)
+        except KeyError:
+            self._scheduled[epoch] = ManagerClass._ScheduleCallback(
+                self._call_later(
+                    epoch - time(), self._schedule_at_epoch_callback, epoch
+                ),
+                {target_args},
+            )
+            if pmc.DEBUG:
+                self.log(Loggable.WARNING, "Scheduled callback at: %s", epoch_dt)
+
+        def _unsub():
+            if pmc.DEBUG:
+                self.log(
+                    Loggable.WARNING,
+                    "Unsubscribe scheduled target(%r) at: %s",
+                    target_args[0],
+                    epoch_dt,
+                )
+            try:
+                scheduled_callback = self._scheduled[epoch]
+                scheduled_callback.targets.remove(target_args)
+                if not scheduled_callback.targets:
+                    if pmc.DEBUG:
+                        self.log(
+                            Loggable.WARNING,
+                            "Unsubscribe scheduled callback at: %s",
+                            epoch_dt,
+                        )
+                    scheduled_callback.handle.cancel()
+                    del self._scheduled[epoch]
+            except KeyError:
+                pass
+
+        if pmc.DEBUG:
+            self.log(
+                Loggable.WARNING,
+                "Scheduled target(%r) at: %s",
+                target,
+                epoch_dt,
+            )
+
+        return _unsub
+
+    @callback
+    def _schedule_at_epoch_callback(self, epoch):
+        if pmc.DEBUG:
+            self.log(
+                Loggable.WARNING,
+                "Called callback for: %s (targets: %s)",
+                datetime_from_epoch(epoch),
+                self._scheduled[epoch].targets,
+            )
+        for target_args in self._scheduled.pop(epoch).targets:
+            target_args[0](*target_args[1])
+        if pmc.DEBUG:
+            self.log(
+                Loggable.WARNING,
+                "Active schedules: %s",
+                [datetime_from_epoch(epoch).isoformat() for epoch in self._scheduled],
+            )
 
     def register_metering_synk(self, sink: MeteringCycle.Sink, /):
         time_ts = time()
@@ -291,14 +365,14 @@ class ManagerClass(Loggable):
             metering_cycle = MeteringCycle(MeteringCycle.Mode(sink.cycle_mode))
             self._metering_cycles[sink.cycle_mode] = metering_cycle
 
-        metering_cycle.log(Loggable.WARNING, "Registering sink: %s", sink.logtag)
+        metering_cycle.log(Loggable.DEBUG, "Registering sink: %s", sink.logtag)
         metering_cycle._sinks.add(sink)
         if not (metering_cycle.is_total or metering_cycle._reset_cycle_unsub):
-            metering_cycle._reset_cycle_unsub = Manager.schedule(
-                metering_cycle.next_reset_ts - time_ts, metering_cycle.update, None
+            metering_cycle._reset_cycle_unsub = Manager.schedule_at_epoch(
+                metering_cycle.next_reset_ts, metering_cycle.update, None
             )
             metering_cycle.log(
-                Loggable.WARNING, "Scheduled cycle at: %s", metering_cycle.next_reset_dt
+                Loggable.DEBUG, "Scheduled cycle at: %s", metering_cycle.next_reset_dt
             )
         return metering_cycle
 

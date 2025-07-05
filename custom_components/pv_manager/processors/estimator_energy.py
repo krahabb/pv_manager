@@ -35,6 +35,8 @@ if typing.TYPE_CHECKING:
         Unpack,
     )
 
+    from homeassistant.core import CALLBACK_TYPE
+
 
 class EnergyEstimator(Estimator):
     """
@@ -116,6 +118,7 @@ class EnergyEstimator(Estimator):
         forecasts: Final[list[Forecast]]
         _forecasts_recycle: Final[list[Forecast]]
         _sample_curr: Sample
+        _sampling_interval_unsub: CALLBACK_TYPE | None
 
     DEFAULT_NAME = "Energy estimator"
     SAMPLING_INTERVAL_MODULO = 300  # 5 minutes
@@ -174,7 +177,7 @@ class EnergyEstimator(Estimator):
     @typing.override
     def shutdown(self):
         if self._sampling_interval_unsub:
-            self._sampling_interval_unsub.cancel()
+            self._sampling_interval_unsub()
             self._sampling_interval_unsub = None
         super().shutdown()
 
@@ -277,8 +280,8 @@ class EnergyEstimator(Estimator):
         time_ts = time()
         time_curr = self._sample_curr.time_end_ts
         time_next = self._check_sample_curr(time_ts).time_end_ts
-        self._sampling_interval_unsub = Manager.schedule(
-            time_next - time_ts, self._sampling_interval_callback
+        self._sampling_interval_unsub = Manager.schedule_at_epoch(
+            time_next, self._sampling_interval_callback
         )
         if self.isEnabledFor(self.DEBUG):
             self.log(
