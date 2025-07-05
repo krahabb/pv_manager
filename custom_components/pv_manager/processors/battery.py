@@ -1,12 +1,10 @@
-from datetime import datetime
-from time import time
 import typing
 
 from homeassistant import const as hac
 from homeassistant.core import callback
 
 from . import EnergyBroadcast, SignalEnergyProcessor
-from ..helpers import datetime_from_epoch, validation as hv
+from ..helpers import validation as hv
 from ..helpers.dataattr import DataAttr, DataAttrParam
 from ..sensor import Sensor
 from .estimator_energy import EnergyBalanceEstimator, EnergyEstimator
@@ -47,12 +45,6 @@ class BatteryProcessor(SignalEnergyProcessor):
         _current_unit: str
         _voltage_convert: SignalEnergyProcessor.ConvertFuncType
         _voltage_unit: str
-
-    energy_in: DataAttr[float, DataAttrParam.stored] = 0
-    energy_out: DataAttr[float, DataAttrParam.stored] = 0
-    charge_in: DataAttr[float, DataAttrParam.stored] = 0
-    charge_out: DataAttr[float, DataAttrParam.stored] = 0
-    capacity_estimate: DataAttr[float, DataAttrParam.stored] = 0
 
     _SLOTS_ = (
         # config
@@ -97,7 +89,7 @@ class BatteryProcessor(SignalEnergyProcessor):
         # typically we'd want negative limit to be equal to the positive one
         if self.input_min is SignalEnergyProcessor.SAFE_MINIMUM_POWER_DISABLED:
             self.input_min = -self.input_max
-            self.energy_min = self.energy_max
+            self.energy_min = -self.energy_max
         config = self.config
         self.battery_voltage_entity_id = config.get("battery_voltage_entity_id")
         self.battery_current_entity_id = config.get("battery_current_entity_id")
@@ -115,7 +107,6 @@ class BatteryProcessor(SignalEnergyProcessor):
                 "maximum_latency": self.maximum_latency_ts,
             },
         )
-        self.charge_processor.listen_energy(self._process_charge)
         self.energy_broadcast_in = EnergyBroadcast(
             BatteryProcessor.SourceType.BATTERY_IN, logger=self
         )
@@ -153,23 +144,12 @@ class BatteryProcessor(SignalEnergyProcessor):
         """Energy listener called by SignalEnergyProcessor(self).process when a sample of energy
         has been calculated."""
         if energy > 0:
-            self.energy_out += energy
             for listener in self.energy_broadcast_out.energy_listeners:
                 listener(energy, time_ts)
         else:
             energy = -energy
-            self.energy_in += energy
             for listener in self.energy_broadcast_in.energy_listeners:
                 listener(energy, time_ts)
-
-    def _process_charge(self, charge: float, time_ts: float, /):
-        """Energy listener called by charge_processor.process when a sample of energy
-        has been calculated (the energy reported is actually the charge leaving the battery).
-        """
-        if charge > 0:
-            self.charge_out += charge
-        else:
-            self.charge_in -= charge
 
     @callback
     def _current_callback(
@@ -367,10 +347,13 @@ class BatteryEstimator(EnergyBalanceEstimator):
     def shutdown(self):
         for _unsub in self._consumption_estimators.values():
             _unsub()
+        self._consumption_estimators.clear()
         for _unsub in self._production_estimators.values():
             _unsub()
+        self._production_estimators.clear()
         for _unsub in self._battery_processors.values():
             _unsub()
+        self._battery_processors.clear()
         super().shutdown()
 
     # interface: EnergyEstimator
@@ -590,7 +573,7 @@ class BatteryEstimator(EnergyBalanceEstimator):
 class SignalBatteryEstimator(BatteryEstimator, BatteryProcessor):
     """A 'compact' single object encapsulating both a BatteryProcessor to
     process raw battery signals (voltage, current and so) and to also
-    forecast battery state."""
+    forecast battery state. Just needs to be connected to production/consumption."""
 
     def __init__(self, id, **kwargs):
         super().__init__(id, **kwargs)

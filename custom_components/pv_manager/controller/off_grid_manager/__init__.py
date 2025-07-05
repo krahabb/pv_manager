@@ -1,9 +1,4 @@
-import enum
 import typing
-
-from homeassistant import const as hac
-from homeassistant.helpers import storage
-from homeassistant.util import dt as dt_util
 
 from ... import const as pmc, controller
 from ...binary_sensor import BinarySensor
@@ -35,32 +30,11 @@ if typing.TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
 
     from ...controller import EntryData
-    from .devices import EstimatorDevice, MeterDevice, OffGridManagerDevice
+    from .devices import OffGridManagerDevice
 
     SUBENTRY_TYPE_CONFIG_MAP: dict[str | None, Callable]
     SUBENTRY_TYPE_DEVICE_MAP: dict[str | None, type[OffGridManagerDevice]]
     SUBENTRY_TYPE_ESTIMATOR_MAP: dict[str | None, type[OffGridManagerDevice]]
-
-    class ControllerStoreType(TypedDict):
-        time: str
-        time_ts: float
-        """REMOVE
-        battery: NotRequired[Mapping[str, Any]]
-        load: NotRequired[Mapping[str, Any]]
-        losses: NotRequired[Mapping[str, Any]]
-        pv: NotRequired[Mapping[str, Any]]
-        """
-
-
-class ControllerStore(storage.Store["ControllerStoreType"]):
-    VERSION = 1
-
-    def __init__(self, entry_id: str):
-        super().__init__(
-            Manager.hass,
-            self.VERSION,
-            f"{pmc.DOMAIN}.{Controller.TYPE}.{entry_id}",
-        )
 
 
 SUBENTRY_TYPE_CONFIG_MAP = {
@@ -188,22 +162,9 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
     TYPE = pmc.ConfigEntryType.OFF_GRID_MANAGER
     PLATFORMS = {Sensor.PLATFORM, BinarySensor.PLATFORM}
 
-    STORE_SAVE_PERIOD = 3600
-
     __slots__ = (
-        # config
-        # state
-        "_store",
         "estimator_config",
         "meter_devices",
-        # entities
-        # REMOVE "losses_power_sensor",
-        # REMOVE "system_yield_sensor",
-        # REMOVE "battery_yield_sensor",
-        # REMOVE "conversion_yield_sensor",
-        # REMOVE "conversion_yield_actual_sensor",
-        # callbacks
-        "_final_write_unsub",
     )
 
     """
@@ -307,48 +268,9 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
         return None
 
     def __init__(self, config_entry: "ConfigEntry"):
-        self._store = ControllerStore(config_entry.entry_id)
         self.estimator_config = Controller._get_estimator_config(config_entry)
         self.meter_devices = {"battery": {}, "load": {}, "pv": {}}
-        self._final_write_unsub = None
         super().__init__(config_entry)
-
-    async def async_setup(self):
-
-        if store_data := await self._store.async_load():
-            """TODO
-            meters: "list[BaseProcessor]" = [self.battery_meter]
-            if self.losses_meter:
-                meters.append(self.losses_meter)
-            for meter in meters:
-                meter.restore(store_data[meter.id.value])
-            """
-
-        self.track_timer(
-            self.STORE_SAVE_PERIOD,
-            self._async_store_save,
-            self.HassJobType.Coroutinefunction,
-        )
-        self._final_write_unsub = Manager.hass.bus.async_listen_once(
-            hac.EVENT_HOMEASSISTANT_FINAL_WRITE,
-            self._async_store_save,
-        )
-
-        await super().async_setup()
-        # trigger now after adding entities to hass
-        """REMOVE
-        if self.losses_meter:
-            self.losses_meter.start()
-        """
-
-    async def async_shutdown(self):
-        if self._final_write_unsub:
-            self._final_write_unsub()
-            self._final_write_unsub = None
-
-        await self._async_store_save(None)
-
-        await super().async_shutdown()
 
     @typing.override
     def _subentry_add(self, subentry_id: str, entry_data: "EntryData"):
@@ -479,26 +401,3 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
             match entry_data.subentry_type:
                 case pmc.ConfigSubentryType.MANAGER_ESTIMATOR:
                     raise Controller.EntryReload()
-
-    # interface: self
-    async def _async_store_save(self, time_or_event_or_none, /):
-        # args depends on the source of this call:
-        # None: means we're unloading the controller
-        # event: means we're in the final write stage of HA shutting down
-        # float: schueduled timer
-        if time_or_event_or_none and type(time_or_event_or_none) != float:
-            self._final_write_unsub = None
-
-        now = dt_util.now()
-        data: "ControllerStoreType" = {
-            "time": now.isoformat(),
-            "time_ts": now.timestamp(),
-        }
-
-        """TODO
-        data[SourceType.BATTERY.value] = self.battery_meter.store()
-        if self.losses_meter:
-            data[SourceType.LOSSES.value] = self.losses_meter.store()
-        """
-
-        await self._store.async_save(data)

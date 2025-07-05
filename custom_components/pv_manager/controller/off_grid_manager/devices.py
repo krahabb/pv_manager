@@ -118,6 +118,12 @@ class BatteryEstimator(EstimatorDevice, battery_device.BatteryEstimatorDevice):
 
     SOURCE_TYPE = SourceType.BATTERY
 
+    def __init__(
+        self, controller: "OffGridManager", config: "Config", subentry_id: str, /
+    ):
+        super().__init__(controller, config, subentry_id)
+        controller.stored_objects[self.id] = self
+
     async def async_start(self):
 
         meter_devices = self.controller.meter_devices

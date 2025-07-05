@@ -1,10 +1,12 @@
+from time import time
 import typing
 
 from homeassistant import const as hac
-from homeassistant.util import slugify
+from homeassistant.helpers.storage import Store
+from homeassistant.util import dt as dt_util, slugify
 
 from .. import const as pmc, helpers
-from ..helpers import validation as hv
+from ..helpers import datetime_from_epoch, validation as hv
 from ..helpers.manager import Manager
 from ..sensor import Sensor
 from .devices import Device
@@ -14,13 +16,24 @@ from .devices.estimator_device import (
 )
 
 if typing.TYPE_CHECKING:
-    from typing import Any, Callable, ClassVar, Coroutine, Final, TypedDict, Unpack
+    from typing import (
+        Any,
+        Callable,
+        ClassVar,
+        Coroutine,
+        Final,
+        Mapping,
+        Protocol,
+        TypedDict,
+        Unpack,
+    )
 
     from homeassistant.components.energy.types import SolarForecastType
     from homeassistant.config_entries import ConfigEntry, ConfigSubentry
     from homeassistant.core import HomeAssistant
     from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
+    from ..helpers.dataattr import DataAttrClass
     from ..helpers.entity import DiagnosticEntity, Entity
 
 
@@ -65,6 +78,16 @@ class Controller[_ConfigT: pmc.EntryConfig](Device):
     class EntryReload(Exception):
         pass
 
+    class Store(Store):
+        VERSION = 1
+
+        def __init__(self, controller: "Controller"):
+            super().__init__(
+                Manager.hass,
+                self.VERSION,
+                f"{pmc.DOMAIN}.{controller.TYPE}.{controller.config_entry.entry_id}",
+            )
+
     if typing.TYPE_CHECKING:
 
         class Config(pmc.EntryConfig):
@@ -87,19 +110,35 @@ class Controller[_ConfigT: pmc.EntryConfig](Device):
         """Cached copy of subentries used to manage subentry add/remove/update."""
         diagnostic_entities: Final[dict[str, DiagnosticEntity]]
 
+        class Storable(Protocol):
+            def restore(self, data: "Mapping[str, Any]", /): ...
+            def store(self) -> "Mapping[str, Any]": ...
+
+        stored_objects: Final[dict[str, Storable]]
+        _store: "Controller.Store"
+
     PLATFORMS = set()
     """Default entity platforms used by the controller. This is used to prepopulate the entities dict so
     that we'll (at least) forward entry setup to these platforms (even if we've still not registered any entity for those).
     This in turn allows us to later create and register entities since we'll register the add_entities callback in our platforms."""
 
+    STORE_SAVE_PERIOD = 3600
+    """Default storage auto-save period."""
+
     __slots__ = (
+        # config
         "config_entry",
         "config",
         "options",
+        # state
         "platforms",
         "devices",
         "entries",
         "diagnostic_entities",
+        "stored_objects",
+        "_store",
+        # callbacks
+        "_final_write_unsub",
     )
 
     @staticmethod
@@ -136,6 +175,8 @@ class Controller[_ConfigT: pmc.EntryConfig](Device):
         self.devices = []
         self.entries = {None: EntryData.Entry(config_entry)}
         self.diagnostic_entities = {}
+        self.stored_objects = {}
+        self._final_write_unsub = None
         logger = helpers.getLogger(
             f"{helpers.LOGGER.name}.{slugify(config_entry.title)}"
         )
@@ -168,6 +209,25 @@ class Controller[_ConfigT: pmc.EntryConfig](Device):
             self.config_entry.add_update_listener(self._entry_update_listener),
         )
 
+        if self.stored_objects:
+            self._store = self.__class__.Store(self)
+            if store_data := await self._store.async_load():
+                for _key, _object in self.stored_objects.items():
+                    try:
+                        _object.restore(store_data[_key])
+                    except KeyError:
+                        pass
+
+            self.track_timer(
+                self.STORE_SAVE_PERIOD,
+                self._async_store_save,
+                self.HassJobType.Coroutinefunction,
+            )
+            self._final_write_unsub = Manager.hass.bus.async_listen_once(
+                hac.EVENT_HOMEASSISTANT_FINAL_WRITE,
+                self._async_store_save,
+            )
+
         self.devices.sort(key=lambda device: device.priority)
         for device in self.devices:
             await device.async_start()
@@ -176,6 +236,14 @@ class Controller[_ConfigT: pmc.EntryConfig](Device):
         )
 
     async def async_shutdown(self):
+        if self._final_write_unsub:
+            self._final_write_unsub()
+            self._final_write_unsub = None
+
+        if self.stored_objects:
+            await self._async_store_save(None)
+            self.stored_objects.clear()
+
         if not await Manager.hass.config_entries.async_unload_platforms(
             self.config_entry, self.platforms.keys()
         ):
@@ -303,6 +371,26 @@ class Controller[_ConfigT: pmc.EntryConfig](Device):
         """Placeholder method invoked whan a subentry is removed.
         Raises 'EntryReload' if not able to handle removing an entry 'on the fly' so that the
         config_entry will be reloaded."""
+
+    async def _async_store_save(self, time_or_event_or_none, /):
+        # args depends on the source of this call:
+        # None: means we're unloading the controller
+        # event: means we're in the final write stage of HA shutting down
+        # float: schueduled timer
+        if time_or_event_or_none and type(time_or_event_or_none) != float:
+            self._final_write_unsub = None
+
+        epoch = int(time())
+        store_data = {
+            "time": datetime_from_epoch(
+                epoch, dt_util.get_default_time_zone()
+            ).isoformat(),
+            "time_ts": epoch,
+        }
+        for _key, _object in self.stored_objects.items():
+            store_data[_key] = _object.store()
+
+        await self._store.async_save(store_data)
 
 
 class EnergyEstimatorController[_ConfigT: "EnergyEstimatorController.Config"](  # type: ignore
