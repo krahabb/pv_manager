@@ -108,7 +108,6 @@ class WeatherSample:
 
 
 class WeatherModel(DataAttrClass):
-    # TODO: inherit from dataattr class to automatically provide as_dict behavior
     """Base (abstract) class modeling the influence of weather on PV production."""
 
     def get_param(self, *args):

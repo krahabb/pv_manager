@@ -123,7 +123,7 @@ class HeuristicConsumptionEstimator(EnergyObserverEstimator):
         super().update_estimate()
 
     @typing.override
-    def _ensure_forecasts(self, count: int, /):
+    def _ensure_forecasts(self, time_end_ts: int, /):
         estimation_time_ts = self.estimation_time_ts
         sampling_interval_ts = self.sampling_interval_ts
         observed_ratio = self.observed_ratio
@@ -132,7 +132,6 @@ class HeuristicConsumptionEstimator(EnergyObserverEstimator):
         model = self.model
 
         time_ts = estimation_time_ts + len(forecasts) * sampling_interval_ts
-        time_end_ts = estimation_time_ts + count * sampling_interval_ts
         # We 'blend' in recent 'ratio' of energy production with respect to avg energy.
         # It is hard to say how much
         weight_or_decay = sampling_interval_ts / (3600 * 2)  # fixed 2 hours decay

@@ -314,14 +314,17 @@ class BatteryEstimator(EnergyBalanceEstimator):
     # - consumption: energy output from inverter (i.e. measure of all the loads)
     losses: DataAttr[float, DataAttrParam.stored] = 0
 
-    # conversion_yield is the ratio: losses / load and gives a raw figure of
-    # inverter and cabling losses
+    # conversion_losses is the ratio: losses / load and gives a raw figure of
+    # inverter efficiency and cabling losses
+    conversion_losses: DataAttr[float, DataAttrParam.stored] = 0
+    conversion_losses_avg: DataAttr[float, DataAttrParam.stored] = 0
+    conversion_losses_total: DataAttr[float, DataAttrParam.stored] = 0
+    # TODO: REMOVE conversion_yield since it can be calculated from conversion_losses
+    # conversion_yield is: load / (load + losses) and gives the conversion efficiency
     conversion_yield: DataAttr[float | None, DataAttrParam.stored] = None
     conversion_yield_avg: DataAttr[float, DataAttrParam.stored] = 1
     conversion_yield_total: DataAttr[float, DataAttrParam.stored] = 1
 
-    # TODO: move the stored data to a class hierarchy among processors so
-    # that's easier to serialize ( store, restore, state_dict)
     charging_factor: DataAttr[float | None, DataAttrParam.stored] = None
     charging_factor_avg: DataAttr[float, DataAttrParam.stored] = 48
     charging_factor_total: DataAttr[float, DataAttrParam.stored] = 48
@@ -392,6 +395,13 @@ class BatteryEstimator(EnergyBalanceEstimator):
             if consumption:
                 self.consumption += consumption
                 try:
+                    self.conversion_losses_total = self.losses / self.consumption
+                    self.conversion_losses = losses / consumption
+                    self.conversion_losses_avg = (
+                        self.conversion_losses_avg * EnergyBalanceEstimator.OPS_DECAY
+                        + self.conversion_losses
+                        * (1 - EnergyBalanceEstimator.OPS_DECAY)
+                    )
                     self.conversion_yield_total = self.consumption / (
                         self.consumption + self.losses
                     )
@@ -465,14 +475,20 @@ class BatteryEstimator(EnergyBalanceEstimator):
         return sample_curr
 
     @typing.override
-    def _ensure_forecasts(self, count: int, /):
+    def _ensure_forecasts(self, time_end_ts: int, /):
         estimation_time_ts = self.estimation_time_ts
         sampling_interval_ts = self.sampling_interval_ts
         forecasts = self.forecasts
         _forecasts_recycle = self._forecasts_recycle
 
+        _production_estimators = self._production_estimators
+        for _production_estimator in _production_estimators:
+            _production_estimator._ensure_forecasts(time_end_ts)
+        _consumption_estimators = self._consumption_estimators
+        for _consumption_estimator in _consumption_estimators:
+            _consumption_estimator._ensure_forecasts(time_end_ts)
+
         time_ts = estimation_time_ts + len(forecasts) * sampling_interval_ts
-        time_end_ts = estimation_time_ts + count * sampling_interval_ts
 
         while time_ts < time_end_ts:
             time_next_ts = time_ts + sampling_interval_ts
@@ -482,21 +498,19 @@ class BatteryEstimator(EnergyBalanceEstimator):
             except IndexError:
                 _f = self.__class__.Forecast(time_ts, time_next_ts)
 
-            for _production_estimator in self._production_estimators:
+            for _production_estimator in _production_estimators:
                 _f_p = _production_estimator.get_forecast(time_ts, time_next_ts)
                 _f.production += _f_p.energy
                 _f.production_min += _f_p.energy_min
                 _f.production_max += _f_p.energy_max
 
-            for _consumption_estimator in self._consumption_estimators:
+            for _consumption_estimator in _consumption_estimators:
                 _f_c = _consumption_estimator.get_forecast(time_ts, time_next_ts)
                 _f.consumption += _f_c.energy
                 _f.consumption_min += _f_c.energy_min
                 _f.consumption_max += _f_c.energy_max
 
-            losses_ratio = (
-                (1 / self.conversion_yield_avg) - 1 if self.conversion_yield_avg else 0
-            )
+            losses_ratio = self.conversion_losses_avg
             _f.losses = _f.consumption * losses_ratio
             _f.losses_min = _f.consumption_min * losses_ratio
             _f.losses_max = _f.consumption_max * losses_ratio
@@ -534,6 +548,9 @@ class BatteryEstimator(EnergyBalanceEstimator):
 
         self._battery_processors[processor] = _unsub
 
+    def disconnect_battery(self, processor: BatteryProcessor):
+        self._battery_processors.pop(processor)()
+
     @typing.override
     def process_energy(self, energy: float, time_ts: float):
         sample_curr = self._check_sample_curr(time_ts)
@@ -556,6 +573,9 @@ class BatteryEstimator(EnergyBalanceEstimator):
             self.process_consumption
         )
 
+    def disconnect_consumption(self, estimator: "SignalEnergyEstimator"):
+        self._consumption_estimators.pop(estimator)()
+
     def process_consumption(self, energy: float, time_ts: float):
         sample_curr = self._check_sample_curr(time_ts)
         sample_curr.consumption += energy
@@ -564,6 +584,9 @@ class BatteryEstimator(EnergyBalanceEstimator):
         self._production_estimators[estimator] = estimator.listen_energy(
             self.process_production
         )
+
+    def disconnect_production(self, estimator: "SignalEnergyEstimator"):
+        self._production_estimators.pop(estimator)()
 
     def process_production(self, energy: float, time_ts: float):
         sample_curr = self._check_sample_curr(time_ts)

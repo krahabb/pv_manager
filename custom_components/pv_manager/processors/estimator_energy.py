@@ -209,20 +209,25 @@ class EnergyEstimator(Estimator):
             listener(self)
 
     def get_forecast(self, time_begin_ts: int, time_end_ts: int, /) -> Forecast:
-        s_i_ts = self.sampling_interval_ts
-        e_t_ts = self.estimation_time_ts
-        forecasts = self.forecasts
+        if time_begin_ts == time_end_ts:
+            return self.__class__.Forecast(time_begin_ts, time_end_ts)
 
+        e_t_ts = self.estimation_time_ts
+        assert (
+            e_t_ts <= time_begin_ts < time_end_ts
+        ), f"Invalid forecast range (estimation_ts:{e_t_ts} begin_ts:{time_begin_ts} end_ts:{time_end_ts})"
+        s_i_ts = self.sampling_interval_ts
         index = (time_begin_ts - e_t_ts) // s_i_ts
-        index_end = (time_end_ts - e_t_ts) // s_i_ts
-        assert 0 <= index <= index_end
+        _dt = time_end_ts - e_t_ts
+        index_end = _dt // s_i_ts if (_dt % s_i_ts) else (_dt // s_i_ts) - 1
 
         # ensure the forecasts are up to time_end_ts
+        forecasts = self.forecasts
         try:
             f_end = forecasts[index_end]
         except IndexError:
             # on demand build
-            self._ensure_forecasts(index_end + 1)
+            self._ensure_forecasts(time_end_ts)
             f_end = forecasts[index_end]
 
         forecast = self.__class__.Forecast(time_begin_ts, time_end_ts)
@@ -245,20 +250,25 @@ class EnergyEstimator(Estimator):
         """
         Returns the estimated energy in the (forward) time interval at current estimator state.
         """
-        s_i_ts = self.sampling_interval_ts
-        e_t_ts = self.estimation_time_ts
-        forecasts = self.forecasts
+        if time_begin_ts == time_end_ts:
+            return 0
 
+        e_t_ts = self.estimation_time_ts
+        assert (
+            e_t_ts <= time_begin_ts < time_end_ts
+        ), f"Invalid forecast range (estimation_ts:{e_t_ts} begin_ts:{time_begin_ts} end_ts:{time_end_ts})"
+        s_i_ts = self.sampling_interval_ts
         index = (time_begin_ts - e_t_ts) // s_i_ts
-        index_end = (time_end_ts - e_t_ts) // s_i_ts
-        assert 0 <= index <= index_end
+        _dt = time_end_ts - e_t_ts
+        index_end = _dt // s_i_ts if (_dt % s_i_ts) else (_dt // s_i_ts) - 1
 
         # ensure the forecasts are up to time_end_ts
+        forecasts = self.forecasts
         try:
             f_end = forecasts[index_end]
         except IndexError:
             # on demand build
-            self._ensure_forecasts(index_end + 1)
+            self._ensure_forecasts(time_end_ts)
             f_end = forecasts[index_end]
 
         if index == index_end:
@@ -321,8 +331,8 @@ class EnergyEstimator(Estimator):
         return sample_curr
 
     @abc.abstractmethod
-    def _ensure_forecasts(self, count: int, /):
-        """Build the forecasts cache up to count elements. This must be overriden with
+    def _ensure_forecasts(self, time_end_ts: int, /):
+        """Build the forecasts cache up to time_end_ts. This must be overriden with
         the proper implementation depending on the model."""
 
 
@@ -688,7 +698,7 @@ class EnergyBalanceEstimator(EnergyEstimator):
             self._sample_curr.__init__(time_ts, self)
             return self._sample_curr
 
-        def _ensure_forecasts(self, count: int, /):
+        def _ensure_forecasts(self, time_end_ts: int, /):
             pass
 
     if typing.TYPE_CHECKING:
@@ -782,17 +792,17 @@ class EnergyBalanceEstimator(EnergyEstimator):
         super().update_estimate()
 
     @typing.override
-    def _ensure_forecasts(self, count: int, /):
+    def _ensure_forecasts(self, time_end_ts: int, /):
         estimation_time_ts = self.estimation_time_ts
         sampling_interval_ts = self.sampling_interval_ts
         forecasts = self.forecasts
         _forecasts_recycle = self._forecasts_recycle
         production_estimator = self.production_estimator
+        production_estimator._ensure_forecasts(time_end_ts)
         consumption_estimator = self.consumption_estimator
+        consumption_estimator._ensure_forecasts(time_end_ts)
 
         time_ts = estimation_time_ts + len(forecasts) * sampling_interval_ts
-        time_end_ts = estimation_time_ts + count * sampling_interval_ts
-
         while time_ts < time_end_ts:
             time_next_ts = time_ts + sampling_interval_ts
             try:
