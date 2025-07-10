@@ -39,7 +39,7 @@ if typing.TYPE_CHECKING:
     from ..helpers.history import CompressedState
 
 
-class GenericBroadcast[*_argsT]:
+class EventBroadcast[*_argsT]:
 
     if typing.TYPE_CHECKING:
         type ListenerT = Callable[[*_argsT], Any]

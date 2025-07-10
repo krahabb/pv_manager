@@ -2,7 +2,7 @@ import typing
 
 from homeassistant import const as hac
 
-from . import ProcessorDevice, SignalEnergyProcessorDevice
+from . import ProcessorDevice
 from ... import const as pmc
 from ...helpers import validation as hv
 from ...helpers.entity import EstimatorEntity
@@ -29,7 +29,7 @@ class EstimatorDevice(ProcessorDevice, Estimator):
             config: "EstimatorDevice.Config"
 
 
-class EnergyEstimatorSensor(EstimatorEntity, Sensor):
+class EnergyEstimatorSensor(EstimatorEntity[EnergyEstimator], Sensor):
     """Entity reporting the forecasted energy over a (future) time span."""
 
     if typing.TYPE_CHECKING:
@@ -41,7 +41,7 @@ class EnergyEstimatorSensor(EstimatorEntity, Sensor):
             forecast_duration_ts: NotRequired[int]
             estimator: NotRequired[EnergyEstimator]
 
-        device: "EnergyEstimatorDevice"
+        device: Final["EnergyEstimatorDevice"]  # type: ignore
         forecast_duration_ts: int
 
     _unrecorded_attributes = frozenset(
@@ -67,8 +67,8 @@ class EnergyEstimatorSensor(EstimatorEntity, Sensor):
             device,
             id,
             kwargs.pop("estimator", device),
-            state_class=None,
-            **kwargs,  # type: ignore
+            state_class=None,  # type: ignore
+            **kwargs,
         )
 
     @typing.override

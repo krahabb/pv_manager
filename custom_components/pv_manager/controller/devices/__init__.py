@@ -6,7 +6,7 @@ from ...binary_sensor import ProcessorWarningBinarySensor
 from ...helpers import Loggable, validation as hv
 from ...helpers.callback import CallbackTracker
 from ...helpers.manager import Manager
-from ...processors import BaseProcessor, SignalEnergyProcessor
+from ...processors import BaseProcessor, EnergyBroadcast, SignalEnergyProcessor
 from ...sensor import EnergySensor
 
 if typing.TYPE_CHECKING:
@@ -26,7 +26,6 @@ if typing.TYPE_CHECKING:
     from homeassistant.helpers.device_registry import DeviceInfo
 
     from .. import Controller, EntryData
-    from ...processors import EnergyBroadcast
 
 
 class Device(CallbackTracker, Loggable):
@@ -91,7 +90,11 @@ class Device(CallbackTracker, Loggable):
             if "name" in kwargs
             else (kwargs["config"].get("name") if "config" in kwargs else None)
             or self.__class__.DEFAULT_NAME
-            or controller.config_entry.title
+            or (
+                controller.config_entry.title
+                if self.config_subentry_id is None
+                else controller.config_entry.subentries[self.config_subentry_id].title
+            )
         )
 
         Manager.device_registry.async_get_or_create(
@@ -142,20 +145,17 @@ class ProcessorDevice(BaseProcessor, Device):
             ProcessorWarningBinarySensor(self, f"{warning.id}_warning", warning)
 
 
-class SignalEnergyProcessorDevice(ProcessorDevice, SignalEnergyProcessor):
-    """Device class featuring a functional signal energy processor.
-    This class is then able to connect to a source entity and measure its energy."""
+class EnergyMeterDevice(ProcessorDevice, EnergyBroadcast):
+    """Device class (mainly used as a virtual base) featuring a set of metering sensors linked to self."""
 
     if typing.TYPE_CHECKING:
 
-        class Config(
-            SignalEnergyProcessor.Config, ProcessorDevice.Config, pmc.EntityConfig
-        ):
+        class Config(ProcessorDevice.Config, pmc.EntityConfig):
             cycle_modes: NotRequired[list[EnergySensor.CycleMode]]
             """list of 'metering' sensors to configure"""
 
-        class Args(SignalEnergyProcessor.Args, Device.Args):
-            config: "SignalEnergyProcessorDevice.Config"
+        class Args(ProcessorDevice.Args):
+            config: "EnergyMeterDevice.Config"
 
         config: Config
 
@@ -197,7 +197,7 @@ class SignalEnergyProcessorDevice(ProcessorDevice, SignalEnergyProcessor):
         self,
         entity_id: str,
         name: str,
-        energy_dispatcher: "EnergyBroadcast",
+        energy_broadcast: EnergyBroadcast,
         cycle_modes: "Iterable[EnergySensor.CycleMode]",
         /,
     ):
@@ -206,7 +206,7 @@ class SignalEnergyProcessorDevice(ProcessorDevice, SignalEnergyProcessor):
                 self,
                 entity_id,
                 cycle_mode,
-                energy_dispatcher,
+                energy_broadcast,
                 name=name,
             )
 
@@ -215,14 +215,14 @@ class SignalEnergyProcessorDevice(ProcessorDevice, SignalEnergyProcessor):
         entity_id: str,
         config_key: str,
         name: str,
-        energy_dispatcher: "EnergyBroadcast",
+        energy_broadcast: EnergyBroadcast,
         entry_data: "EntryData[Config]",
         /,
     ):
         cycle_modes_new = set(self.config.get(config_key, ()))
         for energy_sensor in tuple(entry_data.entities.values()):
             if isinstance(energy_sensor, EnergySensor) and (
-                energy_sensor.energy_dispatcher is energy_dispatcher
+                energy_sensor.energy_broadcast is energy_broadcast
             ):
                 try:
                     cycle_modes_new.remove(energy_sensor.cycle_mode)  # type: ignore
@@ -232,4 +232,19 @@ class SignalEnergyProcessorDevice(ProcessorDevice, SignalEnergyProcessor):
                     # cycle_mode removed from updated config
                     await energy_sensor.async_shutdown(True)
         # leftovers are those newly added cycle_mode(s)
-        self._create_energy_sensors(entity_id, name, energy_dispatcher, cycle_modes_new)
+        self._create_energy_sensors(entity_id, name, energy_broadcast, cycle_modes_new)
+
+
+class SignalEnergyProcessorDevice(EnergyMeterDevice, SignalEnergyProcessor):
+    """Device class featuring a functional signal energy processor with a set of
+    configurable metering entities."""
+
+    if typing.TYPE_CHECKING:
+
+        class Config(SignalEnergyProcessor.Config, EnergyMeterDevice.Config):
+            pass
+
+        class Args(SignalEnergyProcessor.Args, EnergyMeterDevice.Args):
+            config: "SignalEnergyProcessorDevice.Config"
+
+        config: Config

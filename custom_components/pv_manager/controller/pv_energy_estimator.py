@@ -14,11 +14,12 @@ if typing.TYPE_CHECKING:
     from typing import Any, Callable, Final
 
     from ..processors import Estimator
+    from ..processors.estimator_energy import EnergyEstimator
     from .devices.estimator_device import EnergyEstimatorDevice
 
 
 # TODO: create a global generalization for diagnostic sensors linked to estimator
-class ObservedRatioDiagnosticSensor(EstimatorDiagnosticSensor):
+class ObservedRatioDiagnosticSensor(EstimatorDiagnosticSensor["EnergyEstimator"]):
 
     def __init__(self, device: "EnergyEstimatorDevice", id: str):
         super().__init__(device, id, device)
@@ -27,7 +28,7 @@ class ObservedRatioDiagnosticSensor(EstimatorDiagnosticSensor):
         self.update_safe(estimator.observed_ratio)
 
 
-class WeatherModelDiagnosticSensor(EstimatorDiagnosticSensor):
+class WeatherModelDiagnosticSensor(EstimatorDiagnosticSensor["EnergyEstimator"]):
 
     __slots__ = ("weather_param_index",)
 

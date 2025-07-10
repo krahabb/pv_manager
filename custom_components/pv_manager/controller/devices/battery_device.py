@@ -1,6 +1,6 @@
 from typing import TYPE_CHECKING
 
-from . import SignalEnergyProcessorDevice
+from . import EnergyMeterDevice
 from ...helpers import validation as hv
 from ...processors.battery import BatteryEstimator, BatteryProcessor
 from ...sensor import BatteryChargeSensor, EnergySensor, Sensor
@@ -13,15 +13,15 @@ if TYPE_CHECKING:
     from ... import const as pmc
 
 
-class BatteryProcessorDevice(SignalEnergyProcessorDevice, BatteryProcessor):
+class BatteryProcessorDevice(EnergyMeterDevice, BatteryProcessor):
 
     if TYPE_CHECKING:
 
-        class Config(BatteryProcessor.Config, SignalEnergyProcessorDevice.Config):
+        class Config(BatteryProcessor.Config, EnergyMeterDevice.Config):
             cycle_modes_in: NotRequired[list[EnergySensor.CycleMode]]
             cycle_modes_out: NotRequired[list[EnergySensor.CycleMode]]
 
-        class Args(BatteryProcessor.Args, SignalEnergyProcessorDevice.Args):
+        class Args(BatteryProcessor.Args, EnergyMeterDevice.Args):
             config: "BatteryProcessorDevice.Config"
 
         config: Config

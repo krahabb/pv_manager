@@ -143,6 +143,7 @@ SUBENTRY_FLOW_MAP = {
         pmc.ConfigSubentryType.MANAGER_LOAD_METER: ConfigSubentryFlow,
         pmc.ConfigSubentryType.MANAGER_PV_METER: ConfigSubentryFlow,
         pmc.ConfigSubentryType.MANAGER_ESTIMATOR: ConfigSubentryFlow,
+        pmc.ConfigSubentryType.MANAGER_LOSSES: ConfigSubentryFlow,
     },
 }
 UNIQUE_SUBENTRY_TYPES = [

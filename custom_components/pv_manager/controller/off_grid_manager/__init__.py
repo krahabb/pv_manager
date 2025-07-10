@@ -4,6 +4,7 @@ from ... import const as pmc, controller
 from ...binary_sensor import BinarySensor
 from ...helpers import validation as hv
 from ...helpers.manager import Manager
+from ...processors import EventBroadcast
 from ...sensor import Sensor
 from .devices import (
     BatteryEstimator,
@@ -11,6 +12,7 @@ from .devices import (
     HeuristicPVEnergyEstimator,
     LoadEstimator,
     LoadMeter,
+    LossesMeter,
     PvEstimator,
     PvMeter,
 )
@@ -30,7 +32,7 @@ if typing.TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
 
     from ...controller import EntryData
-    from .devices import OffGridManagerDevice
+    from .devices import MeterDevice, OffGridManagerDevice
 
     SUBENTRY_TYPE_CONFIG_MAP: dict[str | None, Callable]
     SUBENTRY_TYPE_DEVICE_MAP: dict[str | None, type[OffGridManagerDevice]]
@@ -42,12 +44,14 @@ SUBENTRY_TYPE_CONFIG_MAP = {
     pmc.ConfigSubentryType.MANAGER_LOAD_METER: LoadMeter.get_config_schema,
     pmc.ConfigSubentryType.MANAGER_PV_METER: PvMeter.get_config_schema,
     pmc.ConfigSubentryType.MANAGER_ESTIMATOR: HeuristicPVEnergyEstimator.get_config_schema,
+    pmc.ConfigSubentryType.MANAGER_LOSSES: LossesMeter.get_config_schema,
 }
 
 SUBENTRY_TYPE_DEVICE_MAP = {
     pmc.ConfigSubentryType.MANAGER_BATTERY_METER: BatteryMeter,
     pmc.ConfigSubentryType.MANAGER_LOAD_METER: LoadMeter,
     pmc.ConfigSubentryType.MANAGER_PV_METER: PvMeter,
+    pmc.ConfigSubentryType.MANAGER_LOSSES: LossesMeter,
 }
 
 SUBENTRY_TYPE_ESTIMATOR_MAP = {
@@ -55,34 +59,10 @@ SUBENTRY_TYPE_ESTIMATOR_MAP = {
     pmc.ConfigSubentryType.MANAGER_LOAD_METER: LoadEstimator,
     pmc.ConfigSubentryType.MANAGER_PV_METER: PvEstimator,
     pmc.ConfigSubentryType.MANAGER_ESTIMATOR: BatteryEstimator,
+    pmc.ConfigSubentryType.MANAGER_LOSSES: LossesMeter,
 }
 
 """
-class YieldSensorId(enum.StrEnum):
-    system_yield = enum.auto()
-    battery_yield = enum.auto()
-    conversion_yield = enum.auto()
-    conversion_yield_actual = enum.auto()
-
-
-class YieldSensor(Sensor):
-
-    _attr_parent_attr = Sensor.ParentAttr.DYNAMIC
-    _attr_native_unit_of_measurement = "%"
-
-    def __init__(
-        self,
-        device: "Device",
-        id: YieldSensorId,
-        config_subentry_id: str,
-        name: str,
-    ):
-        super().__init__(
-            device,
-            id,
-            config_subentry_id=config_subentry_id,
-            name=name,
-        )
 
 
 class ManagerLossesConfig(pmc.EntityConfig, pmc.SubentryConfig):
@@ -137,6 +117,9 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
             pv: dict[str, PvMeter]  # could be PvEstimator
 
         meter_devices: Final[MeterDevicesT]
+        meter_device_add_event: Final[EventBroadcast[MeterDevice]]
+        meter_device_remove_event: Final[EventBroadcast[MeterDevice]]
+        battery_estimator: BatteryEstimator | None
 
     DEFAULT_NAME = "Off grid Manager"
     """REMOVE
@@ -165,6 +148,9 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
     __slots__ = (
         "estimator_config",
         "meter_devices",
+        "meter_device_add_event",
+        "meter_device_remove_event",
+        "battery_estimator",
     )
 
     """
@@ -225,40 +211,7 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
         config: pmc.ConfigMapping | None,
         /,
     ) -> pmc.ConfigSchema:
-
-        try:
-            return SUBENTRY_TYPE_CONFIG_MAP[subentry_type](config)
-        except KeyError:
-
-            match subentry_type:
-
-                case pmc.ConfigSubentryType.MANAGER_LOSSES:
-                    """REMOVE
-                    if not config:
-                        config = {
-                            "name": "Losses",
-                            "update_period": 10,
-                            "system_yield": "System yield",
-                            "battery_yield": "Battery yield",
-                            "conversion_yield": "Conversion yield",
-                            "conversion_yield_actual": "Conversion yield (actual)",
-                        }
-                    return (
-                        hv.entity_schema(config)
-                        | {
-                            hv.req_config("cycle_modes", config): hv.cycle_modes_selector(),
-                            hv.req_config(
-                                "update_period", config
-                            ): hv.time_period_selector(),
-                        }
-                        | {
-                            hv.opt_config(sensor_id.name, config): str
-                            for sensor_id in YieldSensorId
-                        }
-                    )
-                    """
-
-        return {}
+        return SUBENTRY_TYPE_CONFIG_MAP[subentry_type](config)
 
     @staticmethod
     def _get_estimator_config(config_entry: "ConfigEntry"):
@@ -270,6 +223,8 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
     def __init__(self, config_entry: "ConfigEntry"):
         self.estimator_config = Controller._get_estimator_config(config_entry)
         self.meter_devices = {"battery": {}, "load": {}, "pv": {}}
+        self.meter_device_add_event = EventBroadcast()
+        self.meter_device_remove_event = EventBroadcast()
         super().__init__(config_entry)
 
     @typing.override
@@ -290,7 +245,7 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
                     raise Controller.EntryReload()
 
                 case pmc.ConfigSubentryType.MANAGER_LOSSES:
-                    pass
+                    LossesMeter(self, entry_data.config, subentry_id)
                     """REMOVE
                     assert not self.losses_meter
                     losses_config: ManagerLossesConfig = entry_data.config  # type: ignore

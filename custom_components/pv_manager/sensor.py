@@ -8,14 +8,14 @@ from .helpers import entity as he
 from .helpers.manager import Manager, MeteringCycle
 
 if typing.TYPE_CHECKING:
-    from typing import ClassVar, Final, NotRequired, Unpack
+    from typing import Any, ClassVar, Final, NotRequired, Unpack
 
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
     from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
     from .controller import Controller, Device
-    from .processors import EnergyBroadcast
+    from .processors import EnergyBroadcast, Estimator
 
     SensorStateType = sensor.StateType | sensor.date | sensor.datetime | sensor.Decimal
 
@@ -107,7 +107,9 @@ class DiagnosticSensor(he.DiagnosticEntity, Sensor):
     pass
 
 
-class EstimatorDiagnosticSensor(he.EstimatorEntity, DiagnosticSensor):
+class EstimatorDiagnosticSensor[_estimatorT: "Estimator[Any]"](
+    he.EstimatorEntity[_estimatorT], DiagnosticSensor
+):
 
     __slots__ = he.EstimatorEntity._SLOTS_
 
@@ -125,7 +127,7 @@ class EnergySensor(MeteringCycle.Sink, Sensor, he.RestoreEntity):
 
     if typing.TYPE_CHECKING:
         cycle_mode: Final[CycleMode]
-        energy_dispatcher: Final[EnergyBroadcast]
+        energy_broadcast: Final[EnergyBroadcast]
 
         _metering_cycle: "MeteringCycle"
 
@@ -140,7 +142,7 @@ class EnergySensor(MeteringCycle.Sink, Sensor, he.RestoreEntity):
 
     __slots__ = (
         "cycle_mode",
-        "energy_dispatcher",
+        "energy_broadcast",
         "last_reset",  # HA property
         "_integral_value",
         "_energy_dispatcher_unsub_",
@@ -153,12 +155,12 @@ class EnergySensor(MeteringCycle.Sink, Sensor, he.RestoreEntity):
         device: "Device",
         id: str,
         cycle_mode: CycleMode,
-        energy_dispatcher: "EnergyBroadcast",
+        energy_broadcast: "EnergyBroadcast",
         /,
         **kwargs: "Unpack[he.Entity.Args]",
     ):
         self.cycle_mode = cycle_mode
-        self.energy_dispatcher = energy_dispatcher
+        self.energy_broadcast = energy_broadcast
         self.last_reset = None
         self._integral_value = 0
         self._energy_dispatcher_unsub_ = None
@@ -196,7 +198,7 @@ class EnergySensor(MeteringCycle.Sink, Sensor, he.RestoreEntity):
 
         self.native_value = int(self._integral_value)
         await super().async_added_to_hass()
-        self._energy_dispatcher_unsub_ = self.energy_dispatcher.listen_energy(
+        self._energy_dispatcher_unsub_ = self.energy_broadcast.listen_energy(
             self.accumulate
         )
 

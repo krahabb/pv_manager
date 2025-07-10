@@ -217,9 +217,17 @@ class DiagnosticEntity(Entity if TYPE_CHECKING else object):
         await super().async_shutdown(remove)
 
 
-class EstimatorEntity(Entity if TYPE_CHECKING else object):
+class EstimatorEntity[_estimatorT: Estimator[Any]](Entity if TYPE_CHECKING else object):
 
-    estimator: "Estimator"
+    if TYPE_CHECKING:
+
+        type EstimatorUpdateT = Callable[[_estimatorT], Any]
+
+        class Args(Entity.Args):
+            estimator_update_func: NotRequired["EstimatorEntity.EstimatorUpdateT"]
+
+        estimator: _estimatorT
+        _estimator_update_func: Final["EstimatorEntity.EstimatorUpdateT"]
 
     # by default we likely don't want to manage self instances in controller
     _attr_parent_attr = None
@@ -234,16 +242,16 @@ class EstimatorEntity(Entity if TYPE_CHECKING else object):
         self,
         device: "Device",
         id: str,
-        estimator: "Estimator",
+        estimator: "_estimatorT",
         /,
-        *args,
-        estimator_update_func: "Callable[[Estimator], Any]" = lambda e: None,
-        **kwargs: "Unpack[EstimatorEntity.Args]",
+        **kwargs: "Unpack[Args]",
     ):
         self.estimator = estimator
         self._estimator_update_unsub = None
-        self._estimator_update_func = estimator_update_func
-        super().__init__(device, id, *args, **kwargs)
+        self._estimator_update_func = kwargs.pop(
+            "estimator_update_func", lambda e: None
+        )
+        super().__init__(device, id, **kwargs)
 
     async def async_shutdown(self, remove: bool, /):
         if self._estimator_update_unsub:
@@ -265,12 +273,13 @@ class EstimatorEntity(Entity if TYPE_CHECKING else object):
             self._estimator_update_unsub = None
         await super().async_will_remove_from_hass()
 
-    def on_estimator_update(self, estimator: "Estimator", /):
-        """Called automatically whenever the binded estimator updates (if the entity is loaded).
-        Since it could be used to prepare the state before adding to hass it will nevertheless
-        need to check for added_to_hass.
-        The default implementation could work in simple cases by passing a
-        conversion function to the constructor (estimator_update_func):
-        - (estimator) -> entity state
-        """
+    def on_estimator_update(self, estimator: "_estimatorT", /):
+        # Called automatically whenever the binded estimator updates (if the entity is loaded).
+        # Since it could be used to prepare the state before adding to hass it will nevertheless
+        # need to check for added_to_hass.
+        # The default implementation could work in simple cases by passing a
+        # conversion function to the constructor (estimator_update_func):
+        # - (estimator) -> entity state
+        # But in general it would be more efficient to subclass and override (in
+        # that case the _estimator_update_func is ignored)
         self.update_safe(self._estimator_update_func(estimator))

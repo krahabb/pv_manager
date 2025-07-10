@@ -13,11 +13,11 @@ if typing.TYPE_CHECKING:
         pass
 
 
-class Controller(controller.Controller["EntryConfig"], SignalEnergyProcessorDevice):  # type: ignore
+class Controller(controller.Controller["EntryConfig"], SignalEnergyProcessorDevice):
     """Energy calculator controller."""
 
     if typing.TYPE_CHECKING:
-        Config = EntryConfig
+        type Config = EntryConfig
 
     TYPE = pmc.ConfigEntryType.ENERGY_CALCULATOR
     DEFAULT_NAME = "Energy"
