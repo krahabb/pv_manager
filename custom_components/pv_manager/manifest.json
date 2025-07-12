@@ -1,14 +1,23 @@
 {
   "domain": "pv_manager",
   "name": "PV Manager",
-  "after_dependencies": ["recorder", "persistent_notification"],
-  "codeowners": ["@krahabb"],
+  "after_dependencies": [
+    "recorder",
+    "persistent_notification"
+  ],
+  "codeowners": [
+    "@krahabb"
+  ],
   "config_flow": true,
   "documentation": "https://github.com/krahabb/pv_manager",
   "integration_type": "service",
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/krahabb/pv_manager/issues",
-  "loggers": ["custom_components.pv_manager"],
-  "requirements": ["astral"],
-  "version": "0.5.2"
+  "loggers": [
+    "custom_components.pv_manager"
+  ],
+  "requirements": [
+    "astral"
+  ],
+  "version": "0.6.0"
 }
