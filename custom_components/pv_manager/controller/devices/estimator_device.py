@@ -29,89 +29,82 @@ class EstimatorDevice(ProcessorDevice, Estimator):
             config: "EstimatorDevice.Config"
 
 
-class EnergyEstimatorSensor(EstimatorEntity[EnergyEstimator], Sensor):
-    """Entity reporting the forecasted energy over a (future) time span."""
-
-    if typing.TYPE_CHECKING:
-
-        class Config(pmc.EntityConfig, pmc.SubentryConfig):
-            forecast_duration_hours: int
-
-        class Args(Entity.Args):
-            forecast_duration_ts: NotRequired[int]
-            estimator: NotRequired[EnergyEstimator]
-
-        device: Final["EnergyEstimatorDevice"]  # type: ignore
-        forecast_duration_ts: int
-
-    _unrecorded_attributes = frozenset(
-        (
-            "forecast",
-            "state",
-        )
-    )
-    _attr_device_class = Sensor.DeviceClass.ENERGY
-    _attr_native_unit_of_measurement = hac.UnitOfEnergy.WATT_HOUR
-
-    __slots__ = ("forecast_duration_ts",)
-
-    def __init__(
-        self,
-        device: "EnergyEstimatorDevice",
-        id,
-        /,
-        **kwargs: "Unpack[Args]",
-    ):
-        self.forecast_duration_ts = kwargs.pop("forecast_duration_ts", 0)
-        super().__init__(
-            device,
-            id,
-            kwargs.pop("estimator", device),
-            state_class=None,  # type: ignore
-            **kwargs,
-        )
-
-    @typing.override
-    def on_estimator_update(self, estimator: EnergyEstimator):
-        self.native_value = round(
-            estimator.get_estimated_energy(
-                estimator.estimation_time_ts,
-                estimator.estimation_time_ts + self.forecast_duration_ts,
-            )
-        )
-        if self.added_to_hass:
-            self._async_write_ha_state()
-
-
-class TodayEnergyEstimatorSensor(EnergyEstimatorSensor):
-
-    @typing.override
-    def on_estimator_update(self, estimator: EnergyEstimator):
-        self.extra_state_attributes = estimator.as_state_dict()
-        self.native_value = round(
-            estimator.today_energy
-            + estimator.get_estimated_energy(
-                estimator.estimation_time_ts, estimator.tomorrow_ts
-            )
-        )
-        if self.added_to_hass:
-            self._async_write_ha_state()
-
-
-class TomorrowEnergyEstimatorSensor(EnergyEstimatorSensor):
-
-    @typing.override
-    def on_estimator_update(self, estimator: EnergyEstimator):
-        self.native_value = round(
-            estimator.get_estimated_energy(
-                estimator.tomorrow_ts, estimator.tomorrow_ts + 86400
-            )
-        )
-        if self.added_to_hass:
-            self._async_write_ha_state()
-
-
 class EnergyEstimatorDevice(EstimatorDevice, EnergyEstimator):
+
+    class Sensor(EstimatorEntity[EnergyEstimator], Sensor):
+        """Entity reporting the forecasted energy over a (future) time span."""
+
+        if typing.TYPE_CHECKING:
+
+            class Config(pmc.EntityConfig, pmc.SubentryConfig):
+                forecast_duration_hours: int
+
+            class Args(Entity.Args):
+                forecast_duration_ts: NotRequired[int]
+                estimator: NotRequired[EnergyEstimator]
+
+            device: Final["EnergyEstimatorDevice"]  # type: ignore
+            forecast_duration_ts: int
+
+        # HA core entity attributes:
+        _unrecorded_attributes = frozenset(("forecast", "state"))
+        _attr_device_class = Sensor.DeviceClass.ENERGY
+        _attr_native_unit_of_measurement = hac.UnitOfEnergy.WATT_HOUR
+
+        __slots__ = ("forecast_duration_ts",)
+
+        def __init__(
+            self,
+            device: "EnergyEstimatorDevice",
+            id,
+            /,
+            **kwargs: "Unpack[Args]",
+        ):
+            self.forecast_duration_ts = kwargs.pop("forecast_duration_ts", 0)
+            super().__init__(
+                device,
+                id,
+                kwargs.pop("estimator", device),
+                state_class=None,  # type: ignore
+                **kwargs,
+            )
+
+        @typing.override
+        def on_estimator_update(self, estimator: EnergyEstimator):
+            self.native_value = round(
+                estimator.get_estimated_energy(
+                    estimator.estimation_time_ts,
+                    estimator.estimation_time_ts + self.forecast_duration_ts,
+                )
+            )
+            if self.added_to_hass:
+                self._async_write_ha_state()
+
+    class TodayEnergySensor(Sensor):
+
+        @typing.override
+        def on_estimator_update(self, estimator: EnergyEstimator):
+            self.extra_state_attributes = estimator.as_state_dict()
+            self.native_value = round(
+                estimator.today_energy
+                + estimator.get_estimated_energy(
+                    estimator.estimation_time_ts, estimator.tomorrow_ts
+                )
+            )
+            if self.added_to_hass:
+                self._async_write_ha_state()
+
+    class TomorrowEnergySensor(Sensor):
+
+        @typing.override
+        def on_estimator_update(self, estimator: EnergyEstimator):
+            self.native_value = round(
+                estimator.get_estimated_energy(
+                    estimator.tomorrow_ts, estimator.tomorrow_ts + 86400
+                )
+            )
+            if self.added_to_hass:
+                self._async_write_ha_state()
 
     if typing.TYPE_CHECKING:
 
@@ -134,12 +127,12 @@ class EnergyEstimatorDevice(EstimatorDevice, EnergyEstimator):
 
         super().__init__(id, **kwargs)
 
-        TodayEnergyEstimatorSensor(
+        EnergyEstimatorDevice.TodayEnergySensor(
             self,
             "today_energy_estimate",
             name=f"{self.config.get("name", self.__class__.DEFAULT_NAME)} (today)",
         )
-        TomorrowEnergyEstimatorSensor(
+        EnergyEstimatorDevice.TomorrowEnergySensor(
             self,
             "tomorrow_energy_estimate",
             name=f"{self.config.get("name", self.__class__.DEFAULT_NAME)} (tomorrow)",

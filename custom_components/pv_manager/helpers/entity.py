@@ -175,6 +175,15 @@ class Entity(Loggable, entity.Entity if TYPE_CHECKING else object):
         """Update and flush with safety check: only flush if added to HA"""
         pass
 
+    def update_config(self, /, **kwargs: "Unpack[Args]"):
+        """Updates entity attributes and flush to HA state. Useful when updating ConfigEntries/Subentries
+        as a shortcut update. Pretty dangerous though if kwargs are not carefully choosen (even among [Args]).
+        """
+        for _attr_name, _attr_value in kwargs.items():
+            setattr(self, _attr_name, _attr_value)
+        if self.added_to_hass:
+            self._async_write_ha_state()
+
     def update_name(self, name: str, /):
         """Updates entity name and flush to HA state. Useful when updating ConfigEntries/Subentries
         as a shortcut update."""
@@ -217,7 +226,7 @@ class DiagnosticEntity(Entity if TYPE_CHECKING else object):
         await super().async_shutdown(remove)
 
 
-class EstimatorEntity[_estimatorT: Estimator[Any]](Entity if TYPE_CHECKING else object):
+class EstimatorEntity[_estimatorT: "Estimator[Any]"](Entity):
 
     if TYPE_CHECKING:
 
@@ -226,8 +235,8 @@ class EstimatorEntity[_estimatorT: Estimator[Any]](Entity if TYPE_CHECKING else 
         class Args(Entity.Args):
             estimator_update_func: NotRequired["EstimatorEntity.EstimatorUpdateT"]
 
-        estimator: _estimatorT
-        _estimator_update_func: Final["EstimatorEntity.EstimatorUpdateT"]
+        estimator: Final[_estimatorT]
+        estimator_update_func: Final["EstimatorEntity.EstimatorUpdateT"]
 
     # by default we likely don't want to manage self instances in controller
     _attr_parent_attr = None
@@ -248,9 +257,7 @@ class EstimatorEntity[_estimatorT: Estimator[Any]](Entity if TYPE_CHECKING else 
     ):
         self.estimator = estimator
         self._estimator_update_unsub = None
-        self._estimator_update_func = kwargs.pop(
-            "estimator_update_func", lambda e: None
-        )
+        self.estimator_update_func = kwargs.pop("estimator_update_func", lambda e: None)
         super().__init__(device, id, **kwargs)
 
     async def async_shutdown(self, remove: bool, /):
@@ -282,4 +289,4 @@ class EstimatorEntity[_estimatorT: Estimator[Any]](Entity if TYPE_CHECKING else 
         # - (estimator) -> entity state
         # But in general it would be more efficient to subclass and override (in
         # that case the _estimator_update_func is ignored)
-        self.update_safe(self._estimator_update_func(estimator))
+        self.update_safe(self.estimator_update_func(estimator))

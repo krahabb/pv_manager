@@ -495,10 +495,7 @@ class SignalEnergyProcessor(SignalProcessor[float], EnergyBroadcast):
 
     ENERGY_UNITS = (SignalProcessor.Unit.ENERGY, SignalProcessor.Unit.CHARGE)
 
-    class WARNINGS(enum.StrEnum):
-        no_signal = enum.auto()
-        maximum_latency = enum.auto()
-        out_of_range = enum.auto()
+    WARNINGS = ("no_signal", "maximum_latency", "out_of_range")
 
     _SLOTS_ = (
         "maximum_latency_ts",

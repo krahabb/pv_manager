@@ -7,17 +7,16 @@ from ... import const as pmc
 from ...helpers import validation as hv
 from ...helpers.dataattr import DataAttr, DataAttrParam
 from ...helpers.entity import EstimatorEntity
-from ...processors import battery
 from ...processors.estimator_consumption_heuristic import HeuristicConsumptionEstimator
 from ...processors.estimator_energy import SignalEnergyEstimator
 from ...processors.estimator_pvenergy_heuristic import HeuristicPVEnergyEstimator
 from ...sensor import PowerSensor, Sensor
-from ..devices import EnergyMeterDevice, battery_device, estimator_device
+from ..devices import battery_device, estimator_device
 
 if TYPE_CHECKING:
     from typing import Callable, ClassVar, Final, NotRequired
 
-    from . import Controller as OffGridManager
+    from . import Controller as OffGridManager, EntryData
 
 SourceType = devices.SignalEnergyProcessorDevice.SourceType
 
@@ -33,7 +32,7 @@ class OffGridManagerDevice(devices.ProcessorDevice):
         controller: Final[OffGridManager]  # type: ignore
         config_subentry_id: Final[str]  # type: ignore
 
-        SOURCE_TYPE: ClassVar[str]
+        SOURCE_TYPE: ClassVar[SourceType]
 
     def __init__(
         self, controller: "OffGridManager", config: "Config", subentry_id: str, /
@@ -44,7 +43,6 @@ class OffGridManagerDevice(devices.ProcessorDevice):
             controller=controller,
             config_subentry_id=subentry_id,
             model=_class.__name__,
-            # REMOVE: already managed in Device.__init__ name=config.get("name") or _class.DEFAULT_NAME or _class.SOURCE_TYPE,
             config=config,
         )
         if controller.config_entry.state == ConfigEntryState.LOADED:
@@ -52,8 +50,8 @@ class OffGridManagerDevice(devices.ProcessorDevice):
 
 
 class MeterDevice(OffGridManagerDevice, devices.SignalEnergyProcessorDevice):
-    """Represents a single source of energy measures for a BATTERY, a LOAD
-    or a PV generator. This is at least a SignalEnergyProcessor and could be used to
+    """Represents a single source of energy measures for a BATTERY, a LOAD or a PV
+    generator. This is likely paired to a SignalEnergyProcessor in the inheritance model to
     implement a BatteryMeter, LoadMeter or PvMeter. If estimation is configured,
     LoadMeter(s) and PvMeter(s) are replaced by their 'extended' estimator versions,
     but still behaves as SignalEnergyProcessors from configured sources.
@@ -90,14 +88,17 @@ class MeterDevice(OffGridManagerDevice, devices.SignalEnergyProcessorDevice):
 
 class BatteryMeter(MeterDevice, battery_device.BatteryProcessorDevice):
 
-    if TYPE_CHECKING:
-
-        class Config(battery_device.BatteryProcessorDevice.Config, MeterDevice.Config):
-            pass
-
-        config: Config
-
     SOURCE_TYPE = SourceType.BATTERY
+
+    def __init__(self, controller: "OffGridManager", config, subentry_id: str, /):
+        super().__init__(controller, config, subentry_id)
+        if battery_estimator := controller.battery_estimator:
+            battery_estimator.connect_battery(self)
+
+    def shutdown(self):
+        if battery_estimator := self.controller.battery_estimator:
+            battery_estimator.disconnect_battery(self)
+        super().shutdown()
 
 
 class LoadMeter(MeterDevice):
@@ -125,7 +126,9 @@ class BatteryEstimator(EstimatorDevice, battery_device.BatteryEstimatorDevice):
     if TYPE_CHECKING:
 
         class Config(
-            battery_device.BatteryEstimatorDevice.Config, EstimatorDevice.Config
+            battery_device.BatteryEstimatorDevice.Config,
+            EstimatorDevice.Config,
+            HeuristicPVEnergyEstimator.Config,
         ):
             pass
 
@@ -133,52 +136,15 @@ class BatteryEstimator(EstimatorDevice, battery_device.BatteryEstimatorDevice):
 
     SOURCE_TYPE = SourceType.BATTERY
 
-    __slots__ = (
-        "_meter_device_add_unsub",
-        "_meter_device_remove_unsub",
-    )
+    __slots__ = ()
 
-    def __init__(
-        self, controller: "OffGridManager", config: "Config", subentry_id: str, /
-    ):
+    @classmethod
+    def get_config_schema(cls, config: "Config"):
+        return HeuristicPVEnergyEstimator.get_config_schema(config)
+
+    def __init__(self, controller: "OffGridManager", config, subentry_id: str, /):
         super().__init__(controller, config, subentry_id)
-        meter_devices = controller.meter_devices
-        for battery in meter_devices["battery"].values():
-            self.connect_battery(battery)
-        for load in meter_devices["load"].values():
-            self.connect_consumption(load)  # type: ignore
-        for pv in meter_devices["pv"].values():
-            self.connect_production(pv)  # type: ignore
-        self._meter_device_add_unsub = controller.meter_device_add_event.listen(
-            self._meter_device_add
-        )
-        self._meter_device_remove_unsub = controller.meter_device_remove_event.listen(
-            self._meter_device_remove
-        )
-        controller.battery_estimator = self
         controller.stored_objects[self.id] = self
-
-    def shutdown(self):
-        self.controller.battery_estimator = None
-        self._meter_device_add_unsub()
-        self._meter_device_remove_unsub()
-        super().shutdown()
-
-    def _meter_device_add(self, meter_device: MeterDevice):
-        if type(meter_device) is BatteryMeter:
-            self.connect_battery(meter_device)
-        elif type(meter_device) is LoadEstimator:
-            self.connect_consumption(meter_device)
-        elif type(meter_device) is PvEstimator:
-            self.connect_production(meter_device)
-
-    def _meter_device_remove(self, meter_device: MeterDevice):
-        if type(meter_device) is BatteryMeter:
-            self.disconnect_battery(meter_device)
-        elif type(meter_device) is LoadEstimator:
-            self.disconnect_consumption(meter_device)
-        elif type(meter_device) is PvEstimator:
-            self.disconnect_production(meter_device)
 
 
 class SignalEnergyEstimatorDevice(EstimatorDevice, SignalEnergyEstimator):
@@ -188,14 +154,27 @@ class SignalEnergyEstimatorDevice(EstimatorDevice, SignalEnergyEstimator):
 class LoadEstimator(
     LoadMeter, SignalEnergyEstimatorDevice, HeuristicConsumptionEstimator
 ):
-    pass
+    def __init__(self, controller: "OffGridManager", config, subentry_id: str, /):
+        super().__init__(controller, config, subentry_id)
+        controller.battery_estimator.connect_consumption(self)
+
+    def shutdown(self):
+        self.controller.battery_estimator.disconnect_consumption(self)
+        super().shutdown()
 
 
 class PvEstimator(PvMeter, SignalEnergyEstimatorDevice, HeuristicPVEnergyEstimator):
-    pass
+
+    def __init__(self, controller: "OffGridManager", config, subentry_id: str, /):
+        super().__init__(controller, config, subentry_id)
+        controller.battery_estimator.connect_production(self)
+
+    def shutdown(self):
+        self.controller.battery_estimator.disconnect_production(self)
+        super().shutdown()
 
 
-class LossesMeter(OffGridManagerDevice, EnergyMeterDevice):
+class LossesMeter(MeterDevice):
 
     class YieldSensor(EstimatorEntity[BatteryEstimator], Sensor):
 
@@ -205,9 +184,20 @@ class LossesMeter(OffGridManagerDevice, EnergyMeterDevice):
 
         __slots__ = EstimatorEntity._SLOTS_
 
+        def update_config(
+            self,
+            name: str,
+            estimator_update_func: "LossesMeter.YieldSensor.EstimatorUpdateT",
+            /,
+        ):
+            if self.estimator_update_func != estimator_update_func:
+                self.estimator_update_func = estimator_update_func  # type: ignore[Final]
+                self.native_value = estimator_update_func(self.estimator)
+            super().update_name(name)
+
     if TYPE_CHECKING:
 
-        class Config(EnergyMeterDevice.Config):
+        class Config(MeterDevice.Config):
             battery_yield: NotRequired[str]
             battery_yield_mode: NotRequired[str]
             conversion_yield: NotRequired[str]
@@ -222,6 +212,8 @@ class LossesMeter(OffGridManagerDevice, EnergyMeterDevice):
         conversion_yield_sensor: YieldSensor | None
         system_yield_sensor: YieldSensor | None
         _load_meters: dict[MeterDevice, Callable]
+
+    WARNINGS = ()  # override SignalEnergyProcessor: no use here
 
     SOURCE_TYPE = SourceType.LOSSES
 
@@ -256,6 +248,7 @@ class LossesMeter(OffGridManagerDevice, EnergyMeterDevice):
         "_losses",
         "_load_meters",
         "_meter_device_add_unsub",
+        "_meter_device_remove_unsub",
         "_battery_estimator_update_unsub",
     )
 
@@ -269,7 +262,8 @@ class LossesMeter(OffGridManagerDevice, EnergyMeterDevice):
             "system_yield": "System yield",
             "system_yield_mode": "average",
         }
-        schema = super().get_config_schema(config)
+        # ensure we don't pull in SignalEnergyProcessor.Config
+        schema = devices.EnergyMeterDevice.get_config_schema(config)
         _s = hv.select_selector(options=LossesMeter.YIELD_SENSOR_MODES)
         for _sensor_id in LossesMeter.YIELD_SENSOR_IDS:
             schema |= {
@@ -279,7 +273,7 @@ class LossesMeter(OffGridManagerDevice, EnergyMeterDevice):
         return schema
 
     def __init__(
-        self, controller: "OffGridManager", config: "Config", subentry_id: str
+        self, controller: "OffGridManager", config: "Config", subentry_id: str, /
     ):
         super().__init__(controller, config, subentry_id)
         self.priority = self.Priority.LOW
@@ -318,10 +312,13 @@ class LossesMeter(OffGridManagerDevice, EnergyMeterDevice):
         controller = self.controller
         self._load_meters = {
             load_meter: load_meter.listen_energy(self._process_load_energy)
-            for load_meter in controller.meter_devices["load"].values()
+            for load_meter in controller.meter_devices[SourceType.LOAD].values()
         }
         self._meter_device_add_unsub = controller.meter_device_add_event.listen(
             self._meter_device_add
+        )
+        self._meter_device_remove_unsub = controller.meter_device_remove_event.listen(
+            self._meter_device_remove
         )
         await super().async_start()
         self._process_load_energy()
@@ -343,6 +340,68 @@ class LossesMeter(OffGridManagerDevice, EnergyMeterDevice):
                 _unsub()
         super().shutdown()
 
+    async def async_update_entry(self, entry_data: "EntryData[Config]", /):
+        subentry_id = entry_data.subentry_id
+        config = entry_data.config
+        entities = entry_data.entities
+
+        losses_power_sensor = entities.get(f"{self.unique_id}-losses_power")
+        if name := config.get("name"):
+            if losses_power_sensor:
+                losses_power_sensor.update_name(name)
+            else:
+                PowerSensor(
+                    self,
+                    "losses_power",
+                    config_subentry_id=subentry_id,
+                    name=name,
+                    parent_attr=PowerSensor.ParentAttr.DYNAMIC,
+                )
+        elif losses_power_sensor:
+            await losses_power_sensor.async_shutdown(True)
+
+        if battery_estimator := self.controller.battery_estimator:
+            # update yield sensors
+            yield_sensors_id_new = {
+                yield_sensor_id: mode_dict
+                for yield_sensor_id, mode_dict in LossesMeter.YIELD_SENSOR_IDS.items()
+                if config.get(yield_sensor_id)
+            }
+            for yield_sensor_id, mode_dict in LossesMeter.YIELD_SENSOR_IDS.items():
+                try:
+                    yield_sensor: LossesMeter.YieldSensor = entities[f"{self.unique_id}-{yield_sensor_id}"]  # type: ignore
+                except KeyError:
+                    # yield_sensor not previously configured
+                    continue
+                try:
+                    del yield_sensors_id_new[yield_sensor_id]
+                    # yield_sensor still present: update
+                    yield_sensor.update_config(
+                        config[yield_sensor_id],
+                        mode_dict.get(
+                            config.get(f"{yield_sensor_id}_mode", "average"),
+                            mode_dict["average"],
+                        ),
+                    )
+                except KeyError:
+                    # yield_sensor removed from updated config
+                    await yield_sensor.async_shutdown(True)
+            # leftovers are newly added yield sensors
+            for yield_sensor_id, mode_dict in yield_sensors_id_new.items():
+                LossesMeter.YieldSensor(
+                    self,
+                    yield_sensor_id,
+                    battery_estimator,
+                    config_subentry_id=subentry_id,
+                    name=config[yield_sensor_id],
+                    estimator_update_func=mode_dict.get(
+                        config.get(f"{yield_sensor_id}_mode", "average"),
+                        mode_dict["average"],
+                    ),
+                )
+
+        await super().async_update_entry(entry_data)
+
     def _process_load_energy(self, *args):
 
         controller = self.controller
@@ -355,18 +414,24 @@ class LossesMeter(OffGridManagerDevice, EnergyMeterDevice):
             if self.losses_power_sensor:
                 self.losses_power_sensor.update(losses_power)
 
-    def _battery_estimator_update(self, estimator: BatteryEstimator):
+    def _battery_estimator_update(self, estimator: BatteryEstimator, /):
         losses = estimator.losses
         d_losses = losses - self._losses
         for energy_listener in self.energy_listeners:
             energy_listener(d_losses, estimator.estimation_time_ts)
         self._losses = losses
 
-    def _meter_device_add(self, meter_device: MeterDevice):
+    def _meter_device_add(self, meter_device: MeterDevice, /):
         if meter_device.SOURCE_TYPE is SourceType.LOAD:
             self._load_meters[meter_device] = meter_device.listen_energy(
                 self._process_load_energy
             )
+            self._process_load_energy()
+
+    def _meter_device_remove(self, meter_device: MeterDevice, /):
+        if meter_device.SOURCE_TYPE is SourceType.LOAD:
+            self._load_meters.pop(meter_device)()
+            self._process_load_energy()
 
 
 """REMOVE

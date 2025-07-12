@@ -9,7 +9,6 @@ from ...sensor import Sensor
 from .devices import (
     BatteryEstimator,
     BatteryMeter,
-    HeuristicPVEnergyEstimator,
     LoadEstimator,
     LoadMeter,
     LossesMeter,
@@ -32,34 +31,46 @@ if typing.TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
 
     from ...controller import EntryData
-    from .devices import MeterDevice, OffGridManagerDevice
+    from .devices import MeterDevice, OffGridManagerDevice, SourceType
+
+    class EntryConfig(controller.Controller.Config):
+        pass
 
     SUBENTRY_TYPE_CONFIG_MAP: dict[str | None, Callable]
-    SUBENTRY_TYPE_DEVICE_MAP: dict[str | None, type[OffGridManagerDevice]]
-    SUBENTRY_TYPE_ESTIMATOR_MAP: dict[str | None, type[OffGridManagerDevice]]
+    SUBENTRY_TYPE_DEVICE_MAP: dict[
+        str | None, tuple[SourceType, type[MeterDevice], type[OffGridManagerDevice]]
+    ]
 
 
 SUBENTRY_TYPE_CONFIG_MAP = {
     pmc.ConfigSubentryType.MANAGER_BATTERY_METER: BatteryMeter.get_config_schema,
     pmc.ConfigSubentryType.MANAGER_LOAD_METER: LoadMeter.get_config_schema,
     pmc.ConfigSubentryType.MANAGER_PV_METER: PvMeter.get_config_schema,
-    pmc.ConfigSubentryType.MANAGER_ESTIMATOR: HeuristicPVEnergyEstimator.get_config_schema,
+    pmc.ConfigSubentryType.MANAGER_ESTIMATOR: BatteryEstimator.get_config_schema,
     pmc.ConfigSubentryType.MANAGER_LOSSES: LossesMeter.get_config_schema,
 }
 
 SUBENTRY_TYPE_DEVICE_MAP = {
-    pmc.ConfigSubentryType.MANAGER_BATTERY_METER: BatteryMeter,
-    pmc.ConfigSubentryType.MANAGER_LOAD_METER: LoadMeter,
-    pmc.ConfigSubentryType.MANAGER_PV_METER: PvMeter,
-    pmc.ConfigSubentryType.MANAGER_LOSSES: LossesMeter,
-}
-
-SUBENTRY_TYPE_ESTIMATOR_MAP = {
-    pmc.ConfigSubentryType.MANAGER_BATTERY_METER: BatteryMeter,
-    pmc.ConfigSubentryType.MANAGER_LOAD_METER: LoadEstimator,
-    pmc.ConfigSubentryType.MANAGER_PV_METER: PvEstimator,
-    pmc.ConfigSubentryType.MANAGER_ESTIMATOR: BatteryEstimator,
-    pmc.ConfigSubentryType.MANAGER_LOSSES: LossesMeter,
+    pmc.ConfigSubentryType.MANAGER_BATTERY_METER: (
+        BatteryMeter.SOURCE_TYPE,
+        BatteryMeter,
+        BatteryMeter,
+    ),
+    pmc.ConfigSubentryType.MANAGER_LOAD_METER: (
+        LoadMeter.SOURCE_TYPE,
+        LoadMeter,
+        LoadEstimator,
+    ),
+    pmc.ConfigSubentryType.MANAGER_PV_METER: (
+        PvMeter.SOURCE_TYPE,
+        PvMeter,
+        PvEstimator,
+    ),
+    pmc.ConfigSubentryType.MANAGER_LOSSES: (
+        LossesMeter.SOURCE_TYPE,
+        LossesMeter,
+        LossesMeter,
+    ),
 }
 
 """
@@ -94,7 +105,7 @@ class ManagerLossesConfig(pmc.EntityConfig, pmc.SubentryConfig):
 """
 
 
-class Controller(controller.Controller["Controller.Config"]):  # type: ignore
+class Controller(controller.Controller["EntryConfig"]):  # type: ignore
     """
     Off-grid plant manager: a collection of integrated helpers for a complete off-grid system
     with PV, BATTERY and LOAD.
@@ -109,17 +120,12 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
 
     if typing.TYPE_CHECKING:
 
-        estimator_config: Final[pmc.ConfigMapping | None]
+        type Config = EntryConfig
 
-        class MeterDevicesT(TypedDict):
-            battery: dict[str, BatteryMeter]
-            load: dict[str, LoadMeter]  # could be LoadEstimator
-            pv: dict[str, PvMeter]  # could be PvEstimator
-
-        meter_devices: Final[MeterDevicesT]
+        meter_devices: Final[dict[SourceType, dict[str, MeterDevice]]]
         meter_device_add_event: Final[EventBroadcast[MeterDevice]]
         meter_device_remove_event: Final[EventBroadcast[MeterDevice]]
-        battery_estimator: BatteryEstimator | None
+        battery_estimator: BatteryEstimator
 
     DEFAULT_NAME = "Off grid Manager"
     """REMOVE
@@ -146,7 +152,6 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
     PLATFORMS = {Sensor.PLATFORM, BinarySensor.PLATFORM}
 
     __slots__ = (
-        "estimator_config",
         "meter_devices",
         "meter_device_add_event",
         "meter_device_remove_event",
@@ -214,144 +219,75 @@ class Controller(controller.Controller["Controller.Config"]):  # type: ignore
         return SUBENTRY_TYPE_CONFIG_MAP[subentry_type](config)
 
     @staticmethod
-    def _get_estimator_config(config_entry: "ConfigEntry"):
+    def _get_estimator_entry(config_entry: "ConfigEntry"):
         for subentry in config_entry.subentries.values():
             if subentry.subentry_type == pmc.ConfigSubentryType.MANAGER_ESTIMATOR:
-                return subentry.data
+                return subentry
         return None
 
     def __init__(self, config_entry: "ConfigEntry"):
-        self.estimator_config = Controller._get_estimator_config(config_entry)
-        self.meter_devices = {"battery": {}, "load": {}, "pv": {}}
+        self.meter_devices = {
+            BatteryMeter.SOURCE_TYPE: {},
+            LoadMeter.SOURCE_TYPE: {},
+            PvMeter.SOURCE_TYPE: {},
+            LossesMeter.SOURCE_TYPE: {},
+        }
         self.meter_device_add_event = EventBroadcast()
         self.meter_device_remove_event = EventBroadcast()
         super().__init__(config_entry)
 
     @typing.override
+    def _on_init(self):
+        if estimator_entry := Controller._get_estimator_entry(self.config_entry):
+            self.battery_estimator = BatteryEstimator(
+                self, estimator_entry.data, estimator_entry.subentry_id  # type: ignore
+            )
+        else:
+            self.battery_estimator = None  # type: ignore
+
+    def shutdown(self):
+        super().shutdown()
+
+        for meter_device_entries in self.meter_devices.values():
+            assert not meter_device_entries
+
+        self.battery_estimator = None  # type: ignore
+
+    @typing.override
     def _subentry_add(self, subentry_id: str, entry_data: "EntryData"):
         try:
-            if self.estimator_config:
-                SUBENTRY_TYPE_ESTIMATOR_MAP[entry_data.subentry_type](
-                    self, self.estimator_config | entry_data.config, subentry_id
+            if self.battery_estimator:
+                SUBENTRY_TYPE_DEVICE_MAP[entry_data.subentry_type][2](
+                    self, self.battery_estimator.config | entry_data.config, subentry_id
                 )
             else:
-                SUBENTRY_TYPE_DEVICE_MAP[entry_data.subentry_type](
+                SUBENTRY_TYPE_DEVICE_MAP[entry_data.subentry_type][1](
                     self, entry_data.config, subentry_id
                 )
         except KeyError:
             match entry_data.subentry_type:
                 case pmc.ConfigSubentryType.MANAGER_ESTIMATOR:
-                    # This means the estimator subentry is being added after load
-                    raise Controller.EntryReload()
-
-                case pmc.ConfigSubentryType.MANAGER_LOSSES:
-                    LossesMeter(self, entry_data.config, subentry_id)
-                    """REMOVE
-                    assert not self.losses_meter
-                    losses_config: ManagerLossesConfig = entry_data.config  # type: ignore
-                    self.losses_meter = energy_meter = LossesMeter(
-                        self, losses_config["update_period"]
-                    )
-                    name = losses_config["name"]
-                    PowerSensor(
-                        self,
-                        "losses_power",
-                        config_subentry_id=subentry_id,
-                        name=name,
-                        parent_attr=PowerSensor.ParentAttr.DYNAMIC,
-                    )
-                    self._create_subentry_energy_sensors(
-                        self, energy_meter, name, subentry_id, losses_config["cycle_modes"]
-                    )
-                    for yield_sensor_id in YieldSensorId:
-                        setattr(self, f"{yield_sensor_id}_sensor", None)
-                        if name := losses_config.get(yield_sensor_id):
-                            YieldSensor(
-                                self,
-                                yield_sensor_id,
-                                config_subentry_id=subentry_id,
-                                name=name,
-                            )
-                    if self.config_entry.state == ConfigEntryState.LOADED:
-                        energy_meter.start()
-                    """
+                    if not self.battery_estimator:
+                        # This means the estimator subentry is being added after load
+                        raise Controller.EntryReload()
 
     @typing.override
     async def _async_subentry_update(self, subentry_id: str, entry_data: "EntryData"):
         try:
             await self.meter_devices[
-                SUBENTRY_TYPE_DEVICE_MAP[entry_data.subentry_type].SOURCE_TYPE
-            ][subentry_id].update_entry(entry_data)
+                SUBENTRY_TYPE_DEVICE_MAP[entry_data.subentry_type][0]
+            ][subentry_id].async_update_entry(entry_data)
         except KeyError:
             match entry_data.subentry_type:
                 case pmc.ConfigSubentryType.MANAGER_ESTIMATOR:
                     raise Controller.EntryReload()
 
-                case pmc.ConfigSubentryType.MANAGER_LOSSES:
-                    """REMOVE
-                    energy_meter = self.losses_meter
-                    assert energy_meter
-                    losses_config: ManagerLossesConfig = entry_data.config  # type: ignore
-                    name = losses_config["name"]
-                    # TODO: retrigger the track_timer
-                    energy_meter.update_period_ts = losses_config["update_period"]
-                    entities = entry_data.entities
-                    # update PowerSensor
-                    if entity := entities.get("losses_power"):
-                        entity.update_name(name)
-                    # update ManagerEnergySensors
-                    cycle_modes_new = set(losses_config["cycle_modes"])
-                    for energy_sensor in [
-                        entity
-                        for entity in entities.values()
-                        if isinstance(entity, EnergySensor)
-                    ]:
-                        try:
-                            cycle_modes_new.remove(energy_sensor.cycle_mode)
-                            # cycle_mode still present: update
-                            energy_sensor.update_name(energy_sensor.formatted_name(name))
-                        except KeyError:
-                            # cycle_mode removed from updated config
-                            await energy_sensor.async_shutdown(True)
-                    # leftovers are those newly added cycle_mode(s)
-                    self._create_subentry_energy_sensors(
-                        self, energy_meter, name, subentry_id, cycle_modes_new
-                    )
-                    # update yield sensors
-                    yield_sensors_id_new = {
-                        yield_sensor_id
-                        for yield_sensor_id in YieldSensorId
-                        if losses_config.get(yield_sensor_id)
-                    }
-                    for yield_sensor_id in YieldSensorId:
-                        try:
-                            yield_sensor = entities[yield_sensor_id]
-                        except KeyError:
-                            # yield_sensor not (yet?) configured
-                            continue
-                        try:
-                            yield_sensors_id_new.remove(yield_sensor_id)
-                            # yield_sensor still present: update
-                            yield_sensor.update_name(losses_config.get(yield_sensor_id))  # type: ignore
-                        except KeyError:
-                            # yield_sensor removed from updated config
-                            await yield_sensor.async_shutdown(True)
-                    # leftovers are newly added yield sensors
-                    for yield_sensor_id in yield_sensors_id_new:
-                        YieldSensor(
-                            self,
-                            yield_sensor_id,
-                            config_subentry_id=subentry_id,
-                            name=losses_config[yield_sensor_id],  # type: ignore
-                        )
-                    """
-
     @typing.override
     async def _async_subentry_remove(self, subentry_id: str, entry_data: "EntryData"):
         try:
-            self.meter_devices[
-                SUBENTRY_TYPE_DEVICE_MAP[entry_data.subentry_type].SOURCE_TYPE
-            ][subentry_id].shutdown()
+            self.meter_devices[SUBENTRY_TYPE_DEVICE_MAP[entry_data.subentry_type][0]][
+                subentry_id
+            ].shutdown()
         except KeyError:
             match entry_data.subentry_type:
                 case pmc.ConfigSubentryType.MANAGER_ESTIMATOR:

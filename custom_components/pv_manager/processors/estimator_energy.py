@@ -173,6 +173,7 @@ class EnergyEstimator(Estimator):
         await super().async_start()
         # triggers the sampling callback
         self._sampling_interval_callback()
+        self.update_estimate()
 
     @typing.override
     def shutdown(self):
@@ -413,7 +414,6 @@ class EnergyObserverEstimator(EnergyEstimator):
             await history.get_instance(Manager.hass).async_add_executor_job(
                 self._restore_history
             )
-        self.update_estimate()
         await super().async_start()
 
     @typing.override

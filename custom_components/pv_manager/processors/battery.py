@@ -216,7 +216,7 @@ class BatteryProcessor(SignalEnergyProcessor):
         self.battery_voltage = battery_voltage
 
 
-class BatteryEstimator(EnergyBalanceEstimator):
+class BatteryEstimator(EnergyEstimator):
     """A 'Battery estimator':
     This works by collecting production(pv) and consumption data (and estimates)
     together with battery energy and charge balance to build a forecast of
@@ -233,7 +233,7 @@ class BatteryEstimator(EnergyBalanceEstimator):
     meters/estimators if the system supply diefferent loads (say an inverter
     and DC loads connected to the battery bank)."""
 
-    class Sample(EnergyBalanceEstimator.Sample):
+    class Sample(EnergyEstimator.Sample):
         energy_in: DataAttr[float] = 0
         energy_out: DataAttr[float] = 0
         charge_in: DataAttr[float] = 0
@@ -270,10 +270,10 @@ class BatteryEstimator(EnergyBalanceEstimator):
 
     if typing.TYPE_CHECKING:
 
-        class Config(EnergyBalanceEstimator.Config):
+        class Config(EnergyEstimator.Config):
             pass
 
-        class Args(EnergyBalanceEstimator.Args):
+        class Args(EnergyEstimator.Args):
             config: "BatteryEstimator.Config"
 
         # (override base typehint)
@@ -358,10 +358,6 @@ class BatteryEstimator(EnergyBalanceEstimator):
             _unsub()
         self._battery_processors.clear()
         super().shutdown()
-
-    # interface: EnergyEstimator
-    # Skip EnergyBalanceEstimator.update_estimate
-    update_estimate = EnergyEstimator.update_estimate
 
     @typing.override
     def _process_sample_curr(self, sample_curr: Sample, time_ts: float, /):
@@ -554,7 +550,6 @@ class BatteryEstimator(EnergyBalanceEstimator):
     @typing.override
     def process_energy(self, energy: float, time_ts: float):
         sample_curr = self._check_sample_curr(time_ts)
-        # don't accumulate energy in sample_curr..it'll be computed then
         sample_curr.samples += 1
         if energy > 0:
             sample_curr.energy_out += energy
@@ -591,13 +586,3 @@ class BatteryEstimator(EnergyBalanceEstimator):
     def process_production(self, energy: float, time_ts: float):
         sample_curr = self._check_sample_curr(time_ts)
         sample_curr.production += energy
-
-
-class SignalBatteryEstimator(BatteryEstimator, BatteryProcessor):
-    """A 'compact' single object encapsulating both a BatteryProcessor to
-    process raw battery signals (voltage, current and so) and to also
-    forecast battery state. Just needs to be connected to production/consumption."""
-
-    def __init__(self, id, **kwargs):
-        super().__init__(id, **kwargs)
-        self.connect_battery(self)

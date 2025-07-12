@@ -17,7 +17,6 @@ if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
     SUBENTRY_FLOW_MAP: dict[str, dict[str, type[config_entries.ConfigSubentryFlow]]]
-    ENTRY_UPDATE_LISTENERS: dict[ConfigEntry, CALLBACK_TYPE]
 
 
 class CommonFlow(data_entry_flow.FlowHandler if TYPE_CHECKING else object):
@@ -146,20 +145,6 @@ SUBENTRY_FLOW_MAP = {
         pmc.ConfigSubentryType.MANAGER_LOSSES: ConfigSubentryFlow,
     },
 }
-UNIQUE_SUBENTRY_TYPES = [
-    subentry_type for subentry_type in pmc.ConfigSubentryType if subentry_type.unique
-]
-ENTRY_UPDATE_LISTENERS = {}
-
-
-async def _entry_update_listener(hass: "HomeAssistant", config_entry: "ConfigEntry"):
-    """Called on every entry change for entries that support unique subentry types.
-    This callback will make sure that the 'supported_subentry_types' property gets updated
-    depending on unique ones being already (or not) configured."""
-    # Raw approach: just invalidate the underlying property and let the code invoke
-    # async_get_supported_subentry_types since the "update" logic is the same and we would
-    # just duplicate the code
-    object.__setattr__(config_entry, "_supported_subentry_types", None)
 
 
 class ConfigFlow(CommonFlow, config_entries.ConfigFlow, domain=pmc.DOMAIN):  # type: ignore
@@ -181,39 +166,7 @@ class ConfigFlow(CommonFlow, config_entries.ConfigFlow, domain=pmc.DOMAIN):  # t
     ) -> dict[str, type[config_entries.ConfigSubentryFlow]]:
         """Return subentries supported by this integration."""
         try:
-            supported_subentry_types = SUBENTRY_FLOW_MAP[
-                pmc.ConfigEntryType.get_from_entry(config_entry)
-            ]
-            unique_subentry_types = [
-                subentry_type
-                for subentry_type in UNIQUE_SUBENTRY_TYPES
-                if subentry_type in supported_subentry_types
-            ]
-            if not unique_subentry_types:
-                return supported_subentry_types
-
-            # This config_entry has some unique subentry types so we have to check
-            # if these are already configured. We also setup a listener for changes so that
-            # we can dynamically update the ConfigEntry.supported_subentry_types
-            if config_entry not in ENTRY_UPDATE_LISTENERS:
-                ENTRY_UPDATE_LISTENERS[config_entry] = config_entry.add_update_listener(
-                    _entry_update_listener
-                )
-
-            configured_unique_subentry_types = [
-                subentry.subentry_type
-                for subentry in config_entry.subentries.values()
-                if subentry.subentry_type in unique_subentry_types
-            ]
-            if not configured_unique_subentry_types:
-                return supported_subentry_types
-
-            return {
-                subentry_type: subentry_flow_class
-                for subentry_type, subentry_flow_class in supported_subentry_types.items()
-                if subentry_type not in configured_unique_subentry_types
-            }
-
+            return SUBENTRY_FLOW_MAP[pmc.ConfigEntryType.get_from_entry(config_entry)]
         except:
             # no log since the entry is likely unloadable and more detailed logging should
             # be available in async_setup_entry

@@ -10,10 +10,7 @@ from ..helpers import datetime_from_epoch, validation as hv
 from ..helpers.manager import Manager
 from ..sensor import Sensor
 from .devices import Device
-from .devices.estimator_device import (
-    EnergyEstimatorDevice,
-    EnergyEstimatorSensor,
-)
+from .devices.estimator_device import EnergyEstimatorDevice
 
 if typing.TYPE_CHECKING:
     from typing import (
@@ -43,7 +40,7 @@ class EntryData[_ConfigT: pmc.EntryConfig | pmc.SubentryConfig]:
     if typing.TYPE_CHECKING:
         subentry_id: Final[str | None]  # type: ignore
         subentry_type: Final[str | None]  # type: ignore
-        config: _ConfigT
+        config: Final[_ConfigT]  # type: ignore
         entities: Final[dict[str, Entity]]  # type: ignore
 
     __slots__ = (
@@ -58,7 +55,7 @@ class EntryData[_ConfigT: pmc.EntryConfig | pmc.SubentryConfig]:
         entry = EntryData()
         entry.subentry_id = None  # type: ignore
         entry.subentry_type = None  # type: ignore
-        entry.config = config_entry.data
+        entry.config = config_entry.data  # type: ignore
         entry.entities = {}  # type: ignore
         return entry
 
@@ -67,7 +64,7 @@ class EntryData[_ConfigT: pmc.EntryConfig | pmc.SubentryConfig]:
         entry = EntryData()
         entry.subentry_id = subentry.subentry_id  # type: ignore
         entry.subentry_type = subentry.subentry_type  # type: ignore
-        entry.config = subentry.data
+        entry.config = subentry.data  # type: ignore
         entry.entities = {}  # type: ignore
         return entry
 
@@ -173,7 +170,11 @@ class Controller[_ConfigT: pmc.EntryConfig](Device):
         self.options = config_entry.options  # type: ignore
         self.platforms = {platform: None for platform in self.PLATFORMS}
         self.devices = []
-        self.entries = {None: EntryData.Entry(config_entry)}
+        entries = self.entries = {
+            subentry_id: EntryData.SubEntry(subentry)
+            for subentry_id, subentry in config_entry.subentries.items()
+        }
+        entries[None] = EntryData.Entry(config_entry)
         self.diagnostic_entities = {}
         self.stored_objects = {}
         self._final_write_unsub = None
@@ -189,10 +190,9 @@ class Controller[_ConfigT: pmc.EntryConfig](Device):
             config_entry.entry_id, controller=self, logger=logger, config=self.config
         )
 
-        entries = self.entries
-        for subentry_id, subentry in config_entry.subentries.items():
-            entries[subentry_id] = entry_data = EntryData.SubEntry(subentry)
-            self._subentry_add(subentry_id, entry_data)
+        for subentry_id, entry_data in entries.items():
+            if subentry_id:
+                self._subentry_add(subentry_id, entry_data)
 
         if self.options.get("create_diagnostic_entities"):
             self._create_diagnostic_entities()
@@ -297,7 +297,7 @@ class Controller[_ConfigT: pmc.EntryConfig](Device):
             if self.config != config_entry.data:
                 self.config = config_entry.data  # type: ignore
                 entry_data = entries[None]
-                entry_data.config = config_entry.data
+                entry_data.config = config_entry.data  # type: ignore
                 # eventually we can 'kick' a subentry_update
                 # self._subentry_update(None, entry_data)
 
@@ -325,7 +325,7 @@ class Controller[_ConfigT: pmc.EntryConfig](Device):
                 try:
                     entry_data = entries[subentry_id]
                     if entry_data.config is not subentry.data:
-                        entry_data.config = subentry.data
+                        entry_data.config = subentry.data  # type: ignore
                         await self._async_subentry_update(subentry_id, entry_data)
                 except KeyError:
                     # new subentry
@@ -432,11 +432,13 @@ class EnergyEstimatorController[_ConfigT: "EnergyEstimatorController.Config"](  
     # interface: Controller
     @typing.override
     def _subentry_add(
-        self, subentry_id: str, entry_data: "EntryData[EnergyEstimatorSensor.Config]"
+        self,
+        subentry_id: str,
+        entry_data: "EntryData[EnergyEstimatorDevice.Sensor.Config]",
     ):
         match entry_data.subentry_type:
             case pmc.ConfigSubentryType.ENERGY_ESTIMATOR_SENSOR:
-                EnergyEstimatorSensor(
+                EnergyEstimatorDevice.Sensor(
                     self,
                     f"{pmc.ConfigSubentryType.ENERGY_ESTIMATOR_SENSOR}_{subentry_id}",
                     name=entry_data.config.get(
@@ -452,7 +454,7 @@ class EnergyEstimatorController[_ConfigT: "EnergyEstimatorController.Config"](  
     async def _async_subentry_update(self, subentry_id: str, entry_data: EntryData):
         match entry_data.subentry_type:
             case pmc.ConfigSubentryType.ENERGY_ESTIMATOR_SENSOR:
-                entity: EnergyEstimatorSensor
+                entity: EnergyEstimatorDevice.Sensor
                 for entity in entry_data.entities.values():  # type: ignore
                     entity.name = entry_data.config.get(
                         "name", pmc.ConfigSubentryType.ENERGY_ESTIMATOR_SENSOR

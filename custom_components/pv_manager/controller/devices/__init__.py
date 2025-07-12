@@ -118,7 +118,7 @@ class Device(CallbackTracker, Loggable):
         super().shutdown()
         # self.controller = None  # type: ignore
 
-    async def update_entry(self, entry_data: "EntryData", /):
+    async def async_update_entry(self, entry_data: "EntryData", /):
         """Entry point called when the config (sub)entry changes."""
         pass
 
@@ -183,9 +183,9 @@ class EnergyMeterDevice(ProcessorDevice, EnergyBroadcast):
         )
 
     @typing.override
-    async def update_entry(self, entry_data: "EntryData[Config]", /):
+    async def async_update_entry(self, entry_data: "EntryData[Config]", /):
         self.config = config = entry_data.config
-        await self._update_energy_sensors(
+        await self._async_update_energy_sensors(
             "energy_sensor",
             "cycle_modes",
             config.get("name", self.__class__.DEFAULT_NAME),
@@ -210,7 +210,7 @@ class EnergyMeterDevice(ProcessorDevice, EnergyBroadcast):
                 name=name,
             )
 
-    async def _update_energy_sensors(
+    async def _async_update_energy_sensors(
         self,
         entity_id: str,
         config_key: str,

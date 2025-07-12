@@ -1,7 +1,8 @@
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, override
 
 from . import EnergyMeterDevice
 from ...helpers import validation as hv
+from ...helpers.entity import EstimatorEntity
 from ...processors.battery import BatteryEstimator, BatteryProcessor
 from ...sensor import BatteryChargeSensor, EnergySensor, Sensor
 from .estimator_device import EnergyEstimatorDevice
@@ -69,17 +70,17 @@ class BatteryProcessorDevice(EnergyMeterDevice, BatteryProcessor):
             )
         )
 
-    async def update_entry(self, entry_data: "EntryData", /):
-        await super().update_entry(entry_data)
+    async def async_update_entry(self, entry_data: "EntryData", /):
+        await super().async_update_entry(entry_data)
         config = self.config
-        await self._update_energy_sensors(
+        await self._async_update_energy_sensors(
             "energy_in_sensor",
             "cycle_modes_in",
             f"{config.get("name", self.__class__.DEFAULT_NAME)} (in)",
             self.energy_broadcast_in,
             entry_data,
         )
-        await self._update_energy_sensors(
+        await self._async_update_energy_sensors(
             "energy_out_sensor",
             "cycle_modes_out",
             f"{config.get("name", self.__class__.DEFAULT_NAME)} (out)",
@@ -89,6 +90,31 @@ class BatteryProcessorDevice(EnergyMeterDevice, BatteryProcessor):
 
 
 class BatteryEstimatorDevice(EnergyEstimatorDevice, BatteryEstimator):
+
+    class ChargeForecastSensor(Sensor):
+
+        if TYPE_CHECKING:
+
+            class Args(Sensor.Args):
+                pass
+
+            device: Final["BatteryEstimatorDevice"]  # type: ignore
+
+        _attr_parent_attr = Sensor.ParentAttr.REMOVE
+        # HA core entity attributes:
+        _attr_device_class = None
+        _attr_native_unit_of_measurement = "Ah"
+        _attr_suggested_display_precision = 0
+
+        def __init__(
+            self, device: "BatteryEstimatorDevice", id, /, **kwargs: "Unpack[Args]"
+        ):
+            super().__init__(
+                device,
+                id,
+                state_class=None,
+                **kwargs,  # type: ignore
+            )
 
     if TYPE_CHECKING:
 
@@ -101,28 +127,24 @@ class BatteryEstimatorDevice(EnergyEstimatorDevice, BatteryEstimator):
 
         config: Config
 
-        today_charge_estimate_sensor: Sensor
-        tomorrow_charge_estimate_sensor: Sensor
+        today_charge_estimate_sensor: ChargeForecastSensor
+        tomorrow_charge_estimate_sensor: ChargeForecastSensor
 
     def __init__(self, id, /, **kwargs: "Unpack[Args]"):
         super().__init__(id, **kwargs)
         self.listen_update(self.on_update_estimate)
 
-        self.today_charge_estimate_sensor = Sensor(
+        self.today_charge_estimate_sensor = BatteryEstimatorDevice.ChargeForecastSensor(
             self,
             "today_charge_estimate",
             name="Charge estimate (today)",
-            native_unit_of_measurement="Ah",
-            suggested_display_precision=0,
-            parent_attr=Sensor.ParentAttr.REMOVE,
         )
-        self.tomorrow_charge_estimate_sensor = Sensor(
-            self,
-            "tomorrow_charge_estimate",
-            name="Charge estimate (tomorrow)",
-            native_unit_of_measurement="Ah",
-            suggested_display_precision=0,
-            parent_attr=Sensor.ParentAttr.REMOVE,
+        self.tomorrow_charge_estimate_sensor = (
+            BatteryEstimatorDevice.ChargeForecastSensor(
+                self,
+                "tomorrow_charge_estimate",
+                name="Charge estimate (tomorrow)",
+            )
         )
 
     def on_update_estimate(self, estimator: "BatteryEstimator", /):
