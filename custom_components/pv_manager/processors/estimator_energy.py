@@ -143,7 +143,6 @@ class EnergyEstimator(Estimator):
     )
 
     @classmethod
-    @typing.override
     def get_config_schema(cls, config: "Config | None") -> pmc.ConfigSchema:
         return super().get_config_schema(config) | {
             hv.req_config(
@@ -175,21 +174,18 @@ class EnergyEstimator(Estimator):
         self._sampling_interval_callback()
         self.update_estimate()
 
-    @typing.override
     def shutdown(self):
         if self._sampling_interval_unsub:
             self._sampling_interval_unsub()
             self._sampling_interval_unsub = None
         super().shutdown()
 
-    @typing.override
     def as_diagnostic_dict(self):
         return super().as_diagnostic_dict() | {
             "sampling_interval_minutes": self.sampling_interval_ts / 60,
             "tz_info": str(self.tz),
         }
 
-    @typing.override
     def as_state_dict(self):
         return {
             "forecast": self.get_forecast(
@@ -376,7 +372,6 @@ class EnergyObserverEstimator(EnergyEstimator):
     )
 
     @classmethod
-    @typing.override
     def get_config_schema(cls, config: "Config | None") -> pmc.ConfigSchema:
         _config = config or {
             "observation_duration_minutes": 20,
@@ -404,7 +399,6 @@ class EnergyObserverEstimator(EnergyEstimator):
         )
         self.observed_samples = deque()
 
-    @typing.override
     async def async_start(self):
         if self.history_duration_ts:
             self._restore_history_task_ts = time()
@@ -416,12 +410,10 @@ class EnergyObserverEstimator(EnergyEstimator):
             )
         await super().async_start()
 
-    @typing.override
     def shutdown(self):
         self._restore_history_task_ts = 0  # force history task termination
         super().shutdown()
 
-    @typing.override
     def as_diagnostic_dict(self):
         return super().as_diagnostic_dict() | {
             "observation_duration_minutes": self.observation_duration_ts / 60,
@@ -533,6 +525,7 @@ class EnergyObserverEstimator(EnergyEstimator):
             except StopIteration:
                 self.time_ts = pmc.TIMESTAMP_MAX
 
+    @typing.final
     def _restore_history(self):
 
         try:
@@ -622,12 +615,10 @@ class SignalEnergyEstimator(EnergyObserverEstimator, SignalEnergyProcessor):
         config: Config
         source_entity_id: str
 
-    @typing.override
     async def async_start(self):
         self.listen_energy(self.process_energy)
         await super().async_start()
 
-    @typing.override
     def disconnect(self, time_ts):
         super().disconnect(time_ts)
         self._check_sample_curr(time_ts)
@@ -639,9 +630,10 @@ class SignalEnergyEstimator(EnergyObserverEstimator, SignalEnergyProcessor):
         machinery. (See SignalEnergyEstimator for an example)"""
         self.reset()
 
-    @typing.override
     def _history_entities(self) -> "EnergyObserverEstimator.HistoryEntitiesDesc":
-        return {self.source_entity_id: self.history_process}
+        return super()._history_entities() | {
+            self.source_entity_id: self.history_process
+        }
 
 
 class EnergyBalanceEstimator(EnergyEstimator):
@@ -770,7 +762,6 @@ class EnergyBalanceEstimator(EnergyEstimator):
             self._consumption_estimator_update
         )
 
-    @typing.override
     def update_estimate(self):
         # this code is just a sketch..battery estimator should be more sophisticated
         production_estimator = self.production_estimator
