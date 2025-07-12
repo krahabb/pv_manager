@@ -229,13 +229,9 @@ class LossesMeter(MeterDevice):
             "total": lambda e: e.conversion_yield_total,
         },
         "system_yield": {
-            "instant": lambda e: (
-                None
-                if e.conversion_yield is None or e.charging_efficiency is None
-                else e.conversion_yield * e.charging_efficiency
-            ),  # TODO: compute system_yield in battery estimator
-            "average": lambda e: e.conversion_yield_avg * e.charging_efficiency_avg,
-            "total": lambda e: e.conversion_yield_total * e.charging_efficiency_total,
+            "instant": lambda e: e.system_yield,
+            "average": lambda e: e.system_yield_avg,
+            "total": lambda e: e.system_yield_total,
         },
     }
     YIELD_SENSOR_MODES = ["instant", "average", "total"]

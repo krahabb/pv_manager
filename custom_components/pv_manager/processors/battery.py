@@ -314,17 +314,17 @@ class BatteryEstimator(EnergyEstimator):
     # - consumption: energy output from inverter (i.e. measure of all the loads)
     losses: DataAttr[float, DataAttrParam.stored] = 0
 
+    ## PERFORMANCE COUNTERS
     # conversion_losses is the ratio: losses / load and gives a raw figure of
     # inverter efficiency and cabling losses
     conversion_losses: DataAttr[float, DataAttrParam.stored] = 0
     conversion_losses_avg: DataAttr[float, DataAttrParam.stored] = 0
     conversion_losses_total: DataAttr[float, DataAttrParam.stored] = 0
-    # TODO: REMOVE conversion_yield since it can be calculated from conversion_losses
     # conversion_yield is: load / (load + losses) and gives the conversion efficiency
     conversion_yield: DataAttr[float | None, DataAttrParam.stored] = None
     conversion_yield_avg: DataAttr[float, DataAttrParam.stored] = 1
     conversion_yield_total: DataAttr[float, DataAttrParam.stored] = 1
-
+    # battery charging/discharging efficiency
     charging_factor: DataAttr[float | None, DataAttrParam.stored] = None
     charging_factor_avg: DataAttr[float, DataAttrParam.stored] = 48
     charging_factor_total: DataAttr[float, DataAttrParam.stored] = 48
@@ -334,6 +334,12 @@ class BatteryEstimator(EnergyEstimator):
     charging_efficiency: DataAttr[float | None, DataAttrParam.stored] = None
     charging_efficiency_avg: DataAttr[float, DataAttrParam.stored] = 1
     charging_efficiency_total: DataAttr[float, DataAttrParam.stored] = 1
+    # overall system efficiency: ratio of output (load) vs input (pv)
+    # since the battery could store and return some energy the ratio will be affected
+    # by 'available battery energy' but this term will asymptotically become irrelevant.
+    system_yield: DataAttr[float | None, DataAttrParam.stored] = None
+    system_yield_avg: DataAttr[float, DataAttrParam.stored] = 1
+    system_yield_total: DataAttr[float, DataAttrParam.stored] = 1
 
     _SLOTS_ = (
         "_battery_processors",
@@ -366,11 +372,13 @@ class BatteryEstimator(EnergyEstimator):
         self.charging_factor = None
         self.discharging_factor = None
         self.charging_efficiency = None
+        self.system_yield = None
         if sample_curr.samples:
+            avg_c0: "Final" = self.__class__.OPS_DECAY
+            avg_c1: "Final" = 1 - avg_c0
             time_end_curr_ts = sample_curr.time_end_ts
             self.observations_per_sample_avg = (
-                self.observations_per_sample_avg * EnergyBalanceEstimator.OPS_DECAY
-                + sample_curr.samples * (1 - EnergyBalanceEstimator.OPS_DECAY)
+                self.observations_per_sample_avg * avg_c0 + sample_curr.samples * avg_c1
             )
             energy_in = sample_curr.energy_in
             energy_out = sample_curr.energy_out
@@ -394,17 +402,16 @@ class BatteryEstimator(EnergyEstimator):
                     self.conversion_losses_total = self.losses / self.consumption
                     self.conversion_losses = losses / consumption
                     self.conversion_losses_avg = (
-                        self.conversion_losses_avg * EnergyBalanceEstimator.OPS_DECAY
-                        + self.conversion_losses
-                        * (1 - EnergyBalanceEstimator.OPS_DECAY)
+                        self.conversion_losses_avg * avg_c0
+                        + self.conversion_losses * avg_c1
                     )
                     self.conversion_yield_total = self.consumption / (
                         self.consumption + self.losses
                     )
                     self.conversion_yield = consumption / (consumption + losses)
                     self.conversion_yield_avg = (
-                        self.conversion_yield_avg * EnergyBalanceEstimator.OPS_DECAY
-                        + self.conversion_yield * (1 - EnergyBalanceEstimator.OPS_DECAY)
+                        self.conversion_yield_avg * avg_c0
+                        + self.conversion_yield * avg_c1
                     )
                 except:  # just protect in case something goes to 0
                     pass
@@ -414,8 +421,7 @@ class BatteryEstimator(EnergyEstimator):
                 self.charging_factor_total = self.energy_in / self.charge_in
                 self.charging_factor = energy_in / charge_in
                 self.charging_factor_avg = (
-                    self.charging_factor_avg * EnergyBalanceEstimator.OPS_DECAY
-                    + self.charging_factor * (1 - EnergyBalanceEstimator.OPS_DECAY)
+                    self.charging_factor_avg * avg_c0 + self.charging_factor * avg_c1
                 )
 
             if charge_out:
@@ -423,23 +429,33 @@ class BatteryEstimator(EnergyEstimator):
                 self.discharging_factor_total = self.energy_out / self.charge_out
                 self.discharging_factor = energy_out / charge_out
                 self.discharging_factor_avg = (
-                    self.discharging_factor_avg * EnergyBalanceEstimator.OPS_DECAY
-                    + self.discharging_factor * (1 - EnergyBalanceEstimator.OPS_DECAY)
+                    self.discharging_factor_avg * avg_c0
+                    + self.discharging_factor * avg_c1
                 )
                 if charge_in:
                     self.charging_efficiency = (
                         self.discharging_factor / self.charging_factor  # type: ignore
                     )
                     self.charging_efficiency_avg = (
-                        self.charging_efficiency_avg * EnergyBalanceEstimator.OPS_DECAY
-                        + self.charging_efficiency
-                        * (1 - EnergyBalanceEstimator.OPS_DECAY)
+                        self.charging_efficiency_avg * avg_c0
+                        + self.charging_efficiency * avg_c1
+                    )
+                if production:
+                    self.system_yield = (
+                        consumption + (charge_in - charge_out) * self.discharging_factor
+                    ) / production
+                    self.system_yield_avg = (
+                        self.system_yield_avg * avg_c0 + self.system_yield * avg_c1
                     )
 
             try:
                 self.charging_efficiency_total = (
                     self.discharging_factor_total / self.charging_factor_total
                 )
+                self.system_yield_total = (
+                    self.consumption
+                    + (self.charge_in - self.charge_out) * self.discharging_factor_total
+                ) / self.production
             except:
                 pass
         else:
