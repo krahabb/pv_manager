@@ -180,7 +180,7 @@ class EnergySensor(MeteringCycle.Sink, Sensor, he.RestoreEntity):
         )
 
     async def async_added_to_hass(self):
-        self._metering_cycle = metering_cycle = Manager.register_metering_synk(self)
+        self._metering_cycle = metering_cycle = Manager.register_metering_sink(self)
         self._next_reset_ts = metering_cycle.next_reset_ts
         self.last_reset = metering_cycle.last_reset_dt
 

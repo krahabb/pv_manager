@@ -2,6 +2,7 @@
 The component global api.
 """
 
+from bisect import insort_right
 from collections import deque
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -151,7 +152,7 @@ class MeteringCycle(Loggable):
             sink._reset_cycle(self)
 
         self._reset_cycle_unsub = Manager.schedule_at_epoch(
-            self.next_reset_ts, self.update, None
+            self.next_reset_ts, self.update, 0, None
         )
         self.log(Loggable.DEBUG, "Scheduled metering cycle at: %s", self.next_reset_dt)
 
@@ -274,27 +275,44 @@ class ManagerClass(Loggable):
     """
 
     @dataclass(slots=True, frozen=True, eq=False)
+    class _TargetCallback:
+        target: "Callable"
+        priority: int
+        args: tuple
+
+        def __lt__(self, other: "ManagerClass._TargetCallback", /) -> bool:
+            return self.priority > other.priority
+
+        def __gt__(self, other: "ManagerClass._TargetCallback", /) -> bool:
+            return self.priority < other.priority
+
+    @dataclass(slots=True, frozen=True, eq=False)
     class _ScheduleCallback:
         handle: "TimerHandle"
-        targets: "set[tuple[Callable, tuple]]"
+        targets: "list[ManagerClass._TargetCallback]"
 
     def schedule_at_epoch(
-        self, epoch: float, target: "Callable", /, *args
+        self, epoch: float, target: "Callable", priority, /, *args
     ) -> "CALLBACK_TYPE":
+        """
+        Schedules the callback using a 'shared' loop timer. When the timer expires, all the target callbacks
+        scheduled at the same time will be inoked in the order determined by 'priority'.
+        """
         # fragile api: this doesn't really care about the loop drifting or so.
         # schedule_at is better at doing the job (relying on the HA api for that) but bulkier.
         # Either way, we're concerned with what happens when the loop restarts after a power suspend.
         if pmc.DEBUG:
             epoch_dt = datetime_from_epoch(epoch)
-        target_args = (target, args)
+
+        target_callback = ManagerClass._TargetCallback(target, priority, args)
         try:
-            self._scheduled[epoch].targets.add(target_args)
+            insort_right(self._scheduled[epoch].targets, target_callback)
         except KeyError:
             self._scheduled[epoch] = ManagerClass._ScheduleCallback(
                 self._call_later(
                     epoch - time(), self._schedule_at_epoch_callback, epoch
                 ),
-                {target_args},
+                [target_callback],
             )
             if pmc.DEBUG:
                 self.log(Loggable.WARNING, "Scheduled callback at: %s", epoch_dt)
@@ -304,12 +322,12 @@ class ManagerClass(Loggable):
                 self.log(
                     Loggable.WARNING,
                     "Unsubscribe scheduled target(%r) at: %s",
-                    target_args[0],
+                    target_callback.target,
                     epoch_dt,
                 )
             try:
                 scheduled_callback = self._scheduled[epoch]
-                scheduled_callback.targets.remove(target_args)
+                scheduled_callback.targets.remove(target_callback)
                 if not scheduled_callback.targets:
                     if pmc.DEBUG:
                         self.log(
@@ -341,16 +359,22 @@ class ManagerClass(Loggable):
                 datetime_from_epoch(epoch),
                 self._scheduled[epoch].targets,
             )
-        for target_args in self._scheduled.pop(epoch).targets:
-            target_args[0](*target_args[1])
+        for target_callback in self._scheduled.pop(epoch).targets:
+            target_callback.target(*target_callback.args)
         if pmc.DEBUG:
             self.log(
                 Loggable.WARNING,
                 "Active schedules: %s",
-                [datetime_from_epoch(epoch).isoformat() for epoch in self._scheduled],
+                [
+                    {
+                        "when": datetime_from_epoch(epoch).isoformat(),
+                        "targets": len(scheduled_callback.targets),
+                    }
+                    for epoch, scheduled_callback in self._scheduled.items()
+                ],
             )
 
-    def register_metering_synk(self, sink: MeteringCycle.Sink, /):
+    def register_metering_sink(self, sink: MeteringCycle.Sink, /):
         time_ts = time()
         try:
             metering_cycle = self._metering_cycles[sink.cycle_mode]
@@ -369,7 +393,7 @@ class ManagerClass(Loggable):
         metering_cycle._sinks.add(sink)
         if not (metering_cycle.is_total or metering_cycle._reset_cycle_unsub):
             metering_cycle._reset_cycle_unsub = Manager.schedule_at_epoch(
-                metering_cycle.next_reset_ts, metering_cycle.update, None
+                metering_cycle.next_reset_ts, metering_cycle.update, 0, None
             )
             metering_cycle.log(
                 Loggable.DEBUG, "Scheduled cycle at: %s", metering_cycle.next_reset_dt

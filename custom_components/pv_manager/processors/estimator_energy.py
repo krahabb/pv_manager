@@ -288,7 +288,7 @@ class EnergyEstimator(Estimator):
         time_curr = self._sample_curr.time_end_ts
         time_next = self._check_sample_curr(time_ts).time_end_ts
         self._sampling_interval_unsub = Manager.schedule_at_epoch(
-            time_next, self._sampling_interval_callback
+            time_next, self._sampling_interval_callback, 10
         )
         if self.isEnabledFor(self.DEBUG):
             self.log(
