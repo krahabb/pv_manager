@@ -1,3 +1,4 @@
+import enum
 import typing
 
 from homeassistant import const as hac
@@ -6,13 +7,14 @@ from homeassistant.core import callback
 from . import EnergyBroadcast, SignalEnergyProcessor
 from ..helpers import validation as hv
 from ..helpers.dataattr import DataAttr, DataAttrParam
+from ..helpers.manager import Manager
 from ..sensor import Sensor
 from .estimator_energy import EnergyBalanceEstimator, EnergyEstimator
 
 if typing.TYPE_CHECKING:
-    from typing import Callable, Final, NotRequired, Self, Unpack
+    from typing import Callable, Final, Mapping, NotRequired, Self, Unpack
 
-    from homeassistant.core import Event, EventStateChangedData
+    from homeassistant.core import Event, EventStateChangedData, State
 
     from .. import const as pmc
     from .estimator_energy import SignalEnergyEstimator
@@ -20,11 +22,16 @@ if typing.TYPE_CHECKING:
 
 class BatteryProcessor(SignalEnergyProcessor):
 
+    class CurrentConvention(enum.StrEnum):
+        POSITIVE_CHARGING = enum.auto()
+        POSITIVE_DISCHARGING = enum.auto()
+
     if typing.TYPE_CHECKING:
 
         class Config(SignalEnergyProcessor.Config):
             battery_voltage_entity_id: NotRequired[str]
             battery_current_entity_id: NotRequired[str]
+            battery_current_convention: "BatteryProcessor.CurrentConvention"
             battery_charge_entity_id: NotRequired[str]
             battery_capacity: NotRequired[float]
 
@@ -41,10 +48,8 @@ class BatteryProcessor(SignalEnergyProcessor):
         energy_broadcast_out: Final[EnergyBroadcast]
         battery_voltage: float | None
         battery_current: float | None
-        _current_convert: SignalEnergyProcessor.ConvertFuncType
-        _current_unit: str
-        _voltage_convert: SignalEnergyProcessor.ConvertFuncType
-        _voltage_unit: str
+        _current_convert: "Final[Mapping[str | None, float]]"
+        _voltage_convert: "Final[Mapping[str | None, float]]"
 
     _SLOTS_ = (
         # config
@@ -62,14 +67,14 @@ class BatteryProcessor(SignalEnergyProcessor):
         "battery_current",
         # misc
         "_current_convert",
-        "_current_unit",
         "_voltage_convert",
-        "_voltage_unit",
     )
 
     @classmethod
     def get_config_schema(cls, config: "Config | None", /) -> "pmc.ConfigSchema":
-        _config = config or {}
+        _config = config or {
+            "battery_current_convention": BatteryProcessor.CurrentConvention.POSITIVE_DISCHARGING,
+        }
         schema = {
             hv.req_config("battery_voltage_entity_id", _config): hv.sensor_selector(
                 device_class=Sensor.DeviceClass.VOLTAGE
@@ -77,6 +82,13 @@ class BatteryProcessor(SignalEnergyProcessor):
             hv.req_config("battery_current_entity_id", _config): hv.sensor_selector(
                 device_class=Sensor.DeviceClass.CURRENT
             ),
+            hv.req_config("battery_current_convention", _config): hv.select_selector(
+                options=list(BatteryProcessor.CurrentConvention),
+                mode="list",  # type: ignore
+            ),
+            hv.opt_config(
+                "battery_charge_entity_id", _config
+            ): hv.battery_charge_sensor_selector(),
             hv.req_config("battery_capacity", _config): hv.positive_number_selector(
                 unit_of_measurement="Ah"
             ),
@@ -120,14 +132,21 @@ class BatteryProcessor(SignalEnergyProcessor):
     async def async_start(self):
         if self.battery_current_entity_id:
             unit = SignalEnergyProcessor.Unit.CURRENT
-            self._current_convert = unit.convert
-            self._current_unit = unit.default
-            self.charge_processor.configure(SignalEnergyProcessor.Unit.CURRENT)
+            if (
+                self.config.get("battery_current_convention")
+                == BatteryProcessor.CurrentConvention.POSITIVE_CHARGING
+            ):
+                self._current_convert = {
+                    unit: -ratio for unit, ratio in unit.convert_to_default.items()
+                }
+            else:
+                self._current_convert = unit.convert_to_default
+            self.charge_processor.configure(unit)
             self.track_state(self.battery_current_entity_id, self._current_callback)
         if self.battery_voltage_entity_id:
-            unit = SignalEnergyProcessor.Unit.VOLTAGE
-            self._voltage_convert = unit.convert
-            self._voltage_unit = unit.default
+            self._voltage_convert = (
+                SignalEnergyProcessor.Unit.VOLTAGE.convert_to_default
+            )
             self.track_state(self.battery_voltage_entity_id, self._voltage_callback)
 
     def shutdown(self):
@@ -157,12 +176,11 @@ class BatteryProcessor(SignalEnergyProcessor):
     ):
         battery_current = None
         time_ts = event.time_fired_timestamp
-        state = event.data["new_state"]
+        state: "State" = event.data["new_state"]  # type: ignore
         try:
-            battery_current = self._current_convert(
-                float(state.state),  # type: ignore
-                state.attributes["unit_of_measurement"],  # type: ignore
-                self._current_unit,
+            battery_current = (
+                float(state.state)
+                * self._current_convert[state.attributes["unit_of_measurement"]]
             )
             self.process(
                 self.battery_voltage * battery_current, time_ts  # type: ignore
@@ -194,11 +212,10 @@ class BatteryProcessor(SignalEnergyProcessor):
     ):
         battery_voltage = None
         try:
-            state = event.data["new_state"]
-            battery_voltage = self._voltage_convert(
-                float(state.state),  # type: ignore
-                state.attributes["unit_of_measurement"],  # type: ignore
-                self._voltage_unit,
+            state: "State" = event.data["new_state"]  # type: ignore
+            battery_voltage = (
+                float(state.state)
+                * self._voltage_convert[state.attributes["unit_of_measurement"]]
             )
             self.process(
                 battery_voltage * self.battery_current, event.time_fired_timestamp  # type: ignore

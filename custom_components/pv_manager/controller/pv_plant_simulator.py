@@ -83,7 +83,7 @@ class Controller(controller.Controller["EntryConfig"]):
 
     @classmethod
     @typing.override
-    def get_config_schema(cls, config: "Config | None") -> pmc.ConfigSchema:
+    def get_config_schema(cls, config: "Config | None", /) -> pmc.ConfigSchema:
         if not config:
             config = {
                 "name": "PV simulator",
@@ -99,7 +99,7 @@ class Controller(controller.Controller["EntryConfig"]):
             }
         return hv.sensor_schema(config, hac.UnitOfPower) | {
             hv.req_config("peak_power", config): int,
-            hv.opt_config("weather_entity_id", config): hv.weather_entity_selector(),
+            hv.opt_config("weather_entity_id", config): hv.weather_selector(),
             hv.opt_config("battery_voltage", config): cv.positive_int,
             hv.opt_config("battery_capacity", config): cv.positive_int,
             hv.opt_config(
@@ -119,7 +119,7 @@ class Controller(controller.Controller["EntryConfig"]):
             ),
         }
 
-    def __init__(self, config_entry: "ConfigEntry"):
+    def __init__(self, config_entry: "ConfigEntry", /):
         super().__init__(config_entry)
 
         location, elevation = sun_helpers.get_astral_location(Manager.hass)
@@ -329,7 +329,9 @@ class Controller(controller.Controller["EntryConfig"]):
         )
 
     @callback
-    def _weather_update(self, event: "Event[EventStateChangedData] | Controller.Event"):
+    def _weather_update(
+        self, event: "Event[EventStateChangedData] | Controller.Event", /
+    ):
         if state := event.data["new_state"]:
             self._weather_state = state.state
             attributes = state.attributes

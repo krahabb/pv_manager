@@ -1,6 +1,7 @@
 import typing
 
 from homeassistant import const as hac, data_entry_flow
+from homeassistant.core import async_get_hass
 from homeassistant.helpers import selector
 import voluptuous as vol
 
@@ -11,46 +12,47 @@ if typing.TYPE_CHECKING:
     from enum import StrEnum
     from typing import Any, Unpack
 
+    from homeassistant.core import HomeAssistant
 
-def optional(key: str, config, default=None):
+
+def optional(key: str, config: pmc.ConfigMapping, default=None, /):
     return vol.Optional(key, description={"suggested_value": config.get(key, default)})
 
 
-def opt_default(key: str, default):
+def opt_default(key: str, default, /):
     return vol.Optional(key, description={"suggested_value": default})
 
 
-def opt_config(key: str, config: pmc.ConfigMapping):
+def opt_config(key: str, config: pmc.ConfigMapping, /):
     return vol.Optional(key, description={"suggested_value": config.get(key)})
 
 
-def required(key: str, config, default=None):
+def required(key: str, config, default=None, /):
     return vol.Required(key, description={"suggested_value": config.get(key, default)})
 
 
-def req_default(key: str, default):
+def req_default(key: str, default, /):
     return vol.Required(key, description={"suggested_value": default})
 
 
-def req_config(key: str, config: pmc.ConfigMapping):
+def req_config(key: str, config: pmc.ConfigMapping, /):
     return vol.Required(key, description={"suggested_value": config.get(key)})
 
 
-def exclusive(key: str, group: str, config, default=None):
+def exclusive(key: str, group: str, config: pmc.ConfigMapping, default=None, /):
     return vol.Exclusive(
         key, group, description={"suggested_value": config.get(key, default)}
     )
 
 
 def entity_schema(
-    config: pmc.EntityConfig | pmc.ConfigMapping = {},
+    config: pmc.EntityConfig | pmc.ConfigMapping = {}, /
 ) -> pmc.ConfigSchema:
     return {req_config("name", config): str}
 
 
 def sensor_schema(
-    config: pmc.SensorConfig | pmc.ConfigMapping,
-    units: "type[StrEnum]",
+    config: pmc.SensorConfig | pmc.ConfigMapping, units: "type[StrEnum]", /
 ) -> pmc.ConfigSchema:
     schema = entity_schema(config)
     schema[req_config("native_unit_of_measurement", config)] = select_selector(
@@ -60,7 +62,7 @@ def sensor_schema(
 
 
 def select_selector(**kwargs: "Unpack[selector.SelectSelectorConfig]"):
-    kwargs["mode"] = kwargs.get("mode", selector.SelectSelectorMode.DROPDOWN)
+    kwargs.setdefault("mode", selector.SelectSelectorMode.DROPDOWN)
     return selector.SelectSelector(kwargs)
 
 
@@ -91,7 +93,19 @@ def sensor_selector(**kwargs: "Unpack[_sensor_selector_args]"):
     )
 
 
-def weather_entity_selector():
+def battery_charge_sensor_selector():
+    return select_selector(
+        options=[
+            state.entity_id
+            for state in async_get_hass().states.async_all(domain_filter="sensor")
+            if state.attributes.get(hac.ATTR_UNIT_OF_MEASUREMENT) == "Ah"
+            or state.attributes.get(hac.ATTR_DEVICE_CLASS) == "battery"
+        ],
+        sort=True,
+    )
+
+
+def weather_selector():
     return selector.EntitySelector({"filter": {"domain": "weather"}})
 
 
@@ -131,5 +145,5 @@ def pvenergy_estimator_selector():
 
 class section(data_entry_flow.section):
 
-    def __init__(self, schema: pmc.ConfigSchema, collapsed: bool = True):
+    def __init__(self, schema: pmc.ConfigSchema, collapsed: bool = True, /):
         super().__init__(vol.Schema(schema), {"collapsed": collapsed})

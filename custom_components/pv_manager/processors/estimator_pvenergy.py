@@ -301,7 +301,7 @@ class PVEnergyEstimator(EnergyObserverEstimator):
     def get_config_schema(cls, config: "Config | None", /) -> "pmc.ConfigSchema":
         _config = config or {"weather_model": "simple"}
         return super().get_config_schema(config) | {
-            hv.opt_config("weather_entity_id", _config): hv.weather_entity_selector(),
+            hv.opt_config("weather_entity_id", _config): hv.weather_selector(),
             hv.opt_config("weather_model", _config): cls.weather_model_selector(),
         }
 
